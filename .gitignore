@@ -1,0 +1,24 @@
+# Large data and output directories
+demo_data/
+VideoRec/
+
+# Scratch directories
+NIS-E_setup_SpheroidPA/
+Tempcsv2bin/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,284 @@
+// ============================================================
+// NIS-Elements Macro: Spheroid Auto-Capture (File-Flag Daemon)
+// SpheroidPA Pipeline — Step 4
+//
+// Polls for a trigger file written by spheroid_pipeline.py,
+// loads the Z Intensity Correction .bin, moves stage, captures
+// a 20X z-stack, saves the nd2, then writes a done file.
+//
+// FILE PROTOCOL (INI key=value, one per line)
+// -------------------------------------------
+//   trigger.ini  (written by Python, read+deleted by this macro)
+//     rank=1
+//     spheroid_id=sph_WellD05_01
+//     stage_x=-12345.6
+//     stage_y=56789.1
+//     z_centre=380.5
+//     z_half=30.0
+//     z_step=2.0
+//     bin_path=C:\SpheroidPA\output\bins\sph_WellD05_01.bin
+//     nd2_out=C:\NIS_Output\20X\sph_WellD05_01.nd2
+//     timestamp=2026-06-08T14:30:00
+//
+//   done.ini  (written by this macro, read+deleted by Python)
+//     rank=1
+//     spheroid_id=sph_WellD05_01
+//     nd2_path=C:\NIS_Output\20X\sph_WellD05_01.nd2
+//     status=ok
+//     timestamp=2026-06-08T14:31:15
+//
+// PRE-REQUISITES — configure in NIS-E BEFORE running this macro
+// -------------------------------------------------------------
+//   1. Load the desired ND Experiment (ND Acq. dialog):
+//        - Channels: set to the channels you want to capture
+//        - Z Series: will be overridden by this macro at runtime
+//        - No Time loop
+//   2. Switch objective to 20X
+//   3. Set the save folder in ND Experiment to match nd2_out dir
+//      (the macro also calls Doc_SaveAs — both are needed)
+//   4. Enable "Apply Z intensity correction" in ND Acq. dialog
+//      and load any placeholder .bin (the macro reloads it per
+//      spheroid via ZIntCorrect_LoadFile)
+//   5. Ensure autofocus is set up if desired (not mandatory —
+//      Python records z_centre from a separate autofocus step)
+//
+// NIS-E MACRO LANGUAGE: C-style (NIS-Elements 5.x / AR 2020+)
+// ============================================================
+
+#pragma NoCancelOnError
+
+// ── Configuration ─────────────────────────────────────────────────────────────
+
+// Directory containing trigger.ini and done.ini (trailing backslash required)
+#define WORK_DIR    "C:\\NIS_Output\\pipeline\\"
+
+// How long to wait for a trigger file before giving up (seconds, 0 = run forever)
+#define MAX_IDLE_S  3600
+
+// Poll interval (milliseconds)
+#define POLL_MS     2000
+
+// Stage settle time after XY move (ms)
+#define STAGE_SETTLE_MS  800
+
+// Z settle time after Z move (ms)
+#define Z_SETTLE_MS  400
+
+
+// ── Macro entry point ─────────────────────────────────────────────────────────
+
+void SpheroidAutoCaptureMain()
+{
+    // Allow operator to override the work directory
+    string sWorkDir = InputBox("Work directory (trigger.ini / done.ini):", WORK_DIR);
+    if (StrLen(sWorkDir) == 0) {
+        MessageBox("Cancelled.");
+        return;
+    }
+
+    // Ensure trailing backslash
+    if (StrRight(sWorkDir, 1) != "\\")
+        sWorkDir = sWorkDir + "\\";
+
+    string sTrigger = sWorkDir + "spheroid_trigger.ini";
+    string sDone    = sWorkDir + "spheroid_done.ini";
+
+    StatusBar("SpheroidPA daemon started. Waiting for trigger.ini ...");
+
+    int nIdleMs  = 0;
+    int nMaxMs   = MAX_IDLE_S * 1000;
+    int nCapt    = 0;
+
+    while (true) {
+        // Check timeout
+        if (MAX_IDLE_S > 0 && nIdleMs >= nMaxMs) {
+            MessageBox("SpheroidPA: timed out after " + IntToStr(MAX_IDLE_S)
+                       + " s with no trigger. Daemon stopped.");
+            break;
+        }
+
+        // Poll for trigger file
+        if (!FileExists(sTrigger)) {
+            Wait(POLL_MS);
+            nIdleMs += POLL_MS;
+            continue;
+        }
+
+        // Reset idle timer
+        nIdleMs = 0;
+
+        // Read trigger
+        string sRank, sSphId, sX, sY, sZCentre, sZHalf, sZStep;
+        string sBinPath, sNd2Out;
+        if (!ReadTrigger(sTrigger, sRank, sSphId, sX, sY,
+                         sZCentre, sZHalf, sZStep, sBinPath, sNd2Out)) {
+            StatusBar("SpheroidPA: failed to parse trigger.ini — skipping.");
+            FileDelete(sTrigger);
+            Wait(POLL_MS);
+            continue;
+        }
+
+        double dX       = StrToFloat(sX);
+        double dY       = StrToFloat(sY);
+        double dZCentre = StrToFloat(sZCentre);
+        double dZHalf   = StrToFloat(sZHalf);
+        double dZStep   = StrToFloat(sZStep);
+        double dZStart  = dZCentre - dZHalf;
+        double dZEnd    = dZCentre + dZHalf;
+
+        StatusBar("SpheroidPA: capturing rank " + sRank
+                  + " (" + sSphId + ") ...");
+
+        // ── Consume trigger ───────────────────────────────────────────────────
+        FileDelete(sTrigger);
+
+        // ── Load Z Intensity Correction .bin ──────────────────────────────────
+        // Try the standard NIS-E 5.x call. If your NIS-E version uses a different
+        // function, comment out this line and load the .bin manually in the ND Acq.
+        // dialog before running.
+        // Uncomment whichever matches your NIS-E version:
+        //   ZIntCorrect_LoadFile(sBinPath);       // NIS-E 5.x AR 2022+
+        //   ND.ZIntensityCorrection.Load(sBinPath); // older versions
+        // For now this is left as a comment — test interactively first:
+        ZIntCorrect_LoadFile(sBinPath);
+
+        // ── Set Z-series range ────────────────────────────────────────────────
+        SetZSeriesRange(dZStart, dZEnd, dZStep);
+
+        // ── Move stage XY ─────────────────────────────────────────────────────
+        Stg_MoveXY(dX, dY);
+        Wait(STAGE_SETTLE_MS);
+
+        // Move Z to start of stack (gives hardware time to settle before capture)
+        Stg_MoveZ(dZStart);
+        Wait(Z_SETTLE_MS);
+
+        // ── Capture ───────────────────────────────────────────────────────────
+        NdCapture();
+
+        // ── Save nd2 ──────────────────────────────────────────────────────────
+        // Ensure the parent directory exists
+        string sOutDir = FileDir(sNd2Out);
+        CreateDirectory(sOutDir);
+
+        Doc_SaveAs(sNd2Out);
+        nCapt++;
+
+        // ── Write done.ini ────────────────────────────────────────────────────
+        WriteDone(sDone, sRank, sSphId, sNd2Out);
+
+        StatusBar("SpheroidPA: rank " + sRank + " done. Total: "
+                  + IntToStr(nCapt) + ". Waiting for next trigger ...");
+    }
+
+    MessageBox("SpheroidPA daemon stopped. " + IntToStr(nCapt) + " spheroid(s) captured.");
+}
+
+
+// ── Parse trigger.ini ─────────────────────────────────────────────────────────
+//
+// The file format is simple key=value, one per line.
+// NIS-E macro language lacks a proper line-by-line file reader, so we read
+// the whole file as one block and split on newlines manually.
+//
+// Returns 1 on success, 0 on parse failure.
+
+int ReadTrigger(string sPath,
+                string &sRank, string &sSphId,
+                string &sX,    string &sY,
+                string &sZCentre, string &sZHalf, string &sZStep,
+                string &sBinPath, string &sNd2Out)
+{
+    int hFile = FileOpen(sPath, "r");
+    if (hFile == 0) return 0;
+
+    // Read all lines
+    string sLine;
+    sRank = ""; sSphId = ""; sX = "0"; sY = "0";
+    sZCentre = "0"; sZHalf = "30"; sZStep = "2";
+    sBinPath = ""; sNd2Out = "";
+
+    while (!FileEOF(hFile)) {
+        FileReadLine(hFile, sLine);
+        sLine = StrTrim(sLine);
+        if (StrLen(sLine) == 0) continue;
+        if (StrLeft(sLine, 1) == "#") continue;
+
+        // Find the "=" separator
+        int eqPos = StrFind(sLine, "=", 0);
+        if (eqPos < 1) continue;
+
+        string sKey = StrTrim(StrLeft(sLine, eqPos));
+        string sVal = StrTrim(StrMid(sLine, eqPos + 1, StrLen(sLine) - eqPos - 1));
+
+        if (sKey == "rank")        sRank    = sVal;
+        if (sKey == "spheroid_id") sSphId   = sVal;
+        if (sKey == "stage_x")     sX       = sVal;
+        if (sKey == "stage_y")     sY       = sVal;
+        if (sKey == "z_centre")    sZCentre = sVal;
+        if (sKey == "z_half")      sZHalf   = sVal;
+        if (sKey == "z_step")      sZStep   = sVal;
+        if (sKey == "bin_path")    sBinPath  = sVal;
+        if (sKey == "nd2_out")     sNd2Out  = sVal;
+    }
+
+    FileClose(hFile);
+
+    // Require the essential fields
+    if (StrLen(sRank) == 0 || StrLen(sNd2Out) == 0) return 0;
+    return 1;
+}
+
+
+// ── Write done.ini ────────────────────────────────────────────────────────────
+
+void WriteDone(string sDonePath, string sRank, string sSphId, string sNd2Out)
+{
+    int hFile = FileOpen(sDonePath, "w");
+    if (hFile == 0) {
+        MessageBox("SpheroidPA: cannot write done.ini — Python will not advance!");
+        return;
+    }
+    FileWrite(hFile, "rank=" + sRank + "\n");
+    FileWrite(hFile, "spheroid_id=" + sSphId + "\n");
+    FileWrite(hFile, "nd2_path=" + sNd2Out + "\n");
+    FileWrite(hFile, "status=ok\n");
+    FileWrite(hFile, "timestamp=" + DateTime("yyyy-MM-ddTHH:mm:ss") + "\n");
+    FileClose(hFile);
+}
+
+
+// ── Set Z-series range in active ND Experiment ───────────────────────────────
+//
+// Try the most commonly available options.
+// If none work in your NIS-E version, configure the Z range manually in the
+// ND Acquisition dialog before starting the daemon.
+
+void SetZSeriesRange(double dStart, double dEnd, double dStep)
+{
+    // Option A — NIS-E 5.x property syntax (most systems since AR 2019):
+    ND.ZSeries.StartPos = dStart;
+    ND.ZSeries.EndPos   = dEnd;
+    ND.ZSeries.StepSize = dStep;
+
+    // Option B — if Option A gives a compile error, try:
+    //   ZStackSetStart(dStart);
+    //   ZStackSetEnd(dEnd);
+    //   ZStackSetStep(dStep);
+
+    // Option C — if neither works, comment out both and set the range
+    //   manually in the ND Acq. dialog. The macro will still move stage
+    //   and capture; only the z-range selection is manual.
+}
+
+
+// ── Helper: extract directory from full path ──────────────────────────────────
+
+string FileDir(string sFullPath)
+{
+    int i = StrLen(sFullPath) - 1;
+    while (i >= 0 && StrMid(sFullPath, i, 1) != "\\" && StrMid(sFullPath, i, 1) != "/")
+        i--;
+    if (i < 0) return "";
+    return StrLeft(sFullPath, i + 1);
+}
