@@ -47,6 +47,13 @@ except ImportError:
 
 _DEPS_OK = len(_MISSING) == 0
 
+try:
+    from matplotlib.figure import Figure as _MplFigure
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg as _FigCanvas
+    _MPL_TK_OK = True
+except ImportError:
+    _MPL_TK_OK = False
+
 
 # ── Defaults (from SLIM045 / SLIM033) ────────────────────────────────────────
 
@@ -497,6 +504,9 @@ class App(tk.Tk):
         self._pl_state     = None      # PipelineState | None
         self._pl_anchors:  list = []   # list of anchor result dicts
         self._pl_offset    = (0.0, 0.0)
+        self._pl_dashboard = None      # PipelineDashboard | None
+        self._pl_mpl_canvas = None     # FigureCanvasTkAgg | None
+        self._pl_dash_mosaic = ""      # mosaic path used to build current dashboard
 
         self._build_ui()
 
@@ -1403,12 +1413,59 @@ class App(tk.Tk):
                       command=self._pl_tree.yview).pack(side="right", fill="y")
         self._pl_tree.configure(yscrollcommand=lambda *a: None)
 
+        # ── Live dashboard ────────────────────────────────────────────────────
+        self._section(inner, "Live Dashboard")
+        if not _MPL_TK_OK:
+            tk.Label(inner, text="matplotlib not installed — dashboard unavailable.",
+                     bg=BG, fg=SUBTEXT, font=("Segoe UI", 9)).pack(anchor="w", padx=12)
+        else:
+            self._pl_dash_frame = tk.Frame(inner, bg=BG2, relief="flat")
+            self._pl_dash_frame.pack(fill="both", expand=True, padx=12, pady=(4, 12))
+            tk.Label(self._pl_dash_frame,
+                     text="Dashboard will appear after Step 1 completes.",
+                     bg=BG2, fg=SUBTEXT, font=("Segoe UI", 9)).pack(pady=20)
+
     # ── Pipeline tab helpers ──────────────────────────────────────────────────
 
     def _pl_browse_dir(self, var: tk.StringVar):
         d = filedialog.askdirectory(title="Select directory")
         if d:
             var.set(d)
+
+    def _pl_refresh_dashboard(self):
+        if not _MPL_TK_OK or not self._pl_records:
+            return
+        try:
+            import spheroid_pipeline as _pl
+        except ImportError:
+            return
+
+        mosaic_path = self._pl_mosaic_path.get().strip()
+        out_dir     = self._pl_out_dir.get().strip()
+
+        if self._pl_mpl_canvas is None or self._pl_dash_mosaic != mosaic_path:
+            # Clear placeholder label
+            for w in self._pl_dash_frame.winfo_children():
+                w.destroy()
+            if self._pl_dashboard is not None:
+                try:
+                    self._pl_dashboard.close()
+                except Exception:
+                    pass
+
+            fig = _MplFigure(figsize=(13, 8), facecolor="#1e1e2e")
+            canvas = _FigCanvas(fig, master=self._pl_dash_frame)
+            canvas.get_tk_widget().pack(fill="both", expand=True)
+            self._pl_mpl_canvas = canvas
+            self._pl_dashboard  = _pl.PipelineDashboard(
+                mosaic_nd2 = Path(mosaic_path) if mosaic_path else None,
+                out_dir    = Path(out_dir) if out_dir else None,
+                fig        = fig,
+            )
+            self._pl_dash_mosaic = mosaic_path
+
+        self._pl_dashboard.update(self._pl_records)
+        self._pl_mpl_canvas.draw()
 
     def _pl_update_table(self):
         for row in self._pl_tree.get_children():
@@ -1459,6 +1516,7 @@ class App(tk.Tk):
             if rank_vals:
                 self.after(0, lambda: self._pl_z_rank.set(rank_vals[0]))
             self.after(0, self._pl_update_table)
+            self.after(0, self._pl_refresh_dashboard)
             msg = f"{len(records)} spheroid(s) detected and ranked."
             self.after(0, lambda: self._pl_screen_lbl.configure(
                 text=msg, fg=GREEN))
@@ -1518,6 +1576,7 @@ class App(tk.Tk):
         _pl.apply_offset(self._pl_records, mean_dx, mean_dy)
         self._pl_offset = (mean_dx, mean_dy)
         self.after(0, self._pl_update_table)
+        self.after(0, self._pl_refresh_dashboard)
         msg = f"Offset applied: dx={mean_dx:+.1f} um  dy={mean_dy:+.1f} um  (from {len(dxs)} anchor(s))"
         self.after(0, lambda: self._pl_offset_lbl.configure(text=msg, fg=GREEN))
         self._pl_log(msg)
@@ -1546,6 +1605,7 @@ class App(tk.Tk):
         try:
             _pl.record_z_centre(self._pl_records, rank, Path(nd2_s), z_half, z_step)
             self.after(0, self._pl_update_table)
+            self.after(0, self._pl_refresh_dashboard)
             rec = next(r for r in self._pl_records if r.rank == rank)
             msg = f"Rank {rank}: z_centre={rec.z_centre_um:.2f} um"
             self.after(0, lambda: self._pl_z_status_lbl.configure(text=msg, fg=GREEN))
@@ -1588,6 +1648,7 @@ class App(tk.Tk):
             except Exception as exc:
                 self._pl_log(f"Rank {r.rank}: bin error — {exc}")
         self.after(0, self._pl_update_table)
+        self.after(0, self._pl_refresh_dashboard)
         msg = f"Bins generated: {n_ok}/{len(self._pl_records)}"
         self.after(0, lambda: self._pl_capture_lbl.configure(text=msg, fg=GREEN))
         self._pl_log(msg)
@@ -1628,6 +1689,7 @@ class App(tk.Tk):
                 rec.nd2_out_path = done.get("nd2_path", rec.nd2_out_path)
                 self._pl_log(f"  Rank {rec.rank}: IMAGED -> {done.get('nd2_path', '?')}")
             self.after(0, self._pl_update_table)
+            self.after(0, self._pl_refresh_dashboard)
 
         done_count = sum(1 for r in ready if r.status == "IMAGED")
         msg = f"Capture queue done: {done_count}/{total} imaged."

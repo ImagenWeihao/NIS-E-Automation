@@ -512,7 +512,8 @@ class PipelineDashboard:
     def __init__(self, mosaic_nd2: Path | None = None,
                  out_dir: Path | None = None,
                  interactive: bool = False,
-                 figsize: tuple = (15, 10)):
+                 figsize: tuple = (15, 10),
+                 fig=None):
         if not _MPL_OK:
             raise ImportError("matplotlib and numpy required for PipelineDashboard")
 
@@ -539,13 +540,17 @@ class PipelineDashboard:
                 print(f"[Dashboard] Mosaic load failed: {exc}")
 
         # Figure
-        if interactive:
-            matplotlib.use("TkAgg")
-            plt.ion()
+        if fig is not None:
+            self._fig = fig
+            self._fig.set_facecolor(_C["bg"])
         else:
-            matplotlib.use("Agg")
+            if interactive:
+                matplotlib.use("TkAgg")
+                plt.ion()
+            else:
+                matplotlib.use("Agg")
+            self._fig = plt.figure(figsize=figsize, facecolor=_C["bg"])
 
-        self._fig = plt.figure(figsize=figsize, facecolor=_C["bg"])
         gs = mgridspec.GridSpec(
             2, 1, figure=self._fig,
             height_ratios=[3, 1], hspace=0.06,
