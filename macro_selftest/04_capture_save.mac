@@ -13,13 +13,13 @@ int main()
 {
     char path[256];
 
-    strcpy(path, "C:/SpheroidPA/work/nd2");
+    strcpy(path, "S:/Images/Weihao/NISeA/NIS-E-Automation/work/nd2");
     strcat(path, "/selftest_capture.nd2");
 
     WaitText(0, "t04 ENTER: click Continue to Capture one frame (camera must be OUT of Live).");
     Capture();
     WaitText(0, "Capture returned. Click Continue to save with ImageSaveAs(path, 14, 0).");
     ImageSaveAs(path, 14, 0);
-    WaitText(0, "ImageSaveAs done.\n\nt04 PASS if a frame was acquired and saved to:\nC:/SpheroidPA/work/nd2/selftest_capture.nd2");
+    WaitText(0, "ImageSaveAs done.\n\nt04 PASS if a frame was acquired and saved to:\nS:/Images/Weihao/NISeA/NIS-E-Automation/work/nd2/selftest_capture.nd2");
     return TRUE;
 }

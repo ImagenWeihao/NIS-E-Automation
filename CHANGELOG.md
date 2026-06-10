@@ -1,5 +1,17 @@
 # CHANGELOG
 
+## v1.3.2 — 2026-06-10
+
+### Work directory redirected to the project share
+Moved the file-flag work dir from `C:\SpheroidPA\work` to
+`S:\Images\Weihao\NISeA\NIS-E-Automation\work` so the GUI and NIS-E can share it across
+machines. Updated both daemons' `#define WORK_DIR`, the GUI Step 1/4 path defaults, the
+self-test macros (`00`/`04`/`05`/`06`), and `verify_trigger_bridge.py`; added `work/` to
+`.gitignore`.
+- **Validate on a network share:** run `macro_selftest/00_io_inifile.mac` after the
+  redirect — `GetPrivateProfileString` (the INI reader behind `Int_GetKeyString`) can cache
+  less promptly on UNC/mapped-drive paths, so confirm the round-trip before a full run.
+
 ## v1.3.1 — 2026-06-10
 
 ### Z Intensity Correction .bin format RESOLVED (the long-standing gating unknown)

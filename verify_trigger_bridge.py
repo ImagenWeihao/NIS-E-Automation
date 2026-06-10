@@ -98,7 +98,7 @@ def make_record(rank: int = 7) -> pl.SpheroidRecord:
     r.z_centre_um   = 384.25
     r.z_half_um     = 18.0
     r.z_step_um     = 2.0
-    r.bin_path      = r"C:\SpheroidPA\work\bins\WellD05_sph07.bin"
+    r.bin_path      = r"S:\Images\Weihao\NISeA\NIS-E-Automation\work\bins\WellD05_sph07.bin"
     return r
 
 

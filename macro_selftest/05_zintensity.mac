@@ -18,7 +18,7 @@ int main()
     char binpath[256];
     int ready;
 
-    strcpy(binpath, "C:/SpheroidPA/work/bins");
+    strcpy(binpath, "S:/Images/Weihao/NISeA/NIS-E-Automation/work/bins");
     strcat(binpath, "/WellD05_sph07.bin");
 
     strcpy(out, "t05 ENTER: open the Z Intensity Control window, then load:\n");

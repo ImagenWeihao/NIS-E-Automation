@@ -1243,15 +1243,15 @@ class App(tk.Tk):
         self._pl_mosaic_path = tk.StringVar()
         # Default to the macro WORK_DIR so Step 3 writes .../work/autofocus and
         # Step 4 writes .../work, matching the daemons out of the box.
-        self._pl_out_dir     = tk.StringVar(value=r"C:\SpheroidPA\work")
+        self._pl_out_dir     = tk.StringVar(value=r"S:\Images\Weihao\NISeA\NIS-E-Automation\work")
         self._pl_well_id     = tk.StringVar(value="")
         self._pl_n_spheroids = tk.StringVar(value="")
         self._pl_z_half      = tk.StringVar(value="18.0")
         self._pl_z_step      = tk.StringVar(value="2.0")
         self._pl_z_rank      = tk.StringVar()
         self._pl_z_nd2_path  = tk.StringVar()
-        self._pl_trigger_dir = tk.StringVar(value=r"C:\SpheroidPA\work")
-        self._pl_nd2_out_dir = tk.StringVar(value=r"C:\SpheroidPA\work\nd2")
+        self._pl_trigger_dir = tk.StringVar(value=r"S:\Images\Weihao\NISeA\NIS-E-Automation\work")
+        self._pl_nd2_out_dir = tk.StringVar(value=r"S:\Images\Weihao\NISeA\NIS-E-Automation\work\nd2")
         self._pl_ch_field    = tk.StringVar(value="CH2LaserPower")
         self._pl_P0          = tk.StringVar(value="15.0")
         self._pl_L_um        = tk.StringVar(value="165.0")

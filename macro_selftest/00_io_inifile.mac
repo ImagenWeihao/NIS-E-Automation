@@ -1,5 +1,5 @@
 // 00_io_inifile.mac -- self-test: file-flag bridge I/O + NIS-E sprintf/atof convention
-// PREREQ: the directory C:\SpheroidPA\work must already exist (Int_SetKeyString
+// PREREQ: the directory S:\Images\Weihao\NISeA\NIS-E-Automation\work must already exist (Int_SetKeyString
 //   cannot create a file in a missing folder). Create it first if ExistFile=0.
 //
 // Confirms three things the production macros depend on:
@@ -9,7 +9,7 @@
 //   3. NIS-E sprintf multi-arg form: args are ONE quoted comma-separated string
 //      of variable names, e.g. sprintf(buf, "%s %.2f", "name,value")
 
-#define TESTDIR "C:/SpheroidPA/work"
+#define TESTDIR "S:/Images/Weihao/NISeA/NIS-E-Automation/work"
 #define SEC     "spheroid"
 
 int main()
@@ -27,7 +27,7 @@ int main()
     Int_SetKeyString(path, SEC, "stage_x", "15234.56");
 
     present = ExistFile(path);
-    sprintf(out, "ExistFile after write = %d  (expect 1; if 0, create C:/SpheroidPA/work first)", present);
+    sprintf(out, "ExistFile after write = %d  (expect 1; if 0, create S:/Images/Weihao/NISeA/NIS-E-Automation/work first)", present);
     WaitText(0, out);
 
     xbuf[0] = 0;

@@ -52,7 +52,7 @@
 // ============================================================================
 
 // ---- CONFIG (edit to match the rig) ----------------------------------------
-#define WORK_DIR        "C:/SpheroidPA/work"
+#define WORK_DIR        "S:/Images/Weihao/NISeA/NIS-E-Automation/work"
 #define SEC             "spheroid"
 #define POLL_SECONDS    1.0
 #define IDLE_TIMEOUT_S  600.0

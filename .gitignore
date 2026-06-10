@@ -31,3 +31,6 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# SpheroidPA runtime work dir (triggers, bins, nd2)
+work/

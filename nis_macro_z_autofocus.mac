@@ -41,7 +41,7 @@
 // ============================================================================
 
 // ---- CONFIG (edit to match the rig) ----------------------------------------
-#define WORK_DIR        "C:/SpheroidPA/work/autofocus"
+#define WORK_DIR        "S:/Images/Weihao/NISeA/NIS-E-Automation/work/autofocus"
 #define SEC             "spheroid"
 #define MAX_RANK        96
 #define IDLE_TIMEOUT_S  300.0
