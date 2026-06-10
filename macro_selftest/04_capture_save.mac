@@ -1,17 +1,25 @@
 // 04_capture_save.mac -- self-test: single capture + ND2 save
 // Validates: Capture, ImageSaveAs
 // Acquires ONE frame and writes it to disk. Camera must NOT be in Live mode.
-
-#define OUT_PATH     "C:/SpheroidPA/work/nd2/selftest_capture.nd2"
-#define SAVE_NDTYPE  14    // 14 = all layers (ND2)
-#define SAVE_NDCOMPR 0     // 0 = lossless
+//
+// Rig-tested notes:
+//   - Do NOT hold a dotted path in a #define ("...nd2" -> "Cannot Evaluate the
+//     Expression" on this build). Build the path with strcpy + strcat literals.
+//   - ImType 14 = All layers (ND2), ImCompr 0 = lossless, passed as int literals.
+//   - If this still errors on ImageSaveAs, Capture() left no current image
+//     -> check the camera is configured and OUT of Live.
 
 int main()
 {
+    char path[256];
+
+    strcpy(path, "C:/SpheroidPA/work/nd2");
+    strcat(path, "/selftest_capture.nd2");
+
     WaitText(0, "t04 ENTER: click Continue to Capture one frame (camera must be OUT of Live).");
     Capture();
-    WaitText(0, "Capture returned. Click Continue to save it with ImageSaveAs.");
-    ImageSaveAs(OUT_PATH, SAVE_NDTYPE, SAVE_NDCOMPR);
+    WaitText(0, "Capture returned. Click Continue to save with ImageSaveAs(path, 14, 0).");
+    ImageSaveAs(path, 14, 0);
     WaitText(0, "ImageSaveAs done.\n\nt04 PASS if a frame was acquired and saved to:\nC:/SpheroidPA/work/nd2/selftest_capture.nd2");
     return TRUE;
 }

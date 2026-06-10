@@ -426,6 +426,48 @@ def _beer_lambert(P0: float, L: float, depth_um: float) -> float:
     return min(P0 * math.exp(depth_um / L), 100.0)
 
 
+# A rig-exported reference .bin supplies the detector/camera identity
+# (hwUnit_Name, DetectorType, ChannelBits) and the per-item device fields
+# (e.g. CH2PMTHighVoltage, iShowFlags, eItemType). Without them NIS-E rejects the
+# bin as "Incompatible Z Correction and Camera" and the panel stays empty. We
+# template off the reference and substitute only ZStack + the laser-power ramp.
+
+_LP_FIELD_CANDIDATES = (
+    "CH2LaserPower", "CH1LaserPower", "CH3LaserPower",
+    "CH4LaserPower", "CH5LaserPower",
+)
+
+
+def load_bin_template(reference_bin: Path) -> tuple:
+    """Parse a rig reference .bin -> (metadata, template_items).
+
+    metadata: root-level scalars (hwUnit_Name, DetectorType, ChannelBits, ...).
+    template_items: per-item field dicts in index order (keeps HV / flags).
+    """
+    import nis_bin_to_csv as _bindec
+    parsed = _bindec.NisBinParser(Path(reference_bin).read_bytes()).parse()
+    root = next(iter(parsed.values()))
+    item_keys = sorted(
+        (k for k in root if k.startswith("Item") and k[4:].isdigit()),
+        key=lambda k: int(k[4:]),
+    )
+    template_items = [dict(root[k]) for k in item_keys]
+    if not template_items:
+        raise ValueError(f"No Item* entries in reference bin: {reference_bin}")
+    metadata = {k: v for k, v in root.items()
+                if not (k.startswith("Item") and k[4:].isdigit())}
+    return metadata, template_items
+
+
+def _detect_lp_field(template_items: list[dict]) -> str:
+    """Pick the laser-power field the reference actually uses (first candidate
+    present and non-zero in any item)."""
+    for cand in _LP_FIELD_CANDIDATES:
+        if any(abs(float(it.get(cand, 0) or 0)) > 1e-9 for it in template_items):
+            return cand
+    return "CH2LaserPower"
+
+
 def _build_bin_items(z_start: float, z_end: float, z_step: float,
                      P0: float, L: float, ch_field: str) -> list[dict]:
     """
@@ -462,10 +504,16 @@ def generate_bin(record: SpheroidRecord,
                  P0_pct: float, L_um: float,
                  ch_field: str,
                  bin_dir: Path,
-                 bin_metadata: dict | None = None) -> Path:
+                 bin_metadata: dict | None = None,
+                 reference_bin: Path | None = None) -> Path:
     """
     Generate a per-spheroid Z Intensity Correction .bin file.
-    ch_field: internal field name, e.g. "CH1LaserPower"
+
+    If reference_bin is given (recommended), the bin inherits that rig export's
+    detector/camera metadata + per-item device fields, and only ZStack and the
+    laser-power ramp are substituted -- this is what NIS-E actually loads. Without
+    it, a bare bin is written (legacy path; NIS-E flags it as "Incompatible Z
+    Correction and Camera").
     Returns the path to the written bin file.
     """
     if record.z_centre_um == 0.0:
@@ -473,11 +521,31 @@ def generate_bin(record: SpheroidRecord,
 
     z_start = round(record.z_centre_um - record.z_half_um, 3)
     z_end   = round(record.z_centre_um + record.z_half_um, 3)
-    items   = _build_bin_items(z_start, z_end, record.z_step_um, P0_pct, L_um, ch_field)
 
     bin_dir.mkdir(parents=True, exist_ok=True)
     out_path = bin_dir / f"{record.spheroid_id}.bin"
-    _write_bin(bin_metadata or {}, items, out_path)
+
+    if reference_bin:
+        metadata, template = load_bin_template(reference_bin)
+        lp_field = _detect_lp_field(template)
+        n = len(template)
+        # Use exactly the reference's item count (sidesteps the 19-item
+        # ROOT_TAIL_U64S constraint); span z_start..z_end inclusive.
+        if n > 1:
+            zs = [round(z_start + i * (z_end - z_start) / (n - 1), 3) for i in range(n)]
+        else:
+            zs = [round((z_start + z_end) / 2.0, 3)]
+        items = []
+        for i, zv in enumerate(zs):
+            it = dict(template[i])          # keep HV / flags / detector fields
+            it["ZStack"] = zv
+            it[lp_field] = round(_beer_lambert(P0_pct, L_um, max(0.0, zv - z_start)), 1)
+            items.append(it)
+        from csv_to_nis_bin import build_bin
+        out_path.write_bytes(build_bin(metadata, items))
+    else:
+        items = _build_bin_items(z_start, z_end, record.z_step_um, P0_pct, L_um, ch_field)
+        _write_bin(bin_metadata or {}, items, out_path)
 
     record.bin_path = str(out_path)
     record.status   = Status.BIN_READY

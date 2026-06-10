@@ -1,5 +1,43 @@
 # CHANGELOG
 
+## v1.3.1 — 2026-06-10
+
+### Z Intensity Correction .bin format RESOLVED (the long-standing gating unknown)
+On-rig testing settled it: the panel's `Load…` filters for **Binary Files (`*.bin`)**, so
+`.bin` *is* the native load format (the macro doc's ".xml" wording is generic). Our
+generated bins were rejected as **"Incompatible Z Correction and Camera"** because they
+carried empty metadata and the wrong device field. A known-good rig export decoded to:
+- metadata `hwUnit_Name=NikonA1Grabber`, `DetectorType=10`, `ChannelBits=2`
+- per item: `CH2PMTHighVoltage=5` (HV2) + `CH2LaserPower` (LP2 ramp), `iShowFlags=521`, `eItemType=3`
+
+The codec is correct — a parse→rebuild of the reference is **byte-identical** (27,552 B).
+
+### `generate_bin` now templates off a rig reference .bin (`spheroid_pipeline.py`)
+- New `reference_bin=` parameter + `load_bin_template()` / `_detect_lp_field()` helpers.
+  The generated bin inherits the reference's detector/camera metadata and per-item HV/flags,
+  substituting only `ZStack` (per-spheroid Z grid) and the Beer-Lambert `CH2LaserPower` ramp.
+  Item count follows the reference (sidesteps the 19-item `ROOT_TAIL_U64S` constraint).
+- Legacy bare-metadata path retained as a fallback (NIS-E flags it incompatible).
+
+### GUI (`spheroid_pa_gui.py`)
+- Step 4 gains a **Reference .bin** file field (passed to `generate_bin`); warns if unset.
+- Default laser field changed `CH1LaserPower` → `CH2LaserPower` (LP2).
+
+### NIS-E daemon (`nis_macro_auto_capture.mac`)
+- `#define CHECK_ZREADY 0` — `ND_ZIntensityControlIsDataReady` is A1/multilaser-only and
+  returns -9 (n/a) on this rig, so the daemon no longer gates capture on it.
+- `#define USE_ZCORR_RUN` switch: `ND_RunZSeriesExpWithZIntensityCorrection()` raised
+  "Cannot Evaluate the Expression" on a non-A1 camera; the daemon can fall back to plain
+  `ND_RunZSeriesExp()` (which runs and saves) for rigs/sessions without the A1 detector.
+
+### Self-test macros (`macro_selftest/`) — full ladder validated on the instrument
+- Build paths with `strcpy`/`strcat` string literals — a `#define` holding a dotted path
+  (`…nd2`) raises "Cannot Evaluate the Expression". `05` opens the panel via `_ND_ZIntensityControl()`;
+  `06` uses plain `ND_RunZSeriesExp()`.
+- Rig verdicts: `00` file-flag bridge **PASS**, `04` capture/save **PASS**, `05` Z-correction
+  calls respond + templated `.bin` loads, `06` Z-series runs and saves **PASS** (after taking the
+  Z drive out of Escape mode). The corrected-run + `IsDataReady` are A1/confocal-only.
+
 ## v1.3 — 2026-06-10
 
 ### NIS-E macros validated on the live instrument (two dialect bugs fixed)

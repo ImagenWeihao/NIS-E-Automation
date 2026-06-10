@@ -1241,18 +1241,21 @@ class App(tk.Tk):
     def _build_pipeline_tab(self, parent):
         # ── Shared instance variables (all handlers reference these) ─────────
         self._pl_mosaic_path = tk.StringVar()
-        self._pl_out_dir     = tk.StringVar()
+        # Default to the macro WORK_DIR so Step 3 writes .../work/autofocus and
+        # Step 4 writes .../work, matching the daemons out of the box.
+        self._pl_out_dir     = tk.StringVar(value=r"C:\SpheroidPA\work")
         self._pl_well_id     = tk.StringVar(value="")
         self._pl_n_spheroids = tk.StringVar(value="")
         self._pl_z_half      = tk.StringVar(value="18.0")
         self._pl_z_step      = tk.StringVar(value="2.0")
         self._pl_z_rank      = tk.StringVar()
         self._pl_z_nd2_path  = tk.StringVar()
-        self._pl_trigger_dir = tk.StringVar()
-        self._pl_nd2_out_dir = tk.StringVar()
-        self._pl_ch_field    = tk.StringVar(value="CH1LaserPower")
+        self._pl_trigger_dir = tk.StringVar(value=r"C:\SpheroidPA\work")
+        self._pl_nd2_out_dir = tk.StringVar(value=r"C:\SpheroidPA\work\nd2")
+        self._pl_ch_field    = tk.StringVar(value="CH2LaserPower")
         self._pl_P0          = tk.StringVar(value="15.0")
         self._pl_L_um        = tk.StringVar(value="165.0")
+        self._pl_ref_bin     = tk.StringVar()
 
         # ── Outer layout: sidebar | step content | data panel ─────────────────
         outer = tk.Frame(parent, bg=BG)
@@ -1451,6 +1454,17 @@ class App(tk.Tk):
                      font=("Segoe UI", 9)).pack(side="left", fill="x", expand=True, padx=(0, 6))
             self._btn(row_, "Browse",
                       lambda v=var: self._pl_browse_dir(v), SURFACE2, TEXT, side="left")
+        ref_row = tk.Frame(s4, bg=BG); ref_row.pack(fill="x", pady=2)
+        tk.Label(ref_row, text="Reference .bin:", width=20, anchor="w",
+                 bg=BG, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left")
+        tk.Entry(ref_row, textvariable=self._pl_ref_bin, bg=SURFACE, fg=TEXT,
+                 insertbackground=TEXT, relief="flat",
+                 font=("Segoe UI", 9)).pack(side="left", fill="x", expand=True, padx=(0, 6))
+        self._btn(ref_row, "Browse",
+                  lambda: self._pl_browse_bin(self._pl_ref_bin), SURFACE2, TEXT, side="left")
+        tk.Label(s4, text="(rig-exported Z-correction .bin — supplies detector/camera identity "
+                          "so NIS-E accepts generated bins)",
+                 bg=BG, fg=SUBTEXT, font=("Segoe UI", 8)).pack(anchor="w", padx=2)
         lp_row = tk.Frame(s4, bg=BG); lp_row.pack(fill="x", pady=2)
         for lbl, var in [("Laser channel field:", self._pl_ch_field),
                           ("P0 (%):", self._pl_P0),
@@ -1511,6 +1525,13 @@ class App(tk.Tk):
         d = filedialog.askdirectory(title="Select directory")
         if d:
             var.set(d)
+
+    def _pl_browse_bin(self, var: tk.StringVar):
+        p = filedialog.askopenfilename(
+            title="Select rig reference .bin",
+            filetypes=[("NIS-E Z-correction bin", "*.bin"), ("All files", "*.*")])
+        if p:
+            var.set(p)
 
     def _pl_show_step(self, key: str):
         for k, frame in self._pl_step_frames.items():
@@ -1832,13 +1853,20 @@ class App(tk.Tk):
             L_um  = float(self._pl_L_um.get())
         except ValueError:
             messagebox.showerror("Bad value", "P0 and L must be numbers."); return
-        ch_field = self._pl_ch_field.get().strip() or "CH1LaserPower"
+        ch_field = self._pl_ch_field.get().strip() or "CH2LaserPower"
+        ref_s   = self._pl_ref_bin.get().strip()
+        ref_bin = Path(ref_s) if ref_s else None
+        if ref_bin and not ref_bin.exists():
+            self._pl_log(f"Reference .bin not found: {ref_bin}"); ref_bin = None
+        if ref_bin is None:
+            self._pl_log("WARNING: no reference .bin set — generated bins will be flagged "
+                         "'Incompatible Z Correction and Camera' by NIS-E. Browse a rig export.")
         n_ok = 0
         for r in self._pl_records:
             if r.z_centre_um == 0.0:
                 self._pl_log(f"Rank {r.rank}: skipping bin — Z not recorded"); continue
             try:
-                _pl.generate_bin(r, P0, L_um, ch_field, bin_dir)
+                _pl.generate_bin(r, P0, L_um, ch_field, bin_dir, reference_bin=ref_bin)
                 n_ok += 1
                 self._pl_log(f"Rank {r.rank}: bin written → {Path(r.bin_path).name}")
             except Exception as exc:

@@ -60,11 +60,17 @@
 #define ZTYPE_BOTTOMTOP 0     // ND_SetZSeriesExp type: absolute bottom-top
 #define MOVE_ABSOLUTE   0     // StgMoveXY relative flag
 #define DR_OK           1     // Stg* success return code
-#define CHECK_ZREADY    1     // 1 = abort if Z-intensity data not ready
+#define CHECK_ZREADY    0     // ND_ZIntensityControlIsDataReady is A1/multilaser-only;
+                              // on this rig it returns -9 (n/a), so do not gate on it.
 
 // ImageSaveAs: ImType 14 = all layers (ND2); ImCompr 0 = lossless.
 #define SAVE_NDTYPE     14
 #define SAVE_NDCOMPR    0
+
+// 1 = ND_RunZSeriesExpWithZIntensityCorrection (requires the A1/confocal detector);
+// 0 = plain ND_RunZSeriesExp. The corrected run gave "Cannot Evaluate the Expression"
+// on a non-A1 camera (panel showed "Incompatible Z Correction and Camera").
+#define USE_ZCORR_RUN   1
 
 global char Trigger_Path[256];
 global char Done_Path[256];
@@ -163,8 +169,15 @@ int process_trigger()
 
     SetCommandText("SpheroidPA capture: running Z-series with Z-intensity correction");
 
-    // Run the Z-stack with Z intensity correction, then save as ND2.
-    ND_RunZSeriesExpWithZIntensityCorrection();
+    // Run the Z-stack (corrected on A1, else plain), then save as ND2.
+    if( USE_ZCORR_RUN == 1 )
+    {
+        ND_RunZSeriesExpWithZIntensityCorrection();
+    }
+    else
+    {
+        ND_RunZSeriesExp();
+    }
     ImageSaveAs(nd2_out, SAVE_NDTYPE, SAVE_NDCOMPR);
 
     write_done(rank_buf, spheroid_id, nd2_out, "ok");

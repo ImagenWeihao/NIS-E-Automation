@@ -49,9 +49,17 @@ If you want different paths, edit the macro `#define WORK_DIR` lines to match �
 ### 0.3 NIS-E hardware / acquisition config (do BEFORE running any macro)
 - Switch the turret to the **20X objective**.
 - **XY + Z stages** connected, initialized, in automatic mode.
+- **Z drive must NOT be in Escape mode** — otherwise the Z-series warns *"Z Drive is in
+  Escape mode, Z movement is not available"* and only a single plane is captured. Press
+  Escape/Return to send the focus drive back to its working position first.
 - Camera **not in Live** (capture/run functions freeze if Live is on).
 - Open **Acquire ▸ ND Acquisition** and configure channels.
-- For capture (Step 4): enable **Z Intensity Correction** in the ND Acquisition dialog.
+- For corrected capture (Step 4): enable **Z Intensity Correction** in the ND Acquisition
+  dialog, and select the **A1/confocal detector** — the Z-intensity-*corrected* run
+  (`ND_RunZSeriesExpWithZIntensityCorrection`) and `ND_ZIntensityControlIsDataReady` are
+  A1/multilaser-only. On a non-A1 camera the panel shows "Incompatible Z Correction and
+  Camera"; set `#define USE_ZCORR_RUN 0` in `nis_macro_auto_capture.mac` for a plain
+  (uncorrected) Z-series.
 - Autofocus (Step 3) assumes brightfield (criterion 0). For fluorescence, set
   `#define AF_CRITERION 2` in `nis_macro_z_autofocus.mac`.
 
@@ -135,16 +143,22 @@ The 10X mosaic and the live 20X session use different stage origins; this measur
 
 ### Step 4 — Generate Bins + Capture
 1. Set **Trigger dir** = `C:\SpheroidPA\work`, **ND2 output dir** = `C:\SpheroidPA\work\nd2`.
-2. Set **Laser channel field** (e.g. `CH1LaserPower`), **P0 (%)**, **L (um)** for the Beer-Lambert ramp.
-3. Click **Generate All Bins** → per-spheroid `.bin` Z-intensity profiles (status → `BIN_READY`).
-   *Note:* `csv_to_nis_bin.py` is currently hardcoded for **19 items**; pick `z_half`/`z_step`
-   so `(2*z_half/z_step)+1 == 19` (e.g. z_half=18, z_step=2) until that TODO is generalized.
-4. In **NIS-E**: **Macro ▸ Run** `nis_macro_auto_capture.mac`. Status bar shows
-   *"…polling for spheroid_trigger.ini"* (600 s idle timeout).
-5. In the GUI: click **Start Capture Queue**. It triggers one spheroid at a time, each row
+2. Set the **Reference .bin** to a rig-exported Z-correction `.bin` (Z Intensity Correction
+   panel ▸ `Save…`). **Required** — it supplies the detector/camera identity
+   (`hwUnit_Name`, `DetectorType`, `ChannelBits`) and the `HV2`/flags fields. Without it,
+   generated bins are rejected as *"Incompatible Z Correction and Camera"* and the panel
+   stays empty. Generated bins inherit that identity and substitute only Z + the LP2 ramp.
+3. Set **Laser channel field** (`CH2LaserPower` = LP2 on the A1), **P0 (%)**, **L (um)** for
+   the Beer-Lambert ramp.
+4. Click **Generate All Bins** → per-spheroid `.bin` profiles (status → `BIN_READY`). The item
+   count follows the reference bin (e.g. 19), so `z_half`/`z_step` no longer need to hit 19 exactly.
+5. In **NIS-E**: **Macro ▸ Run** `nis_macro_auto_capture.mac`. Status bar shows
+   *"…polling for spheroid_trigger.ini"* (600 s idle timeout). For corrected capture, be on the
+   A1 detector; otherwise set `#define USE_ZCORR_RUN 0` (plain run).
+6. In the GUI: click **Start Capture Queue**. It triggers one spheroid at a time, each row
    going **Imaging…**, and blocks up to 10 min per spheroid for the macro's `done`.
-6. Per spheroid the macro: loads the `.bin` Z-intensity correction, programs an absolute
-   bottom-top Z-series around `z_centre`, moves XY, runs the Z-series with correction, saves the ND2.
+7. Per spheroid the macro: loads the `.bin` correction, programs an absolute bottom-top
+   Z-series around `z_centre`, moves XY, runs the Z-series (corrected on A1, else plain), saves the ND2.
 - **Success:** every row reaches **IMAGED**, "Capture queue done: N/N imaged", and
   `pipeline_state.csv` is written. ND2s land in `...\work\nd2`.
 
@@ -169,8 +183,13 @@ The 10X mosaic and the live 20X session use different stage origins; this measur
   (wrong line endings / missing `[spheroid]` header). Run `verify_trigger_bridge.py`; it must PASS.
 - **GUI capture queue times out (no `done.ini` in 10 min)** → macro not running, or it hit its
   idle timeout and exited. Re-run the macro, then click the GUI button.
-- **`zcorr_not_ready` in done status** → Z Intensity Correction not enabled/ready in ND Acquisition;
-  enable it, or set `#define CHECK_ZREADY 0` in `nis_macro_auto_capture.mac` if the rig
-  always returns not-ready.
-- **Bin looks malformed** → item count ≠ 19 (see Step 4 note).
+- **`zcorr_not_ready` in done status** → `ND_ZIntensityControlIsDataReady` is A1/multilaser-only
+  and returns -9 on other rigs. `CHECK_ZREADY` is already `0` so the daemon won't gate on it.
+- **Generated bin shows "Incompatible Z Correction and Camera" / panel stays empty** → the bin
+  lacks the rig detector identity. Set the **Reference .bin** (Step 4) to a rig `Save…` export;
+  generated bins then inherit `NikonA1Grabber`/`DetectorType`/`ChannelBits` and load.
+- **"Z Drive is in Escape mode, Z movement is not available"** → the focus drive is parked in
+  Escape; press Escape/Return to its working position, then re-run. (Not a macro error.)
+- **"Cannot Evaluate the Expression" on `ND_RunZSeriesExpWithZIntensityCorrection`** → corrected
+  run needs the A1 detector. Use the A1 camera, or set `#define USE_ZCORR_RUN 0` for a plain run.
 - Camera in **Live** mode → capture/run freezes. Take it out of Live.

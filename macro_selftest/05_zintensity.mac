@@ -2,29 +2,35 @@
 // Validates the FLAGGED-UNCERTAIN chain in nis_macro_auto_capture.mac:
 //   EnableZIntensityControl, ND_ZIntensityControlLoad, ND_ZIntensityControlIsDataReady
 //
-// This is the single most important call to verify on the real rig: the docs
-// loaders are ND_ZIntensityControlLoad(.xml) / ND_ReuseZIntensityCorr(.nd2),
-// neither lists .bin. This test answers "does Load accept our .bin?".
+// Most important call to verify on the real rig: the docs loaders are
+// ND_ZIntensityControlLoad(.xml) / ND_ReuseZIntensityCorr(.nd2), neither lists
+// .bin. This test answers "does Load accept our .bin?".
 //
 // PREREQ:
 //   1. Enable Z Intensity Correction in the ND Acquisition dialog.
-//   2. Generate a .bin via the GUI (Step 4) and set BIN_PATH below to it.
-
-#define BIN_PATH "C:/SpheroidPA/work/bins/WellD05_sph07.bin"
+//   2. Generate a .bin via the GUI (Step 4); EDIT the strcat below to its name.
+// NOTE: paths are built with strcpy+strcat literals (a dotted #define fails
+//   "Cannot Evaluate the Expression" on this build).
 
 int main()
 {
     char out[256];
+    char binpath[256];
     int ready;
 
-    strcpy(out, "t05 ENTER: EnableZIntensityControl(1), then load:\n");
-    strcat(out, BIN_PATH);
+    strcpy(binpath, "C:/SpheroidPA/work/bins");
+    strcat(binpath, "/WellD05_sph07.bin");
+
+    strcpy(out, "t05 ENTER: open the Z Intensity Control window, then load:\n");
+    strcat(out, binpath);
     WaitText(0, out);
 
+    // Open the Z Intensity Control window so we can SEE whether the load populates it.
+    _ND_ZIntensityControl();
     EnableZIntensityControl(1);
-    WaitText(0, "EnableZIntensityControl(1) called. Click Continue to ND_ZIntensityControlLoad the .bin.");
+    WaitText(0, "Window opened + EnableZIntensityControl(1). Click Continue to load the file.\nWATCH the panel: does a Z-vs-power ramp appear after the next step?");
 
-    ND_ZIntensityControlLoad(BIN_PATH);
+    ND_ZIntensityControlLoad(binpath);
     WaitText(0, "ND_ZIntensityControlLoad called.\nWATCH for any NIS-E error about the .bin format -- that is the key result.");
 
     ready = ND_ZIntensityControlIsDataReady();
