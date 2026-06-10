@@ -1,5 +1,16 @@
 # CHANGELOG
 
+## v1.3.3 — 2026-06-10
+
+### Fix: daemons couldn't use the hyphenated work path via #define
+The v1.3.2 redirect put `NIS-E-Automation` in the path, and this NIS-E build's `#define`
+preprocessor *evaluates* its value — so `#define WORK_DIR ".../NIS-E-Automation/work"`
+raised "Cannot Evaluate the Expression" (the `-` parsed as subtraction). Both daemons now
+inline the work dir as a **direct string literal** in their path builders (direct literals
+are not evaluated; only `#define` values are). `00_io_inifile.mac` likewise. Confirmed on
+the rig: test 00 passes with the share path. (04/05/06 and the GUI already used direct
+literals / Python strings, so were unaffected.)
+
 ## v1.3.2 — 2026-06-10
 
 ### Work directory redirected to the project share

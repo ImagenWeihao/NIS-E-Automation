@@ -52,7 +52,10 @@
 // ============================================================================
 
 // ---- CONFIG (edit to match the rig) ----------------------------------------
-#define WORK_DIR        "S:/Images/Weihao/NISeA/NIS-E-Automation/work"
+// NOTE: the work dir is inlined as a direct string literal in build_paths() below.
+// A #define whose value contains '-' (NIS-E-Automation) or '.' raises "Cannot
+// Evaluate the Expression" on this NIS-E build, so it cannot be a #define. Keep the
+// two literals in build_paths() in sync and equal to the GUI Trigger dir.
 #define SEC             "spheroid"
 #define POLL_SECONDS    1.0
 #define IDLE_TIMEOUT_S  600.0
@@ -78,9 +81,9 @@ global char Done_Path[256];
 // ---- build the trigger/done paths from WORK_DIR ----------------------------
 int build_paths()
 {
-    strcpy(Trigger_Path, WORK_DIR);
+    strcpy(Trigger_Path, "S:/Images/Weihao/NISeA/NIS-E-Automation/work");
     strcat(Trigger_Path, "/spheroid_trigger.ini");
-    strcpy(Done_Path, WORK_DIR);
+    strcpy(Done_Path, "S:/Images/Weihao/NISeA/NIS-E-Automation/work");
     strcat(Done_Path, "/spheroid_done.ini");
     return TRUE;
 }

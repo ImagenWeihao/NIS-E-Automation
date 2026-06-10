@@ -9,7 +9,9 @@
 //   3. NIS-E sprintf multi-arg form: args are ONE quoted comma-separated string
 //      of variable names, e.g. sprintf(buf, "%s %.2f", "name,value")
 
-#define TESTDIR "S:/Images/Weihao/NISeA/NIS-E-Automation/work"
+// NOTE: the work path is a DIRECT string literal, not a #define. On this build a
+// #define whose value contains '-' or '.' (e.g. NIS-E-Automation, *.nd2) raises
+// "Cannot Evaluate the Expression" -- the preprocessor tries to evaluate the value.
 #define SEC     "spheroid"
 
 int main()
@@ -20,7 +22,7 @@ int main()
     double x;
     int present;
 
-    strcpy(path, TESTDIR);
+    strcpy(path, "S:/Images/Weihao/NISeA/NIS-E-Automation/work");
     strcat(path, "/selftest_io.ini");
 
     DeleteFile(path);

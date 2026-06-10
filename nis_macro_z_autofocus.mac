@@ -41,7 +41,10 @@
 // ============================================================================
 
 // ---- CONFIG (edit to match the rig) ----------------------------------------
-#define WORK_DIR        "S:/Images/Weihao/NISeA/NIS-E-Automation/work/autofocus"
+// NOTE: the work dir is inlined as a direct string literal in the path builders
+// below. A #define whose value contains '-' (NIS-E-Automation) or '.' raises
+// "Cannot Evaluate the Expression" on this NIS-E build, so it cannot be a #define.
+// Keep the literals in sync and equal to <GUI output dir>/autofocus.
 #define SEC             "spheroid"
 #define MAX_RANK        96
 #define IDLE_TIMEOUT_S  300.0
@@ -69,7 +72,7 @@ int build_trigger_path(char *out, int rank)
 {
     char nn[8];
     sprintf(nn, "%02d", "rank");
-    strcpy(out, WORK_DIR);
+    strcpy(out, "S:/Images/Weihao/NISeA/NIS-E-Automation/work/autofocus");
     strcat(out, "/af_trigger_");
     strcat(out, nn);
     strcat(out, ".ini");
@@ -80,7 +83,7 @@ int build_done_path(char *out, int rank)
 {
     char nn[8];
     sprintf(nn, "%02d", "rank");
-    strcpy(out, WORK_DIR);
+    strcpy(out, "S:/Images/Weihao/NISeA/NIS-E-Automation/work/autofocus");
     strcat(out, "/af_done_");
     strcat(out, nn);
     strcat(out, ".ini");
@@ -89,7 +92,7 @@ int build_done_path(char *out, int rank)
 
 int build_nd2_path(char *out, char *spheroid_id)
 {
-    strcpy(out, WORK_DIR);
+    strcpy(out, "S:/Images/Weihao/NISeA/NIS-E-Automation/work/autofocus");
     strcat(out, "/");
     strcat(out, spheroid_id);
     strcat(out, "_af.nd2");
