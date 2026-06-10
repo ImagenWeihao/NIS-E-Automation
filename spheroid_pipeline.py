@@ -170,10 +170,15 @@ def estimate_offset_from_nd2(
     sub10x_nd2: Path,
     records: list[SpheroidRecord],
     out_dir: Path,
-) -> tuple[float, float, float]:
+    expected_rank: int | None = None,
+) -> tuple[float, float, float, int]:
     """
     Run cross_zoom_v2.verify() on one sub-10X nd2.
-    Returns (dx_um, dy_um, ncc_score) or raises ValueError if no match above threshold.
+    Returns (dx_um, dy_um, ncc_score, matched_rank).
+
+    If expected_rank is given, prefer the NCC match for that rank (the spheroid
+    the operator says they navigated to); otherwise use the highest-NCC match
+    across all ranks. Raises ValueError if no match above threshold.
     """
     compat_csv = out_dir / "_czv2_compat.csv"
     _write_czv2_csv(records, compat_csv)
@@ -193,8 +198,12 @@ def estimate_offset_from_nd2(
         raise ValueError(
             f"No NCC match >= {NCC_MIN_ACCEPT} in {sub10x_nd2.name}"
         )
-    best = good[0]
-    return best["offset_x_um"], best["offset_y_um"], best["ncc"]
+    best = None
+    if expected_rank is not None:
+        best = next((m for m in good if int(m["matched_rank"]) == expected_rank), None)
+    if best is None:
+        best = good[0]
+    return best["offset_x_um"], best["offset_y_um"], best["ncc"], int(best["matched_rank"])
 
 
 def apply_offset(records: list[SpheroidRecord], dx: float, dy: float) -> None:
@@ -206,7 +215,164 @@ def apply_offset(records: list[SpheroidRecord], dx: float, dy: float) -> None:
             r.status = Status.VERIFIED
 
 
-# ── Step 3: Z-centre from 20X autofocus nd2 ──────────────────────────────────
+# ── Step 3: Automated autofocus trigger / global registration ─────────────────
+
+AF_TRIGGER_PREFIX = "af_trigger_"
+AF_DONE_PREFIX    = "af_done_"
+
+# NIS-E macros read these files with Int_GetKeyString/Int_GetKeyValue, which
+# require a Windows-style [section] header. parse_ini() ignores the header line
+# (no '='), so the same files round-trip on the Python side.
+INI_SECTION = "spheroid"
+
+
+def trigger_autofocus_all(records: list[SpheroidRecord], work_dir: Path) -> int:
+    """Write per-rank autofocus trigger files for NIS-E macro. Returns count written."""
+    work_dir.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for r in records:
+        p = work_dir / f"{AF_TRIGGER_PREFIX}{r.rank:02d}.ini"
+        lines = [
+            f"[{INI_SECTION}]",
+            f"rank={r.rank}",
+            f"spheroid_id={r.spheroid_id}",
+            f"stage_x={r.verified_x_um}",
+            f"stage_y={r.verified_y_um}",
+        ]
+        p.write_text("\n".join(lines), encoding="utf-8")
+        n += 1
+    return n
+
+
+def poll_autofocus_done(records: list[SpheroidRecord], work_dir: Path) -> dict[int, dict]:
+    """Check for af_done_XX.ini files. Returns {rank: {z_centre_um, nd2_path}}.
+
+    Only ranks the macro reports with status=ok are returned; af_failed /
+    move_failed ranks are skipped so a bad autofocus never sets a z_centre.
+    """
+    done: dict[int, dict] = {}
+    for r in records:
+        p = work_dir / f"{AF_DONE_PREFIX}{r.rank:02d}.ini"
+        if p.exists():
+            d = parse_ini(p.read_text(encoding="utf-8"))
+            if d.get("status", "ok") != "ok":
+                continue
+            try:
+                done[r.rank] = {
+                    "z_centre_um": float(d.get("z_centre", "0")),
+                    "nd2_path":    d.get("nd2_path", ""),
+                }
+            except ValueError:
+                pass
+    return done
+
+
+def apply_autofocus_results(
+    records: list[SpheroidRecord],
+    done_results: dict[int, dict],
+    z_half_um: float,
+    z_step_um: float,
+) -> None:
+    """Store z_centre from autofocus done results into records."""
+    for r in records:
+        if r.rank in done_results:
+            r.z_centre_um = round(done_results[r.rank]["z_centre_um"], 2)
+            r.z_half_um   = z_half_um
+            r.z_step_um   = z_step_um
+            if r.status in (Status.VERIFIED, Status.DETECTED):
+                r.status = Status.Z_KNOWN
+
+
+def global_registration(
+    records: list[SpheroidRecord],
+    mosaic_nd2: Path,
+    out_dir: Path,
+    done_nd2s: dict[int, str],
+) -> dict:
+    """
+    NCC-match each captured 20X ND2 vs mosaic to get precise XY per spheroid.
+    Fit similarity transform across all matches; update verified_x/y on all records.
+    Returns summary dict with n_matched, residuals_um, mean_residual_um, transform.
+    """
+    import math as _math2
+
+    src: list[tuple[float, float]] = []
+    dst: list[tuple[float, float]] = []
+
+    for rank, nd2_path in done_nd2s.items():
+        if not nd2_path:
+            continue
+        rec = next((r for r in records if r.rank == rank), None)
+        if rec is None:
+            continue
+        try:
+            dx, dy, _ncc, _mr = estimate_offset_from_nd2(
+                mosaic_nd2, Path(nd2_path), records, out_dir, expected_rank=rank)
+            src.append((rec.verified_x_um, rec.verified_y_um))
+            dst.append((rec.mosaic_x_um + dx, rec.mosaic_y_um + dy))
+        except (ValueError, Exception):
+            pass
+
+    if not src:
+        raise ValueError("No successful NCC matches for global registration")
+
+    n = len(src)
+
+    try:
+        import numpy as np
+        src_a = np.array(src)
+        dst_a = np.array(dst)
+
+        if n >= 2:
+            from skimage.transform import SimilarityTransform
+            tform = SimilarityTransform()
+            tform.estimate(src_a, dst_a)
+            pred = tform(src_a)
+            residuals = [float(np.linalg.norm(pred[i] - dst_a[i])) for i in range(n)]
+            for r in records:
+                xy_t = tform(np.array([[r.verified_x_um, r.verified_y_um]]))[0]
+                r.verified_x_um = round(float(xy_t[0]), 2)
+                r.verified_y_um = round(float(xy_t[1]), 2)
+            return {
+                "n_matched": n,
+                "residuals_um": residuals,
+                "mean_residual_um": float(np.mean(residuals)),
+                "transform": {
+                    "dx": float(tform.translation[0]),
+                    "dy": float(tform.translation[1]),
+                    "scale": float(tform.scale),
+                    "angle_deg": float(_math2.degrees(tform.rotation)),
+                },
+            }
+        else:
+            ddx = float(dst_a[0, 0] - src_a[0, 0])
+            ddy = float(dst_a[0, 1] - src_a[0, 1])
+            for r in records:
+                r.verified_x_um = round(r.verified_x_um + ddx, 2)
+                r.verified_y_um = round(r.verified_y_um + ddy, 2)
+            return {
+                "n_matched": 1, "residuals_um": [0.0],
+                "mean_residual_um": 0.0,
+                "transform": {"dx": ddx, "dy": ddy},
+            }
+    except ImportError:
+        ddx = sum(d[0] - s[0] for s, d in zip(src, dst)) / n
+        ddy = sum(d[1] - s[1] for s, d in zip(src, dst)) / n
+        for r in records:
+            r.verified_x_um = round(r.verified_x_um + ddx, 2)
+            r.verified_y_um = round(r.verified_y_um + ddy, 2)
+        residuals = [
+            _math2.sqrt((dst[i][0] - src[i][0] - ddx) ** 2 + (dst[i][1] - src[i][1] - ddy) ** 2)
+            for i in range(n)
+        ]
+        return {
+            "n_matched": n, "residuals_um": residuals,
+            "mean_residual_um": sum(residuals) / n,
+            "transform": {"dx": ddx, "dy": ddy},
+        }
+
+
+# ── Step 3: Z-centre from 20X autofocus nd2 (manual fallback) ──────────────────
 
 def _read_nd2_z(nd2_path: Path) -> float:
     """Extract stage Z (µm) from frame 0 of an nd2 file."""
@@ -317,6 +483,7 @@ def write_trigger(record: SpheroidRecord, trigger_dir: Path,
     trigger_path = trigger_dir / TRIGGER_FILENAME
 
     lines = [
+        f"[{INI_SECTION}]",
         f"rank={record.rank}",
         f"spheroid_id={record.spheroid_id}",
         f"stage_x={record.verified_x_um}",

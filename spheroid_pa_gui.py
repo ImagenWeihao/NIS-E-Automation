@@ -1,5 +1,5 @@
 """
-spheroid_pa_gui.py
+spheroid_pa_gui.py  v1.2
 NIS-E Spheroid PA Pipeline — ND2-native I/O
 
 Pipeline:  Job A ND2 → [parse metadata + detect spheroids]
@@ -486,7 +486,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("NIS-E  Spheroid PA Pipeline")
+        self.title("SpheroidPA  v1.2 — NIS-E Spheroid PA Pipeline")
         self.geometry("980x740")
         self.minsize(800, 600)
         self.configure(bg=BG)
@@ -518,13 +518,13 @@ class App(tk.Tk):
     def _build_ui(self):
         hdr = tk.Frame(self, bg=BG2)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="  NIS-E  Spheroid PA Pipeline",
+        tk.Label(hdr, text="  SpheroidPA  v1.2",
                  bg=BG2, fg=MAUVE, font=("Segoe UI", 13, "bold"), pady=8
                  ).pack(side="left")
-        tk.Label(hdr, text="ND2 → Bridge → Job B → Job C  (in-memory)  ",
+        tk.Label(hdr, text="Screen → Anchor → Autofocus → Capture  ",
                  bg=BG2, fg=SUBTEXT, font=("Segoe UI", 8)).pack(side="right")
 
-        self._build_status_strip()
+        self._phase_lbls = {}
 
         style = ttk.Style(self)
         style.theme_use("clam")
@@ -540,21 +540,15 @@ class App(tk.Tk):
         self._nb = nb
 
         tabs = {
-            "cfg":  ("  ⚙  Configuration  ",        tk.Frame(nb, bg=BG)),
-            "all":  ("  🔬  All Spheroids (Bridge)  ", tk.Frame(nb, bg=BG)),
-            "rdy":  ("  🎯  PA-Ready (B+C)  ",         tk.Frame(nb, bg=BG)),
-            "log":  ("  📋  Log  ",                    tk.Frame(nb, bg=BG)),
-            "pipe": ("  🔗  Cross-Zoom Pipeline  ",    tk.Frame(nb, bg=BG)),
+            "pipe": ("  PA Workflow  ", tk.Frame(nb, bg=BG)),
+            "log":  ("  Log  ",         tk.Frame(nb, bg=BG)),
         }
         for key, (label, frame) in tabs.items():
             nb.add(frame, text=label)
             setattr(self, f"_tab_{key}", frame)
 
-        self._build_config_tab(self._tab_cfg)
-        self._build_all_tab(self._tab_all)
-        self._build_ready_tab(self._tab_rdy)
-        self._build_log_tab(self._tab_log)
         self._build_pipeline_tab(self._tab_pipe)
+        self._build_log_tab(self._tab_log)
 
     def _build_status_strip(self):
         strip = tk.Frame(self, bg=BG2, pady=5)
@@ -1219,6 +1213,8 @@ class App(tk.Tk):
         self._log.configure(state="disabled")
 
     def _set_phase(self, key: str, state: str):
+        if key not in self._phase_lbls:
+            return
         colors = {"idle": (SURFACE, SUBTEXT), "running": (PEACH, "#1e1e2e"),
                   "done": (GREEN, "#1e1e2e"),  "error":   (RED, "#1e1e2e")}
         bg, fg = colors.get(state, colors["idle"])
@@ -1243,25 +1239,85 @@ class App(tk.Tk):
     # ── Pipeline tab ──────────────────────────────────────────────────────────
 
     def _build_pipeline_tab(self, parent):
-        canvas = tk.Canvas(parent, bg=BG, highlightthickness=0)
-        sb     = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
-        inner = tk.Frame(canvas, bg=BG)
-        win   = canvas.create_window((0, 0), window=inner, anchor="nw")
-        canvas.bind("<Configure>",
-                    lambda e: canvas.itemconfigure(win, width=e.width))
-        inner.bind("<Configure>",
-                   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        p = dict(padx=12, pady=3)
-
-        # ── Step 1: Screen ────────────────────────────────────────────────────
-        self._section(inner, "Step 1 — Screen 10X Mosaic")
-        f1 = tk.Frame(inner, bg=BG); f1.pack(fill="x", **p)
+        # ── Shared instance variables (all handlers reference these) ─────────
         self._pl_mosaic_path = tk.StringVar()
         self._pl_out_dir     = tk.StringVar()
-        self._pl_well_id     = tk.StringVar(value="WellD05")
+        self._pl_well_id     = tk.StringVar(value="")
+        self._pl_n_spheroids = tk.StringVar(value="")
+        self._pl_z_half      = tk.StringVar(value="18.0")
+        self._pl_z_step      = tk.StringVar(value="2.0")
+        self._pl_z_rank      = tk.StringVar()
+        self._pl_z_nd2_path  = tk.StringVar()
+        self._pl_trigger_dir = tk.StringVar()
+        self._pl_nd2_out_dir = tk.StringVar()
+        self._pl_ch_field    = tk.StringVar(value="CH1LaserPower")
+        self._pl_P0          = tk.StringVar(value="15.0")
+        self._pl_L_um        = tk.StringVar(value="165.0")
+
+        # ── Outer layout: sidebar | step content | data panel ─────────────────
+        outer = tk.Frame(parent, bg=BG)
+        outer.pack(fill="both", expand=True)
+
+        # Left sidebar (fixed width)
+        sidebar = tk.Frame(outer, bg=SURFACE, width=148)
+        sidebar.pack(side="left", fill="y")
+        sidebar.pack_propagate(False)
+
+        # Right-hand panel: spheroid state table only (full height, fixed width)
+        side_panel = tk.Frame(outer, bg=BG2, width=380)
+        side_panel.pack(side="right", fill="y")
+        side_panel.pack_propagate(False)
+
+        # Middle column: step content at top, live dashboard fills the rest
+        middle = tk.Frame(outer, bg=BG)
+        middle.pack(side="left", fill="both", expand=True)
+
+        content_host = tk.Frame(middle, bg=BG)
+        content_host.pack(side="top", fill="x")
+
+        dash_host = tk.Frame(middle, bg=BG)
+        dash_host.pack(side="top", fill="both", expand=True)
+
+        # ── Sidebar step cards ────────────────────────────────────────────────
+        self._pl_step_cards = {}
+        self._pl_step_dots  = {}
+
+        _step_defs = [
+            ("s1", "1", "Screen\nMosaic"),
+            ("s2", "2", "Anchor\nOffset"),
+            ("s3", "3", "Autofocus\n+ Reg"),
+            ("s4", "4", "Generate\n+ Capture"),
+        ]
+
+        for key, num, name in _step_defs:
+            card = tk.Frame(sidebar, bg=BG2, cursor="hand2", padx=6, pady=10)
+            card.pack(fill="x", padx=4, pady=(4, 0))
+
+            num_lbl = tk.Label(card, text=num, bg=BG2, fg=MAUVE,
+                               font=("Segoe UI", 20, "bold"))
+            num_lbl.pack()
+            name_lbl = tk.Label(card, text=name, bg=BG2, fg=TEXT2,
+                                font=("Segoe UI", 8))
+            name_lbl.pack()
+            dot = tk.Label(card, text="*", bg=BG2, fg=SUBTEXT,
+                           font=("Segoe UI", 9))
+            dot.pack()
+
+            self._pl_step_cards[key] = card
+            self._pl_step_dots[key]  = dot
+
+            for w in (card, num_lbl, name_lbl, dot):
+                w.bind("<Button-1>", lambda e, k=key: self._pl_show_step(k))
+
+        # ── Step content frames (one per step, swapped by _pl_show_step) ─────
+        self._pl_step_frames = {}
+        p = dict(padx=12, pady=3)
+
+        # Step 1 content
+        f_s1 = tk.Frame(content_host, bg=BG)
+        self._pl_step_frames["s1"] = f_s1
+
+        f1 = tk.Frame(f_s1, bg=BG); f1.pack(fill="x", **p)
         self._nd2_file_row(f1, "10X mosaic ND2:", self._pl_mosaic_path)
         row_w = tk.Frame(f1, bg=BG); row_w.pack(fill="x", pady=2)
         tk.Label(row_w, text="Well ID:", width=26, anchor="w",
@@ -1274,106 +1330,119 @@ class App(tk.Tk):
                  bg=BG, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left")
         tk.Entry(row_d, textvariable=self._pl_out_dir, bg=SURFACE, fg=TEXT,
                  insertbackground=TEXT, relief="flat",
-                 font=("Segoe UI", 9)).pack(side="left", fill="x", expand=True, padx=(0,6))
+                 font=("Segoe UI", 9)).pack(side="left", fill="x", expand=True, padx=(0, 6))
         self._btn(row_d, "Browse",
                   lambda: self._pl_browse_dir(self._pl_out_dir), SURFACE2, TEXT, side="left")
-        btn1 = tk.Frame(inner, bg=BG); btn1.pack(fill="x", padx=12, pady=(4, 0))
+        row_n = tk.Frame(f1, bg=BG); row_n.pack(fill="x", pady=2)
+        tk.Label(row_n, text="Top N spheroids:", width=26, anchor="w",
+                 bg=BG, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left")
+        tk.Entry(row_n, textvariable=self._pl_n_spheroids, width=6, bg=SURFACE, fg=TEXT,
+                 insertbackground=TEXT, relief="flat",
+                 font=("Segoe UI", 9)).pack(side="left")
+        tk.Label(row_n, text="(leave blank for all)",
+                 bg=BG, fg=SUBTEXT, font=("Segoe UI", 8)).pack(side="left", padx=(6, 0))
+        btn1 = tk.Frame(f_s1, bg=BG); btn1.pack(fill="x", padx=12, pady=(4, 0))
         self._btn(btn1, "Run Screener", self._pl_run_screener_thread, BLUE, "#1e1e2e")
-        self._pl_screen_lbl = tk.Label(inner, text="No spheroids screened yet.",
-                                        bg=BG, fg=SUBTEXT, font=("Segoe UI", 9),
-                                        anchor="w")
+        self._pl_screen_lbl = tk.Label(f_s1, text="No spheroids screened yet.",
+                                        bg=BG, fg=SUBTEXT, font=("Segoe UI", 9), anchor="w")
         self._pl_screen_lbl.pack(fill="x", padx=12)
 
-        # ── Step 2: Anchor offset ─────────────────────────────────────────────
-        self._section(inner, "Step 2 — Anchor Offset (2 sub-10X nd2s)")
-        tk.Label(inner,
-                 text="Navigate stage to suggested anchor rank in NIS-E, capture sub-10X nd2, browse here.",
-                 bg=BG, fg=SUBTEXT, font=("Segoe UI", 8)).pack(anchor="w", padx=12)
+        # Step 2 content
+        f_s2 = tk.Frame(content_host, bg=BG)
+        self._pl_step_frames["s2"] = f_s2
+
+        tk.Label(f_s2,
+                 text="Navigate stage to a spheroid in NIS-E, capture sub-10X nd2, type its rank, browse the nd2.\n"
+                      "Leave rank blank to auto-match by NCC. After Verify, the box shows the actually matched rank.",
+                 bg=BG, fg=SUBTEXT, font=("Segoe UI", 8), justify="left").pack(anchor="w", padx=12, pady=(8, 2))
 
         self._pl_anchor_frames = []
         self._pl_anchor_paths  = []
         self._pl_anchor_ranks  = []
-        anchor_outer = tk.Frame(inner, bg=BG)
+        anchor_outer = tk.Frame(f_s2, bg=BG)
         anchor_outer.pack(fill="x", padx=12, pady=2)
+        _anchor_labels = ["Anchor 1 (required):", "Anchor 2 (optional):"]
         for i in range(2):
             af = tk.Frame(anchor_outer, bg=BG2, relief="flat", pady=4, padx=6)
             af.pack(fill="x", pady=2)
-            tk.Label(af, text=f"Anchor {i+1}:", bg=BG2, fg=LAVENDER,
+            tk.Label(af, text=_anchor_labels[i], bg=BG2, fg=LAVENDER,
                      font=("Segoe UI", 9, "bold")).grid(row=0, column=0, sticky="w")
-            rk_var = tk.StringVar(value="(rank after screener)")
-            tk.Entry(af, textvariable=rk_var, width=8, state="readonly",
-                     bg=SURFACE, fg=TEXT2, relief="flat",
-                     font=("Segoe UI", 9)).grid(row=0, column=1, padx=(4, 0), sticky="w")
+            tk.Label(af, text="Rank:", bg=BG2, fg=TEXT2,
+                     font=("Segoe UI", 8)).grid(row=0, column=1, padx=(8, 2), sticky="e")
+            rk_var = tk.StringVar(value="")
+            tk.Entry(af, textvariable=rk_var, width=5,
+                     bg=SURFACE, fg=TEXT, insertbackground=TEXT, relief="flat",
+                     font=("Segoe UI", 9)).grid(row=0, column=2, padx=(0, 6), sticky="w")
             nd2_var = tk.StringVar()
             tk.Entry(af, textvariable=nd2_var, bg=SURFACE, fg=TEXT,
                      insertbackground=TEXT, relief="flat",
-                     font=("Segoe UI", 9)).grid(row=0, column=2, padx=6, sticky="ew")
-            af.columnconfigure(2, weight=1)
+                     font=("Segoe UI", 9)).grid(row=0, column=3, padx=6, sticky="ew")
+            af.columnconfigure(3, weight=1)
             self._btn(af, "Browse ND2",
                       lambda v=nd2_var: self._browse_nd2(v), SURFACE2, TEXT, side=None,
-                      grid=(0, 3))
+                      grid=(0, 4))
             status_lbl = tk.Label(af, text="not verified",
                                    bg=BG2, fg=SUBTEXT, font=("Segoe UI", 8))
-            status_lbl.grid(row=1, column=0, columnspan=4, sticky="w", pady=(2, 0))
+            status_lbl.grid(row=1, column=0, columnspan=5, sticky="w", pady=(2, 0))
             self._pl_anchor_paths.append(nd2_var)
             self._pl_anchor_ranks.append(rk_var)
             self._pl_anchor_frames.append((af, status_lbl))
 
-        btn2 = tk.Frame(inner, bg=BG); btn2.pack(fill="x", padx=12, pady=(4, 0))
+        btn2 = tk.Frame(f_s2, bg=BG); btn2.pack(fill="x", padx=12, pady=(4, 0))
         self._btn(btn2, "Verify Anchors + Apply Offset",
                   self._pl_verify_anchors_thread, MAUVE, "#1e1e2e")
-        self._pl_offset_lbl = tk.Label(inner, text="Offset: not estimated",
+        self._pl_offset_lbl = tk.Label(f_s2, text="Offset: not estimated",
                                         bg=BG, fg=SUBTEXT, font=("Segoe UI", 9), anchor="w")
         self._pl_offset_lbl.pack(fill="x", padx=12)
 
-        # ── Step 3: Z-centre per spheroid ─────────────────────────────────────
-        self._section(inner, "Step 3 — 20X Z-Centre (one autofocus nd2 per rank)")
-        tk.Label(inner,
-                 text="Navigate to each rank at 20X, run autofocus, capture single-plane nd2, select below.",
-                 bg=BG, fg=SUBTEXT, font=("Segoe UI", 8)).pack(anchor="w", padx=12)
+        # Step 3 content (automated autofocus + global registration)
+        f_s3 = tk.Frame(content_host, bg=BG)
+        self._pl_step_frames["s3"] = f_s3
 
-        z_row = tk.Frame(inner, bg=BG); z_row.pack(fill="x", padx=12, pady=2)
-        tk.Label(z_row, text="Rank:", bg=BG, fg=TEXT2,
-                 font=("Segoe UI", 9)).pack(side="left", padx=(0, 4))
-        self._pl_z_rank = tk.StringVar()
-        self._pl_z_rank_combo = ttk.Combobox(z_row, textvariable=self._pl_z_rank, width=6,
-                                              state="readonly", font=("Segoe UI", 9))
-        self._pl_z_rank_combo.pack(side="left", padx=(0, 8))
-        self._pl_z_nd2_path = tk.StringVar()
-        tk.Entry(z_row, textvariable=self._pl_z_nd2_path, bg=SURFACE, fg=TEXT,
-                 insertbackground=TEXT, relief="flat",
-                 font=("Segoe UI", 9)).pack(side="left", fill="x", expand=True, padx=(0, 6))
-        self._btn(z_row, "Browse ND2",
-                  lambda: self._browse_nd2(self._pl_z_nd2_path), SURFACE2, TEXT, side="left")
-        self._pl_z_half = tk.StringVar(value=str(30.0))
-        self._pl_z_step = tk.StringVar(value=str(2.0))
-        z_params = tk.Frame(inner, bg=BG); z_params.pack(fill="x", padx=12, pady=2)
+        tk.Label(f_s3,
+                 text=("NIS-E macro nis_macro_z_autofocus.mac navigates to each spheroid's\n"
+                       "corrected position, autofocuses, and captures a single-plane 20X ND2.\n"
+                       "After captures complete, global registration refines all coordinates."),
+                 bg=BG, fg=SUBTEXT, font=("Segoe UI", 8), justify="left"
+                 ).pack(anchor="w", padx=12, pady=(8, 4))
+
+        z_params = tk.Frame(f_s3, bg=BG); z_params.pack(fill="x", padx=12, pady=2)
         for lbl, var in [("Z half-range (um):", self._pl_z_half),
-                          ("Z step (um):", self._pl_z_step)]:
+                          ("Z step (um):",       self._pl_z_step)]:
             tk.Label(z_params, text=lbl, bg=BG, fg=TEXT2,
                      font=("Segoe UI", 9)).pack(side="left", padx=(0, 4))
             tk.Entry(z_params, textvariable=var, width=7, bg=SURFACE, fg=TEXT,
                      insertbackground=TEXT, relief="flat",
                      font=("Segoe UI", 9)).pack(side="left", padx=(0, 16))
-        btn3 = tk.Frame(inner, bg=BG); btn3.pack(fill="x", padx=12, pady=(4, 0))
-        self._btn(btn3, "Record Z for Selected Rank",
-                  self._pl_record_z_thread, BLUE, "#1e1e2e")
-        self._pl_z_status_lbl = tk.Label(inner, text="Z-centre: none recorded",
-                                          bg=BG, fg=SUBTEXT, font=("Segoe UI", 9), anchor="w")
-        self._pl_z_status_lbl.pack(fill="x", padx=12)
 
-        # ── Step 4: Bin + capture ─────────────────────────────────────────────
-        self._section(inner, "Step 4 — Generate Bins & Trigger NIS-E Capture")
-        s4 = tk.Frame(inner, bg=BG); s4.pack(fill="x", **p)
-        self._pl_trigger_dir = tk.StringVar()
-        self._pl_nd2_out_dir = tk.StringVar()
-        self._pl_ch_field    = tk.StringVar(value="CH1LaserPower")
-        self._pl_P0          = tk.StringVar(value="15.0")
-        self._pl_L_um        = tk.StringVar(value="165.0")
-        for lbl, var, w_ in [
-            ("Trigger dir:", self._pl_trigger_dir, None),
-            ("ND2 output dir:", self._pl_nd2_out_dir, None),
-        ]:
+        btn3a = tk.Frame(f_s3, bg=BG); btn3a.pack(fill="x", padx=12, pady=(4, 0))
+        self._btn(btn3a, "Trigger NIS-E Autofocus Captures",
+                  self._pl_trigger_autofocus, BLUE, "#1e1e2e")
+        self._pl_af_status_lbl = tk.Label(f_s3, text="Autofocus: not started.",
+                                           bg=BG, fg=SUBTEXT, font=("Segoe UI", 9), anchor="w")
+        self._pl_af_status_lbl.pack(fill="x", padx=12)
+
+        btn3b = tk.Frame(f_s3, bg=BG); btn3b.pack(fill="x", padx=12, pady=(6, 0))
+        self._btn(btn3b, "Refresh Status", self._pl_poll_af_thread, SURFACE2, TEXT)
+        self._btn(btn3b, "Apply Global Registration",
+                  self._pl_global_reg_thread, MAUVE, "#1e1e2e")
+        self._pl_reg_lbl = tk.Label(f_s3, text="Registration: not run.",
+                                     bg=BG, fg=SUBTEXT, font=("Segoe UI", 9), anchor="w")
+        self._pl_reg_lbl.pack(fill="x", padx=12)
+
+        # Z rank/nd2 widgets kept for fallback _pl_record_z handler (no button exposed)
+        self._pl_z_rank_combo = ttk.Combobox(f_s3, textvariable=self._pl_z_rank, width=6,
+                                              state="readonly", font=("Segoe UI", 9))
+        self._pl_z_status_lbl = tk.Label(f_s3, text="", bg=BG, fg=SUBTEXT,
+                                          font=("Segoe UI", 9), anchor="w")
+
+        # Step 4 content
+        f_s4 = tk.Frame(content_host, bg=BG)
+        self._pl_step_frames["s4"] = f_s4
+
+        s4 = tk.Frame(f_s4, bg=BG); s4.pack(fill="x", padx=12, pady=3)
+        for lbl, var in [("Trigger dir:", self._pl_trigger_dir),
+                          ("ND2 output dir:", self._pl_nd2_out_dir)]:
             row_ = tk.Frame(s4, bg=BG); row_.pack(fill="x", pady=2)
             tk.Label(row_, text=lbl, width=20, anchor="w",
                      bg=BG, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left")
@@ -1391,39 +1460,50 @@ class App(tk.Tk):
             tk.Entry(lp_row, textvariable=var, width=14, bg=SURFACE, fg=TEXT,
                      insertbackground=TEXT, relief="flat",
                      font=("Segoe UI", 9)).pack(side="left", padx=(0, 14))
-        btn4 = tk.Frame(inner, bg=BG); btn4.pack(fill="x", padx=12, pady=(6, 2))
-        self._btn(btn4, "Generate All Bins",  self._pl_generate_bins_thread, GREEN,  "#1e1e2e")
+        btn4 = tk.Frame(f_s4, bg=BG); btn4.pack(fill="x", padx=12, pady=(6, 2))
+        self._btn(btn4, "Generate All Bins",   self._pl_generate_bins_thread, GREEN, "#1e1e2e")
         self._btn(btn4, "Start Capture Queue", self._pl_capture_queue_thread, MAUVE, "#1e1e2e")
-        self._pl_capture_lbl = tk.Label(inner, text="Capture: idle",
+        self._pl_capture_lbl = tk.Label(f_s4, text="Capture: idle",
                                          bg=BG, fg=SUBTEXT, font=("Segoe UI", 9), anchor="w")
         self._pl_capture_lbl.pack(fill="x", padx=12)
 
-        # Pipeline state table
-        self._section(inner, "Spheroid State Table")
+        # ── Right panel: spheroid state table (fills the column height) ───────
+        tk.Label(side_panel, text="Spheroid State", bg=BG2, fg=MAUVE,
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=8, pady=(6, 2))
+
+        tbl_frame = tk.Frame(side_panel, bg=BG2)
+        tbl_frame.pack(fill="both", expand=True, padx=4, pady=(0, 6))
+
         cols = ("rank", "id", "status", "verified_xy", "z_centre", "bin")
-        self._pl_tree = ttk.Treeview(inner, columns=cols, show="headings", height=10)
-        hdrs = {"rank": ("Rank", 50), "id": ("ID", 140), "status": ("Status", 90),
-                "verified_xy": ("Verified XY (um)", 160),
-                "z_centre": ("Z-centre (um)", 100), "bin": ("Bin", 200)}
+        self._pl_tree = ttk.Treeview(tbl_frame, columns=cols, show="headings", height=8)
+        hdrs = {"rank": ("Rank", 44), "id": ("ID", 130), "status": ("Status", 86),
+                "verified_xy": ("Verified XY (um)", 140),
+                "z_centre": ("Z (um)", 70), "bin": ("Bin", 150)}
         for c, (h, w_) in hdrs.items():
             self._pl_tree.heading(c, text=h)
             self._pl_tree.column(c, width=w_, minwidth=40, anchor="center")
-        self._pl_tree.pack(fill="both", expand=True, padx=12, pady=(4, 8))
-        ttk.Scrollbar(inner, orient="vertical",
-                      command=self._pl_tree.yview).pack(side="right", fill="y")
-        self._pl_tree.configure(yscrollcommand=lambda *a: None)
+        vsb_tree = ttk.Scrollbar(tbl_frame, orient="vertical", command=self._pl_tree.yview)
+        hsb_tree = ttk.Scrollbar(tbl_frame, orient="horizontal", command=self._pl_tree.xview)
+        self._pl_tree.configure(yscrollcommand=vsb_tree.set, xscrollcommand=hsb_tree.set)
+        vsb_tree.pack(side="right", fill="y")
+        hsb_tree.pack(side="bottom", fill="x")
+        self._pl_tree.pack(side="left", fill="both", expand=True)
 
-        # ── Live dashboard ────────────────────────────────────────────────────
-        self._section(inner, "Live Dashboard")
+        # ── Middle dashboard: fills the large central area below the step form ─
+        tk.Label(dash_host, text="Live Dashboard", bg=BG, fg=MAUVE,
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=12, pady=(8, 2))
         if not _MPL_TK_OK:
-            tk.Label(inner, text="matplotlib not installed — dashboard unavailable.",
+            tk.Label(dash_host, text="matplotlib not installed — dashboard unavailable.",
                      bg=BG, fg=SUBTEXT, font=("Segoe UI", 9)).pack(anchor="w", padx=12)
         else:
-            self._pl_dash_frame = tk.Frame(inner, bg=BG2, relief="flat")
-            self._pl_dash_frame.pack(fill="both", expand=True, padx=12, pady=(4, 12))
+            self._pl_dash_frame = tk.Frame(dash_host, bg=BG2, relief="flat")
+            self._pl_dash_frame.pack(fill="both", expand=True, padx=12, pady=(0, 10))
             tk.Label(self._pl_dash_frame,
                      text="Dashboard will appear after Step 1 completes.",
-                     bg=BG2, fg=SUBTEXT, font=("Segoe UI", 9)).pack(pady=20)
+                     bg=BG2, fg=SUBTEXT, font=("Segoe UI", 9)).pack(pady=4)
+
+        # Select Step 1 by default
+        self._pl_show_step("s1")
 
     # ── Pipeline tab helpers ──────────────────────────────────────────────────
 
@@ -1431,6 +1511,27 @@ class App(tk.Tk):
         d = filedialog.askdirectory(title="Select directory")
         if d:
             var.set(d)
+
+    def _pl_show_step(self, key: str):
+        for k, frame in self._pl_step_frames.items():
+            frame.pack_forget()
+        self._pl_step_frames[key].pack(side="top", fill="x")
+        for k, card in self._pl_step_cards.items():
+            bg = SURFACE2 if k == key else BG2
+            card.configure(bg=bg)
+            for w in card.winfo_children():
+                w.configure(bg=bg)
+
+    def _pl_update_step_dots(self):
+        s1_fg = GREEN if self._pl_records else SUBTEXT
+        s2_fg = GREEN if any(r.status not in ("DETECTED",) for r in self._pl_records) else SUBTEXT
+        s3_fg = GREEN if any(r.status in ("Z_KNOWN", "BIN_READY", "QUEUED", "IMAGING", "IMAGED")
+                             for r in self._pl_records) else SUBTEXT
+        s4_fg = GREEN if any(r.status in ("BIN_READY", "QUEUED", "IMAGING", "IMAGED")
+                             for r in self._pl_records) else SUBTEXT
+        for k, fg in [("s1", s1_fg), ("s2", s2_fg), ("s3", s3_fg), ("s4", s4_fg)]:
+            if k in self._pl_step_dots:
+                self.after(0, lambda lbl=self._pl_step_dots[k], c=fg: lbl.configure(fg=c))
 
     def _pl_refresh_dashboard(self):
         if not _MPL_TK_OK or not self._pl_records:
@@ -1503,12 +1604,19 @@ class App(tk.Tk):
         self._pl_log(f"Screening {Path(nd2).name} ...")
         try:
             records = _pl.screen_mosaic(Path(nd2), Path(out), well)
+            n_str = self._pl_n_spheroids.get().strip()
+            if n_str:
+                try:
+                    records = records[:max(1, int(n_str))]
+                except ValueError:
+                    pass
             self._pl_records = records
-            # Pick 2 random anchor ranks
-            anchors = _pl.pick_anchors(records, n=2)
-            for i, a in enumerate(anchors[:2]):
+            # Suggest the top-ranked spheroids as editable anchor defaults
+            # (records are score-ordered; rank 1 is highest). The operator can
+            # overwrite these with whichever spheroid they actually navigate to.
+            for i in range(min(2, len(records))):
                 if i < len(self._pl_anchor_ranks):
-                    self.after(0, lambda v=a.rank, var=self._pl_anchor_ranks[i]:
+                    self.after(0, lambda v=records[i].rank, var=self._pl_anchor_ranks[i]:
                                var.set(str(v)))
             # Populate rank combobox for Z step
             rank_vals = [str(r.rank) for r in records]
@@ -1521,6 +1629,7 @@ class App(tk.Tk):
             self.after(0, lambda: self._pl_screen_lbl.configure(
                 text=msg, fg=GREEN))
             self._pl_log(msg)
+            self._pl_update_step_dots()
         except Exception as exc:
             self.after(0, lambda: self._pl_screen_lbl.configure(
                 text=f"Error: {exc}", fg=RED))
@@ -1551,16 +1660,26 @@ class App(tk.Tk):
             if not nd2_path:
                 self.after(0, lambda l=lbl: l.configure(
                     text="skipped — no nd2 selected", fg=YELLOW)); continue
-            self._pl_log(f"Verifying anchor {i+1}: {Path(nd2_path).name}")
             try:
-                dx, dy, ncc = _pl.estimate_offset_from_nd2(
-                    Path(mosaic), Path(nd2_path), self._pl_records, Path(out))
+                exp_rank = int(rk_var.get().strip())
+            except ValueError:
+                exp_rank = None
+            self._pl_log(f"Verifying anchor {i+1}: {Path(nd2_path).name}"
+                         + (f" (expected rank {exp_rank})" if exp_rank else " (auto-match)"))
+            try:
+                dx, dy, ncc, matched_rank = _pl.estimate_offset_from_nd2(
+                    Path(mosaic), Path(nd2_path), self._pl_records, Path(out), exp_rank)
                 dxs.append(dx); dys.append(dy)
-                self.after(0, lambda l=lbl, dx_=dx, dy_=dy, n=ncc:
+                self.after(0, lambda v=matched_rank, var=rk_var: var.set(str(v)))
+                mism = (exp_rank is not None and matched_rank != exp_rank)
+                self.after(0, lambda l=lbl, dx_=dx, dy_=dy, n=ncc, mr=matched_rank, mm=mism:
                            l.configure(
-                               text=f"NCC={n:.4f}  dx={dx_:+.1f} um  dy={dy_:+.1f} um",
-                               fg=GREEN))
-                self._pl_log(f"  Anchor {i+1}: NCC={ncc:.4f} dx={dx:+.1f} dy={dy:+.1f} um")
+                               text=(f"matched rank {mr}  NCC={n:.4f}  "
+                                     f"dx={dx_:+.1f} um  dy={dy_:+.1f} um"
+                                     + ("  (differs from typed rank!)" if mm else "")),
+                               fg=(YELLOW if mm else GREEN)))
+                self._pl_log(f"  Anchor {i+1}: matched rank {matched_rank} "
+                             f"NCC={ncc:.4f} dx={dx:+.1f} dy={dy:+.1f} um")
             except ValueError as exc:
                 self.after(0, lambda l=lbl, e=exc: l.configure(
                     text=f"FAILED: {e}", fg=RED))
@@ -1580,6 +1699,7 @@ class App(tk.Tk):
         msg = f"Offset applied: dx={mean_dx:+.1f} um  dy={mean_dy:+.1f} um  (from {len(dxs)} anchor(s))"
         self.after(0, lambda: self._pl_offset_lbl.configure(text=msg, fg=GREEN))
         self._pl_log(msg)
+        self._pl_update_step_dots()
 
     # ── Step 3 handlers ───────────────────────────────────────────────────────
 
@@ -1614,6 +1734,82 @@ class App(tk.Tk):
             self.after(0, lambda: self._pl_z_status_lbl.configure(
                 text=f"Error: {exc}", fg=RED))
             self._pl_log(f"Z record error: {exc}")
+
+    def _pl_trigger_autofocus(self):
+        import spheroid_pipeline as _pl
+        if not self._pl_records:
+            messagebox.showwarning("No records", "Run Steps 1-2 first."); return
+        out = self._pl_out_dir.get().strip()
+        if not out:
+            messagebox.showwarning("No output dir", "Set output directory in Step 1."); return
+        n = _pl.trigger_autofocus_all(self._pl_records, Path(out) / "autofocus")
+        self._pl_log(f"Step 3: {n} autofocus trigger files written to autofocus/")
+        self.after(0, lambda: self._pl_af_status_lbl.configure(
+            text=f"Triggers written for {n} spheroids. Start nis_macro_z_autofocus.mac in NIS-E.",
+            fg=YELLOW))
+
+    def _pl_poll_af_thread(self):
+        threading.Thread(target=self._pl_poll_af, daemon=True).start()
+
+    def _pl_poll_af(self):
+        import spheroid_pipeline as _pl
+        out = self._pl_out_dir.get().strip()
+        if not out or not self._pl_records:
+            return
+        done = _pl.poll_autofocus_done(self._pl_records, Path(out) / "autofocus")
+        try:
+            z_half = float(self._pl_z_half.get())
+            z_step = float(self._pl_z_step.get())
+        except ValueError:
+            z_half, z_step = 18.0, 2.0
+        _pl.apply_autofocus_results(self._pl_records, done, z_half, z_step)
+        n_done  = len(done)
+        n_total = len(self._pl_records)
+        msg = f"{n_done}/{n_total} autofocus captures complete."
+        fg = GREEN if n_done == n_total else (YELLOW if n_done > 0 else SUBTEXT)
+        self.after(0, lambda: self._pl_af_status_lbl.configure(text=msg, fg=fg))
+        self.after(0, self._pl_update_table)
+        self.after(0, self._pl_refresh_dashboard)
+        self._pl_log(f"Step 3 poll: {msg}")
+        self._pl_update_step_dots()
+
+    def _pl_global_reg_thread(self):
+        threading.Thread(target=self._pl_global_reg, daemon=True).start()
+
+    def _pl_global_reg(self):
+        import spheroid_pipeline as _pl
+        out = self._pl_out_dir.get().strip()
+        if not out or not self._pl_records:
+            return
+        done = _pl.poll_autofocus_done(self._pl_records, Path(out) / "autofocus")
+        if not done:
+            self.after(0, lambda: self._pl_reg_lbl.configure(
+                text="No autofocus done files found — run captures first.", fg=RED)); return
+        done_nd2s = {rank: d["nd2_path"] for rank, d in done.items()}
+        mosaic = self._pl_mosaic_path.get().strip()
+        if not mosaic:
+            self.after(0, lambda: self._pl_reg_lbl.configure(
+                text="Set mosaic ND2 path (Step 1).", fg=RED)); return
+        self._pl_log(f"Step 3: running global registration on {len(done_nd2s)} ND2s ...")
+        try:
+            result = _pl.global_registration(
+                self._pl_records, Path(mosaic), Path(out), done_nd2s)
+            n  = result["n_matched"]
+            mr = result["mean_residual_um"]
+            t  = result["transform"]
+            msg = (f"Global reg: {n} matches, mean residual={mr:.1f} um, "
+                   f"dx={t.get('dx', 0):.1f} dy={t.get('dy', 0):.1f} um")
+            if "scale" in t:
+                msg += f" scale={t['scale']:.4f} angle={t.get('angle_deg', 0):.2f}deg"
+            self.after(0, lambda: self._pl_reg_lbl.configure(text=msg, fg=GREEN))
+            self._pl_log(f"Step 3 global reg done: {msg}")
+        except ValueError as e:
+            self.after(0, lambda: self._pl_reg_lbl.configure(
+                text=f"Failed: {e}", fg=RED))
+            self._pl_log(f"Step 3 global reg failed: {e}")
+        self.after(0, self._pl_update_table)
+        self.after(0, self._pl_refresh_dashboard)
+        self._pl_update_step_dots()
 
     # ── Step 4 handlers ───────────────────────────────────────────────────────
 
@@ -1652,6 +1848,7 @@ class App(tk.Tk):
         msg = f"Bins generated: {n_ok}/{len(self._pl_records)}"
         self.after(0, lambda: self._pl_capture_lbl.configure(text=msg, fg=GREEN))
         self._pl_log(msg)
+        self._pl_update_step_dots()
 
     def _pl_capture_queue_thread(self):
         threading.Thread(target=self._pl_capture_queue, daemon=True).start()
@@ -1684,6 +1881,9 @@ class App(tk.Tk):
             if done is None:
                 self._pl_log(f"  Rank {rec.rank}: TIMEOUT — no done.ini in 10 min")
                 rec.status = "FAILED"
+            elif done.get("status", "ok") != "ok":
+                rec.status = "FAILED"
+                self._pl_log(f"  Rank {rec.rank}: macro reported status={done.get('status')}")
             else:
                 rec.status     = "IMAGED"
                 rec.nd2_out_path = done.get("nd2_path", rec.nd2_out_path)
