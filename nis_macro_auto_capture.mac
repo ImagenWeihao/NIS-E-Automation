@@ -97,6 +97,7 @@ int process_trigger()
     char bin_path[256];
     char nd2_out[256];
     char rank_buf[32];
+    char numbuf[64];
     double stage_x, stage_y;
     double z_centre, z_half, z_step;
     double z_top, z_bottom;
@@ -112,11 +113,18 @@ int process_trigger()
     Int_GetKeyString(Trigger_Path, SEC, "bin_path", bin_path, 256);
     Int_GetKeyString(Trigger_Path, SEC, "nd2_out", nd2_out, 256);
 
-    stage_x  = Int_GetKeyValue(Trigger_Path, SEC, "stage_x",  "0");
-    stage_y  = Int_GetKeyValue(Trigger_Path, SEC, "stage_y",  "0");
-    z_centre = Int_GetKeyValue(Trigger_Path, SEC, "z_centre", "0");
-    z_half   = Int_GetKeyValue(Trigger_Path, SEC, "z_half",   "0");
-    z_step   = Int_GetKeyValue(Trigger_Path, SEC, "z_step",   "0");
+    // Read numeric keys as strings + atof. Int_GetKeyValue raises
+    // "Mismatch in dimensions" on this NIS-E build.
+    Int_GetKeyString(Trigger_Path, SEC, "stage_x", numbuf, 64);
+    stage_x = atof(numbuf);
+    Int_GetKeyString(Trigger_Path, SEC, "stage_y", numbuf, 64);
+    stage_y = atof(numbuf);
+    Int_GetKeyString(Trigger_Path, SEC, "z_centre", numbuf, 64);
+    z_centre = atof(numbuf);
+    Int_GetKeyString(Trigger_Path, SEC, "z_half", numbuf, 64);
+    z_half = atof(numbuf);
+    Int_GetKeyString(Trigger_Path, SEC, "z_step", numbuf, 64);
+    z_step = atof(numbuf);
 
     SetCommandText("SpheroidPA capture: loading Z-intensity correction");
 

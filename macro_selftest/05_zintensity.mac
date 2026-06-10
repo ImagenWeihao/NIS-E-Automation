@@ -1,0 +1,35 @@
+// 05_zintensity.mac -- self-test: Z Intensity Correction enable / load / ready
+// Validates the FLAGGED-UNCERTAIN chain in nis_macro_auto_capture.mac:
+//   EnableZIntensityControl, ND_ZIntensityControlLoad, ND_ZIntensityControlIsDataReady
+//
+// This is the single most important call to verify on the real rig: the docs
+// loaders are ND_ZIntensityControlLoad(.xml) / ND_ReuseZIntensityCorr(.nd2),
+// neither lists .bin. This test answers "does Load accept our .bin?".
+//
+// PREREQ:
+//   1. Enable Z Intensity Correction in the ND Acquisition dialog.
+//   2. Generate a .bin via the GUI (Step 4) and set BIN_PATH below to it.
+
+#define BIN_PATH "C:/SpheroidPA/work/bins/WellD05_sph07.bin"
+
+int main()
+{
+    char out[256];
+    int ready;
+
+    strcpy(out, "t05 ENTER: EnableZIntensityControl(1), then load:\n");
+    strcat(out, BIN_PATH);
+    WaitText(0, out);
+
+    EnableZIntensityControl(1);
+    WaitText(0, "EnableZIntensityControl(1) called. Click Continue to ND_ZIntensityControlLoad the .bin.");
+
+    ND_ZIntensityControlLoad(BIN_PATH);
+    WaitText(0, "ND_ZIntensityControlLoad called.\nWATCH for any NIS-E error about the .bin format -- that is the key result.");
+
+    ready = ND_ZIntensityControlIsDataReady();
+    sprintf(out, "ND_ZIntensityControlIsDataReady = %d", "ready");
+    WaitText(0, out);
+    WaitText(0, "t05 PASS if the Z-correction panel shows the loaded profile.\nIf ready=0 on this rig, set CHECK_ZREADY 0 in nis_macro_auto_capture.mac.");
+    return TRUE;
+}

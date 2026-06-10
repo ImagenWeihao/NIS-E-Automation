@@ -1,0 +1,44 @@
+// 00_io_inifile.mac -- self-test: file-flag bridge I/O + NIS-E sprintf/atof convention
+// PREREQ: the directory C:\SpheroidPA\work must already exist (Int_SetKeyString
+//   cannot create a file in a missing folder). Create it first if ExistFile=0.
+//
+// Confirms three things the production macros depend on:
+//   1. Int_SetKeyString / Int_GetKeyString / ExistFile / DeleteFile
+//   2. atof() to turn a string key into a number (replaces Int_GetKeyValue,
+//      which raised "Mismatch in dimensions" on this build)
+//   3. NIS-E sprintf multi-arg form: args are ONE quoted comma-separated string
+//      of variable names, e.g. sprintf(buf, "%s %.2f", "name,value")
+
+#define TESTDIR "C:/SpheroidPA/work"
+#define SEC     "spheroid"
+
+int main()
+{
+    char path[256];
+    char xbuf[64];
+    char out[256];
+    double x;
+    int present;
+
+    strcpy(path, TESTDIR);
+    strcat(path, "/selftest_io.ini");
+
+    DeleteFile(path);
+    Int_SetKeyString(path, SEC, "stage_x", "15234.56");
+
+    present = ExistFile(path);
+    sprintf(out, "ExistFile after write = %d  (expect 1; if 0, create C:/SpheroidPA/work first)", present);
+    WaitText(0, out);
+
+    xbuf[0] = 0;
+    Int_GetKeyString(path, SEC, "stage_x", xbuf, 64);
+    x = atof(xbuf);
+
+    // Multi-arg sprintf: the args are a single quoted comma-separated name list.
+    sprintf(out, "stage_x string = %s    atof = %.2f", "xbuf,x");
+    WaitText(0, out);
+
+    DeleteFile(path);
+    WaitText(0, "t00 done.  PASS if string = 15234.56 and atof = 15234.56");
+    return TRUE;
+}

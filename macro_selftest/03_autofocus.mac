@@ -1,0 +1,33 @@
+// 03_autofocus.mac -- self-test: two-pass software autofocus  (MOVES Z to search)
+// Validates the focus core of nis_macro_z_autofocus.mac:
+//   StgFocusSetCriterion, StgFocusInRangeTwoPasses, StgGetAbsPosZ
+// CAUTION: this drives Z to find focus. Be in a state where a small Z sweep is
+// safe (objective clear of the sample). Range kept intentionally small.
+
+#define AF_RANGE       100.0   // total Z sweep window (um)
+#define AF_COARSE_STEP 20.0
+#define AF_FINE_STEP   3.0
+#define AF_CRITERION   0       // 0=brightfield, 2=fluorescence, 3=noise-resistant
+
+int main()
+{
+    char out[256];
+    double z_before, z_after, half;
+    int rc;
+
+    half = AF_RANGE / 2.0;
+    z_before = 0;
+    StgGetAbsPosZ(&z_before);
+    sprintf(out, "t03 ENTER: Z before = %.3f um. Will autofocus over +/-%.0f um. Continue to start.", "z_before,half");
+    WaitText(0, out);
+
+    StgFocusSetCriterion(AF_CRITERION);
+    rc = StgFocusInRangeTwoPasses(AF_RANGE, AF_COARSE_STEP, AF_FINE_STEP);
+
+    z_after = 0;
+    StgGetAbsPosZ(&z_after);
+    sprintf(out, "StgFocusInRangeTwoPasses returned %d (1=success)   Z after = %.3f um (was %.3f)", "rc,z_after,z_before");
+    WaitText(0, out);
+    WaitText(0, "t03 PASS if NIS-E performed a focus sweep and returned a value.");
+    return TRUE;
+}

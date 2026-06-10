@@ -1,5 +1,52 @@
 # CHANGELOG
 
+## v1.3 — 2026-06-10
+
+### NIS-E macros validated on the live instrument (two dialect bugs fixed)
+Ran isolated probe macros on the real NIS-E and read the interpreter errors. Both
+production daemons had latent bugs that would have failed on the first real run
+(the macros had never actually been executed — STATE was `not_started`):
+- **`Int_GetKeyValue(...)` raised "Mismatch in dimensions"** despite matching the
+  documented signature. Replaced all 7 numeric-key reads (`nis_macro_auto_capture.mac`
+  ×5: stage_x/y, z_centre, z_half, z_step; `nis_macro_z_autofocus.mac` ×2: stage_x/y)
+  with `Int_GetKeyString` + `atof()`.
+- **`sprintf` is not C-variadic** — signature is `sprintf(buf, fmt, args)` and multiple
+  args raise "Bad Number of Parameters". Args must be **one quoted comma-separated string
+  of variable names**, e.g. `sprintf(buf, "%s %.2f", "name,value")`. Fixed every multi-arg
+  `sprintf` (and pre-compute expressions/#defines into variables first).
+- Confirmed `.mac` files must be **CRLF** (an LF-only file makes the first `//` comment
+  swallow the whole file and it silently no-ops) and pure ASCII.
+- The documented XY-position reader is **`StgGetPosXY(&x, &y)`**, not `StgGetPos`
+  (which gives "Bad Number of Parameters"); the Z reader is `StgGetAbsPosZ(&z)`.
+
+### Added — `macro_selftest/` on-instrument probe ladder
+Seven isolated, `WaitText`-instrumented test macros (`00_io_inifile` … `06_zseries`) to
+confirm NIS-E actually responds to every call the daemons make, **before** a real
+experiment. Run in order; a silent/partial file pinpoints the exact call this rig rejects.
+Destructive calls are made safe (XY moves to current position; tiny Z ranges). `05` is the
+key check: whether `ND_ZIntensityControlLoad` accepts the pipeline's `.bin`. See its README.
+
+### Added — `verify_trigger_bridge.py` (offline bridge proof)
+Round-trips real trigger files (from the actual `spheroid_pipeline` writers) through the
+Win32 `GetPrivateProfileString` API — the exact call `Int_GetKeyString`/`Int_GetKeyValue`
+wrap inside NIS-E — in both directions. `RESULT: PASS` means a live macro reads identical
+values. Confirmed all keys round-trip.
+
+### Changed — robust trigger writers (`spheroid_pipeline.py`)
+`write_trigger` and `trigger_autofocus_all` now write via `_atomic_write_crlf`: explicit
+CRLF (not OS-dependent text-mode translation) and an `os.replace` rename so the polling
+daemon never reads a half-written file.
+
+### Removed — `nis_macro_20x_capture.mac`
+Hallucinated/orphaned: built on ~10 nonexistent functions (`Stg_MoveXY`, `NdCapture`,
+`Doc_SaveAs`, `InputBox`, `FileReadLine`, `StrSplit`, `ND_SetZSeriesRange`, …) and not
+invoked by any Python. The real bridge is the two trigger daemons. Cleaned up the dangling
+references in `CLAUDE.md` and `cross_zoom_register.py`.
+
+### Added — `END_TO_END_TEST.md`
+Full operator guide: one-time setup, a hardware-free rehearsal, and the GUI Step 1–4 ⇄
+NIS-E run, with success criteria and the silent-failure troubleshooting table.
+
 ## v1.2 — 2026-06-10
 
 ### NIS-E macros — full rewrite against the official API

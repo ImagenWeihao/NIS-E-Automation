@@ -17,6 +17,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
 import random
 import time
 from datetime import datetime
@@ -226,6 +227,20 @@ AF_DONE_PREFIX    = "af_done_"
 INI_SECTION = "spheroid"
 
 
+def _atomic_write_crlf(path: Path, lines: list[str]) -> None:
+    """Write an INI file with explicit CRLF endings, atomically.
+
+    CRLF: GetPrivateProfileString (which NIS-E Int_GetKeyString/Value wrap)
+    only parses Windows-style line endings reliably -- don't rely on the OS
+    text-mode translation in Path.write_text, which is a no-op off Windows.
+    Atomic: the NIS-E daemon polls for the file by name, so an os.replace
+    rename guarantees it only ever sees a fully-written file, never a partial.
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8", newline="")
+    os.replace(tmp, path)
+
+
 def trigger_autofocus_all(records: list[SpheroidRecord], work_dir: Path) -> int:
     """Write per-rank autofocus trigger files for NIS-E macro. Returns count written."""
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -239,7 +254,7 @@ def trigger_autofocus_all(records: list[SpheroidRecord], work_dir: Path) -> int:
             f"stage_x={r.verified_x_um}",
             f"stage_y={r.verified_y_um}",
         ]
-        p.write_text("\n".join(lines), encoding="utf-8")
+        _atomic_write_crlf(p, lines)
         n += 1
     return n
 
@@ -495,7 +510,7 @@ def write_trigger(record: SpheroidRecord, trigger_dir: Path,
         f"nd2_out={nd2_out}",
         f"timestamp={datetime.now().isoformat(timespec='seconds')}",
     ]
-    trigger_path.write_text("\n".join(lines), encoding="utf-8")
+    _atomic_write_crlf(trigger_path, lines)
 
     record.nd2_out_path = str(nd2_out)
     record.status       = Status.QUEUED

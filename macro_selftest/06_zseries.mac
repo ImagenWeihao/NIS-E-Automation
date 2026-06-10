@@ -1,0 +1,37 @@
+// 06_zseries.mac -- self-test: program + run a small Z-series WITH Z-intensity correction
+// Validates the capture core of nis_macro_auto_capture.mac:
+//   ND_SetZSeriesExp, ND_RunZSeriesExpWithZIntensityCorrection, ImageSaveAs
+// CAUTION: real acquisition. Small range (+/- Z_HALF around the CURRENT Z).
+// PREREQ: run 05_zintensity.mac first so a correction profile is loaded.
+
+#define ZTYPE_BOTTOMTOP 0
+#define Z_HALF       4.0
+#define Z_STEP       2.0
+#define OUT_PATH     "C:/SpheroidPA/work/nd2/selftest_zseries.nd2"
+#define SAVE_NDTYPE  14
+#define SAVE_NDCOMPR 0
+
+int main()
+{
+    char out[256];
+    double z_centre, z_top, z_bottom, zstep;
+
+    zstep    = Z_STEP;
+    z_centre = 0;
+    StgGetAbsPosZ(&z_centre);
+    z_top    = z_centre + Z_HALF;
+    z_bottom = z_centre - Z_HALF;
+
+    sprintf(out, "t06 ENTER: Z-series from %.2f to %.2f um (step %.1f) around current Z. Continue to PROGRAM.", "z_bottom,z_top,zstep");
+    WaitText(0, out);
+
+    ND_SetZSeriesExp(ZTYPE_BOTTOMTOP, z_top, z_centre, z_bottom, Z_STEP, 0, 0, 0, "", "", "");
+    WaitText(0, "ND_SetZSeriesExp programmed. Click Continue to RUN the Z-series with correction.");
+
+    ND_RunZSeriesExpWithZIntensityCorrection();
+    WaitText(0, "Z-series run returned. Click Continue to save the result.");
+
+    ImageSaveAs(OUT_PATH, SAVE_NDTYPE, SAVE_NDCOMPR);
+    WaitText(0, "Saved.\n\nt06 PASS if a multi-plane ND2 was acquired with correction and saved to:\nC:/SpheroidPA/work/nd2/selftest_zseries.nd2");
+    return TRUE;
+}

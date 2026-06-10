@@ -2,7 +2,8 @@
 cross_zoom_register.py
 Cross-Zoom Coordinate Verification: 10X Whole-Well → 20X Single-Position
 
-Sits between spheroid_screener.py and nis_macro_20x_capture.mac.
+Sits between spheroid_screener.py and the NIS-E capture stage
+(nis_macro_z_autofocus.mac / nis_macro_auto_capture.mac).
 
 Background
 ----------

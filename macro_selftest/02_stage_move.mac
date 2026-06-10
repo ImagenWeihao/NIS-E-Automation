@@ -1,0 +1,27 @@
+// 02_stage_move.mac -- self-test: XY move to the CURRENT position (zero net motion)
+// Validates: StgGetPos, StgMoveXY (absolute), StgXY_GetSettleTime, Wait
+// SAFE: reads current XY, then commands a move to the SAME coordinates.
+
+#define MOVE_ABSOLUTE 0
+
+int main()
+{
+    char out[256];
+    double x, y, settle;
+    int rc;
+
+    WaitText(0, "t02 ENTER: will read XY, then StgMoveXY to the SAME XY (no net motion).");
+    x = 0; y = 0;
+    StgGetPosXY(&x, &y);
+    sprintf(out, "Current XY = (%.2f, %.2f). Click Continue to StgMoveXY to that same spot.", "x,y");
+    WaitText(0, out);
+
+    rc = StgMoveXY(x, y, MOVE_ABSOLUTE);
+    settle = StgXY_GetSettleTime();
+    Wait(settle / 1000.0);
+
+    sprintf(out, "StgMoveXY returned %d (expect 1)   StgXY_GetSettleTime = %.0f ms", "rc,settle");
+    WaitText(0, out);
+    WaitText(0, "t02 PASS if move returned 1 and the stage did not drift.");
+    return TRUE;
+}

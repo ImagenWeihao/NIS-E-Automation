@@ -8,9 +8,10 @@ Sits between NIS-E acquisition and 20X capture: detects, ranks, and validates sp
 1. `spheroid_screener.py`       — detect & rank spheroids in 10X whole-well mosaic nd2
 2. `cross_zoom_register.py`     — pre-capture verification + post-capture validation (v1, with sub-10X correction)
 3. `cross_zoom_v2.py`           — v2 workflow: sub-10X nd2 stage coords → NCC match → offset report
-4. `nis_macro_20x_capture.mac`  — NIS-E macro: reads screener CSV, moves stage, captures z-stacks
-5. `nis_bin_to_csv.py`          — decode NIS-E Z Intensity Correction .bin → CSV
-6. `csv_to_nis_bin.py`          — encode CSV → .bin (round-trip validated)
+4. `nis_macro_z_autofocus.mac`  — NIS-E daemon: polls af_trigger_NN.ini, autofocuses each spheroid, writes af_done_NN.ini
+5. `nis_macro_auto_capture.mac` — NIS-E daemon: polls spheroid_trigger.ini, runs Z-series w/ Z-intensity correction, writes spheroid_done.ini
+6. `nis_bin_to_csv.py`          — decode NIS-E Z Intensity Correction .bin → CSV
+7. `csv_to_nis_bin.py`          — encode CSV → .bin (round-trip validated)
 
 ## Key facts
 - 10X mosaic pixel size: ~0.644 µm/px; 20X pixel size: ~0.321 µm/px; scale factor ~0.499

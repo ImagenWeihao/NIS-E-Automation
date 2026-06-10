@@ -1,0 +1,23 @@
+// 01_stage_read.mac -- self-test: read stage position  (READ-ONLY, safe)
+// Validates: StgGetPos (XY), StgGetAbsPosZ (Z)
+// PASS = the reported values match the live stage readout in NIS-E.
+
+int main()
+{
+    char out[256];
+    double x, y, z;
+
+    WaitText(0, "t01 ENTER: about to read stage XY with StgGetPosXY.");
+    x = 0; y = 0;
+    StgGetPosXY(&x, &y);
+    sprintf(out, "StgGetPosXY -> X = %.2f um   Y = %.2f um", "x,y");
+    WaitText(0, out);
+
+    WaitText(0, "t01: about to read absolute Z with StgGetAbsPosZ.");
+    z = 0;
+    StgGetAbsPosZ(&z);
+    sprintf(out, "StgGetAbsPosZ -> Z = %.3f um", "z");
+    WaitText(0, out);
+    WaitText(0, "t01 PASS if XY/Z match the live stage position.");
+    return TRUE;
+}

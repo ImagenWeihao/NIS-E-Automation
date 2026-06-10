@@ -68,7 +68,7 @@
 int build_trigger_path(char *out, int rank)
 {
     char nn[8];
-    sprintf(nn, "%02d", rank);
+    sprintf(nn, "%02d", "rank");
     strcpy(out, WORK_DIR);
     strcat(out, "/af_trigger_");
     strcat(out, nn);
@@ -79,7 +79,7 @@ int build_trigger_path(char *out, int rank)
 int build_done_path(char *out, int rank)
 {
     char nn[8];
-    sprintf(nn, "%02d", rank);
+    sprintf(nn, "%02d", "rank");
     strcpy(out, WORK_DIR);
     strcat(out, "/af_done_");
     strcat(out, nn);
@@ -121,6 +121,7 @@ int process_rank(int rank)
     char spheroid_id[128];
     char rank_buf[16];
     char zbuf[64];
+    char numbuf[64];
     char status_msg[256];
     double stage_x, stage_y, z_centre;
     int move_rc, af_result;
@@ -133,10 +134,15 @@ int process_rank(int rank)
     rank_buf[0]    = 0;
     Int_GetKeyString(trigger_path, SEC, "spheroid_id", spheroid_id, 128);
     Int_GetKeyString(trigger_path, SEC, "rank", rank_buf, 16);
-    stage_x = Int_GetKeyValue(trigger_path, SEC, "stage_x", "0");
-    stage_y = Int_GetKeyValue(trigger_path, SEC, "stage_y", "0");
+    // Read numeric keys as strings + atof. Int_GetKeyValue raises
+    // "Mismatch in dimensions" on this NIS-E build.
+    Int_GetKeyString(trigger_path, SEC, "stage_x", numbuf, 64);
+    stage_x = atof(numbuf);
+    Int_GetKeyString(trigger_path, SEC, "stage_y", numbuf, 64);
+    stage_y = atof(numbuf);
 
-    sprintf(status_msg, "AF rank %02d (%s): moving stage", rank, spheroid_id);
+    // NIS-E sprintf: multiple args are ONE quoted comma-separated name list.
+    sprintf(status_msg, "AF rank %02d (%s): moving stage", "rank,spheroid_id");
     SetCommandText(status_msg);
 
     // Move XY stage (absolute, microns). Abort this rank on failure.
@@ -173,7 +179,7 @@ int process_rank(int rank)
     build_nd2_path(nd2_path, spheroid_id);
     ImageSaveAs(nd2_path, SAVE_NDTYPE, SAVE_NDCOMPR);
 
-    sprintf(zbuf, "%.3f", z_centre);
+    sprintf(zbuf, "%.3f", "z_centre");
     write_done(rank, rank_buf, spheroid_id, zbuf, nd2_path, "ok");
     DeleteFile(trigger_path);
 
