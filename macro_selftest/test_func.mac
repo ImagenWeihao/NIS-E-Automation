@@ -1,0 +1,15 @@
+// test_func.mac -- does this NIS-E build support a user-defined function WITH parameters?
+int helper(int n)
+{
+    int m;
+    m = n + 1;
+    return m;
+}
+
+int main()
+{
+    int r;
+    r = helper(5);
+    WaitText(0, "PASS: a parameterized function with a local var works.");
+    return TRUE;
+}

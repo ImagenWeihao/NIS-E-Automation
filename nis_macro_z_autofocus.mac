@@ -1,210 +1,140 @@
 // ============================================================================
 // nis_macro_z_autofocus.mac  --  SpheroidPA STEP 3 autofocus daemon
-// NIS-Elements AR macro (C-like interpreted language). Entry point: main().
+// NIS-Elements AR macro (C-like interpreted language).
 //
-// Verified against the local NIS-E AR 5.42 macro function reference
-// (Docs/nis/eng_ar). Every NIS function call below exists in that reference;
-// string/number helpers (sprintf/strcpy/strcat) are standard C.
+// IMPORTANT (verified on the rig): this NIS-E build runs only a SINGLE main()
+// -- user-defined functions/procedures (even parameterless) raise "Cannot
+// Evaluate the Expression". So all logic is inline in main(). Other hard-won
+// constraints baked in here:
+//   - .mac files must be CRLF + pure ASCII.
+//   - #define values containing '-' or '.' (paths) fail "Cannot Evaluate the
+//     Expression"; the work dir is therefore a direct string literal below.
+//   - Int_GetKeyValue raises "Mismatch in dimensions": read numeric keys as
+//     strings with Int_GetKeyString then atof().
+//   - sprintf is not C-variadic: pass args as ONE quoted comma-separated string
+//     of variable names, e.g. sprintf(buf, "%s %s", "a,b").
+//   - all variable declarations at the top of main() (no mid-block decls).
 //
 // PURPOSE
-//   Poll WORK_DIR for af_trigger_NN.ini (NN = 01..MAX_RANK, zero-padded).
-//   For each trigger found:
-//     1. read [spheroid] keys: rank, spheroid_id, stage_x, stage_y
-//     2. move the XY stage to (stage_x, stage_y) (absolute, microns)
-//     3. run TWO-PASS software autofocus (coarse sweep then fine pass) to
-//        land on the spheroid equatorial MIDPLANE
-//     4. read the resulting absolute Z (sum of all Z drives), microns
-//     5. snap a single plane and save to WORK_DIR/<spheroid_id>_af.nd2
-//     6. write af_done_NN.ini ([spheroid]: rank, spheroid_id, z_centre,
-//        nd2_path, status) and delete the trigger
-//   Loop until no trigger is seen for IDLE_TIMEOUT_S seconds.
+//   Poll the autofocus work dir for af_trigger_NN.ini (NN = 01..96). For each:
+//     read [spheroid] rank/spheroid_id/stage_x/stage_y, move XY, two-pass
+//     autofocus, read absolute Z, capture a plane, save <id>_af.nd2, write
+//     af_done_NN.ini (rank, spheroid_id, z_centre, nd2_path, status), delete trigger.
+//   status = ok | af_failed | move_failed.  Loop until idle 300 s.
 //
-// FILE-FLAG PROTOCOL  (INI files carry a [spheroid] section header, written
-// by spheroid_pipeline.py so Int_GetKeyString/Int_GetKeyValue can read them)
-//   af_trigger_NN.ini (input):  rank, spheroid_id, stage_x, stage_y
-//   af_done_NN.ini (output):    rank, spheroid_id, z_centre, nd2_path, status
-//     status = ok | af_failed | move_failed
-//   On af_failed/move_failed, z_centre/nd2_path are omitted so the Python
-//   side (poll_autofocus_done) ignores that rank instead of using a bad Z.
-//
-// PREREQUISITES (configure in NIS-E BEFORE running)
-//   - 20X objective selected.
-//   - XY + Z stages connected, initialized, in automatic mode.
-//   - Camera NOT in Live mode (Capture freezes if Live is on).
-//   - Brightfield spheroids assumed (focus criterion 0). For fluorescence set
-//     AF_CRITERION 2; for noisy/low-contrast set 3.
-//   - WORK_DIR below must equal the <output>/autofocus path used by the GUI.
-//
-// PROTOCOL UNITS: all stage coordinates and Z values are in MICRONS.
-// NIS-E NOTE: logical operators (&& || !) bind right-to-left in this
-// interpreter; bracket every logical sub-expression.
+// PREREQUISITES: 20X objective; XY+Z stages initialized; Z drive NOT in Escape;
+//   camera NOT in Live. Brightfield focus criterion (0); 2=fluorescence, 3=noisy.
+//   The work dir below must equal <GUI Step 1 Output dir>/autofocus.
 // ============================================================================
 
-// ---- CONFIG (edit to match the rig) ----------------------------------------
-// NOTE: the work dir is inlined as a direct string literal in the path builders
-// below. A #define whose value contains '-' (NIS-E-Automation) or '.' raises
-// "Cannot Evaluate the Expression" on this NIS-E build, so it cannot be a #define.
-// Keep the literals in sync and equal to <GUI output dir>/autofocus.
-#define SEC             "spheroid"
-#define MAX_RANK        96
-#define IDLE_TIMEOUT_S  300.0
-#define POLL_PERIOD_S   1.0
-
-// Two-pass autofocus geometry (microns).
-#define AF_RANGE        400.0   // total coarse Z sweep window (spheroid + margin)
-#define AF_COARSE_STEP  20.0    // coarse pass step
-#define AF_FINE_STEP    3.0     // fine pass step around coarse optimum
-
-// Focus criterion: 0=brightfield, 2=fluorescence, 3=noise-resistant.
-#define AF_CRITERION    0
-
-#define MOVE_ABSOLUTE   0       // StgMoveXY relative flag
-#define DR_OK           1       // Stg* success return code
-#define AF_SUCCESS      1       // StgFocusInRangeTwoPasses success return code
-
-// ImageSaveAs: ImType 14 = all layers (ND2); ImCompr 0 = lossless.
-#define SAVE_NDTYPE     14
-#define SAVE_NDCOMPR    0
-
-
-// ---- path builders ---------------------------------------------------------
-int build_trigger_path(char *out, int rank)
-{
-    char nn[8];
-    sprintf(nn, "%02d", "rank");
-    strcpy(out, "S:/Images/Weihao/NISeA/NIS-E-Automation/work/autofocus");
-    strcat(out, "/af_trigger_");
-    strcat(out, nn);
-    strcat(out, ".ini");
-    return TRUE;
-}
-
-int build_done_path(char *out, int rank)
-{
-    char nn[8];
-    sprintf(nn, "%02d", "rank");
-    strcpy(out, "S:/Images/Weihao/NISeA/NIS-E-Automation/work/autofocus");
-    strcat(out, "/af_done_");
-    strcat(out, nn);
-    strcat(out, ".ini");
-    return TRUE;
-}
-
-int build_nd2_path(char *out, char *spheroid_id)
-{
-    strcpy(out, "S:/Images/Weihao/NISeA/NIS-E-Automation/work/autofocus");
-    strcat(out, "/");
-    strcat(out, spheroid_id);
-    strcat(out, "_af.nd2");
-    return TRUE;
-}
-
-// ---- write af_done_NN.ini fresh (clears any stale keys first) --------------
-int write_done(int rank, char *rank_buf, char *spheroid_id,
-               char *z_str, char *nd2_path, char *status)
-{
-    char done_path[256];
-    build_done_path(done_path, rank);
-    DeleteFile(done_path);
-    Int_SetKeyString(done_path, SEC, "rank", rank_buf);
-    Int_SetKeyString(done_path, SEC, "spheroid_id", spheroid_id);
-    if( z_str[0] != 0 )
-        Int_SetKeyString(done_path, SEC, "z_centre", z_str);
-    if( nd2_path[0] != 0 )
-        Int_SetKeyString(done_path, SEC, "nd2_path", nd2_path);
-    Int_SetKeyString(done_path, SEC, "status", status);
-    return TRUE;
-}
-
-// ---- process one rank; returns TRUE if a trigger was found & handled -------
-int process_rank(int rank)
-{
-    char trigger_path[256];
-    char nd2_path[256];
-    char spheroid_id[128];
-    char rank_buf[16];
-    char zbuf[64];
-    char numbuf[64];
-    char status_msg[256];
-    double stage_x, stage_y, z_centre;
-    int move_rc, af_result;
-
-    build_trigger_path(trigger_path, rank);
-    if( ExistFile(trigger_path) == FALSE )
-        return FALSE;
-
-    spheroid_id[0] = 0;
-    rank_buf[0]    = 0;
-    Int_GetKeyString(trigger_path, SEC, "spheroid_id", spheroid_id, 128);
-    Int_GetKeyString(trigger_path, SEC, "rank", rank_buf, 16);
-    // Read numeric keys as strings + atof. Int_GetKeyValue raises
-    // "Mismatch in dimensions" on this NIS-E build.
-    Int_GetKeyString(trigger_path, SEC, "stage_x", numbuf, 64);
-    stage_x = atof(numbuf);
-    Int_GetKeyString(trigger_path, SEC, "stage_y", numbuf, 64);
-    stage_y = atof(numbuf);
-
-    // NIS-E sprintf: multiple args are ONE quoted comma-separated name list.
-    sprintf(status_msg, "AF rank %02d (%s): moving stage", "rank,spheroid_id");
-    SetCommandText(status_msg);
-
-    // Move XY stage (absolute, microns). Abort this rank on failure.
-    move_rc = StgMoveXY(stage_x, stage_y, MOVE_ABSOLUTE);
-    if( move_rc != DR_OK )
-    {
-        write_done(rank, rank_buf, spheroid_id, "", "", "move_failed");
-        DeleteFile(trigger_path);
-        SetCommandText("AF: XY move FAILED - skipped");
-        return TRUE;
-    }
-
-    // Two-pass software autofocus to the spheroid midplane.
-    SetCommandText("AF: focusing (coarse + fine)");
-    StgFocusSetCriterion(AF_CRITERION);
-    af_result = StgFocusInRangeTwoPasses(AF_RANGE, AF_COARSE_STEP, AF_FINE_STEP);
-
-    // On focus failure, do NOT capture or report a Z - mark and skip.
-    if( af_result != AF_SUCCESS )
-    {
-        write_done(rank, rank_buf, spheroid_id, "", "", "af_failed");
-        DeleteFile(trigger_path);
-        SetCommandText("AF: focus FAILED - skipped");
-        return TRUE;
-    }
-
-    // Read the confirmed midplane Z (absolute = sum of all Z drives).
-    z_centre = 0.0;
-    StgGetAbsPosZ(&z_centre);
-
-    // Snap a single plane and save it.
-    SetCommandText("AF: capturing single plane");
-    Capture();
-    build_nd2_path(nd2_path, spheroid_id);
-    ImageSaveAs(nd2_path, SAVE_NDTYPE, SAVE_NDCOMPR);
-
-    sprintf(zbuf, "%.3f", "z_centre");
-    write_done(rank, rank_buf, spheroid_id, zbuf, nd2_path, "ok");
-    DeleteFile(trigger_path);
-
-    return TRUE;
-}
+#define SEC "spheroid"
 
 int main()
 {
-    long rank;
-    int handled_any;
+    char work_dir[256];
+    char trigger_path[256];
+    char done_path[256];
+    char nd2_path[256];
+    char spheroid_id[128];
+    char rank_buf[16];
+    char numbuf[64];
+    char zbuf[64];
+    char nn[8];
+    char status[32];
+    char status_msg[256];
+    double stage_x, stage_y, z_centre;
     double idle_elapsed;
+    int rank, move_rc, af_result, handled_any, ok_flag;
 
+    strcpy(work_dir, "S:/Images/Weihao/NISeA/NIS-E-Automation/work/autofocus");
     idle_elapsed = 0.0;
 
-    while( idle_elapsed < IDLE_TIMEOUT_S )
+    while( idle_elapsed < 300.0 )
     {
         handled_any = FALSE;
-
-        for(rank = 1; rank <= MAX_RANK; rank = rank + 1)
+        rank = 1;
+        while( rank <= 96 )
         {
-            if( process_rank(rank) == TRUE )
+            sprintf(nn, "%02d", "rank");
+            strcpy(trigger_path, work_dir);
+            strcat(trigger_path, "/af_trigger_");
+            strcat(trigger_path, nn);
+            strcat(trigger_path, ".ini");
+
+            if( ExistFile(trigger_path) == TRUE )
+            {
                 handled_any = TRUE;
+
+                spheroid_id[0] = 0;
+                rank_buf[0]    = 0;
+                Int_GetKeyString(trigger_path, SEC, "spheroid_id", spheroid_id, 128);
+                Int_GetKeyString(trigger_path, SEC, "rank", rank_buf, 16);
+                Int_GetKeyString(trigger_path, SEC, "stage_x", numbuf, 64);
+                stage_x = atof(numbuf);
+                Int_GetKeyString(trigger_path, SEC, "stage_y", numbuf, 64);
+                stage_y = atof(numbuf);
+
+                sprintf(status_msg, "AF rank %s (%s): moving stage", "rank_buf,spheroid_id");
+                SetCommandText(status_msg);
+
+                strcpy(done_path, work_dir);
+                strcat(done_path, "/af_done_");
+                strcat(done_path, nn);
+                strcat(done_path, ".ini");
+
+                ok_flag    = 0;
+                z_centre   = 0.0;
+                nd2_path[0] = 0;
+
+                move_rc = StgMoveXY(stage_x, stage_y, 0);
+                if( move_rc != 1 )
+                {
+                    strcpy(status, "move_failed");
+                    SetCommandText("AF: XY move FAILED - skipped");
+                }
+                else
+                {
+                    // Pre-position Z to ~7600 um, then a two-pass autofocus over
+                    // +/-100 um (200 um total) with a 10 um coarse step -> searches
+                    // 7500..7700 um. Criterion 3 = noise-resistant: estimates the
+                    // image noise floor and ignores it, best for weak/low-count
+                    // fluorescence (no exposure/illumination change needed).
+                    StgMoveZ(7600.0, 0);
+                    StgFocusSetCriterion(3);
+                    af_result = StgFocusInRangeTwoPasses(200.0, 10.0, 3.0);
+                    if( af_result != 1 )
+                    {
+                        strcpy(status, "af_failed");
+                        SetCommandText("AF: focus FAILED - skipped");
+                    }
+                    else
+                    {
+                        ok_flag = 1;
+                        strcpy(status, "ok");
+                        StgGetAbsPosZ(&z_centre);
+                        SetCommandText("AF: capturing single plane");
+                        Capture();
+                        strcpy(nd2_path, work_dir);
+                        strcat(nd2_path, "/");
+                        strcat(nd2_path, spheroid_id);
+                        strcat(nd2_path, "_af.nd2");
+                        ImageSaveAs(nd2_path, 14, 0);
+                    }
+                }
+
+                DeleteFile(done_path);
+                Int_SetKeyString(done_path, SEC, "rank", rank_buf);
+                Int_SetKeyString(done_path, SEC, "spheroid_id", spheroid_id);
+                if( ok_flag == 1 )
+                {
+                    sprintf(zbuf, "%.3f", "z_centre");
+                    Int_SetKeyString(done_path, SEC, "z_centre", zbuf);
+                    Int_SetKeyString(done_path, SEC, "nd2_path", nd2_path);
+                }
+                Int_SetKeyString(done_path, SEC, "status", status);
+                DeleteFile(trigger_path);
+            }
+            rank = rank + 1;
         }
 
         if( handled_any == TRUE )
@@ -214,8 +144,8 @@ int main()
         else
         {
             SetCommandText("AF daemon: idle, waiting for triggers");
-            Wait(POLL_PERIOD_S);
-            idle_elapsed = idle_elapsed + POLL_PERIOD_S;
+            Wait(1.0);
+            idle_elapsed = idle_elapsed + 1.0;
         }
     }
 

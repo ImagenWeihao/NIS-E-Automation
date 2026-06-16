@@ -1,0 +1,132 @@
+// ============================================================================
+// nis_macro_capture_zstack.mac -- SpheroidPA capture daemon (plain Z-stack)
+//
+// For each spheroid: read af_trigger_NN.ini (stage_x/y from GUI Step 2), move XY,
+// run a fixed Z-stack, save <id>_zstack.nd2, write af_done_NN.ini, delete trigger.
+// NO autofocus (the built-in AF fails on the weak fluorescence signal) and NO
+// Z-intensity correction (A1/confocal-only). Uses the current ND channels/exposure
+// -- no illumination change.
+//
+// Rig constraints baked in (verified): single main() only (no user functions);
+// work dir as a direct string literal (a #define with '-'/'.' fails); CRLF+ASCII;
+// Int_GetKeyString+atof for numeric keys; sprintf args as one quoted name list.
+//
+// Z-stack (edit if your spheroids sit higher/lower):
+//   Z_CENTRE 7680, Z_HALF 90, Z_STEP 10  ->  7590..7770 um, 19 planes.
+//
+// PREREQ: 20X objective; XY+Z initialized; Z drive NOT in Escape; PFS OFF (it
+// holds focus and defeats the Z-series); camera NOT in Live. Re-run GUI Step 3
+// "Trigger NIS-E Autofocus Captures" first so the af_trigger_NN.ini files exist.
+// ============================================================================
+
+#define SEC "spheroid"
+
+int main()
+{
+    char work_dir[256];
+    char trigger_path[256];
+    char done_path[256];
+    char nd2_path[256];
+    char spheroid_id[128];
+    char rank_buf[16];
+    char numbuf[64];
+    char nn[8];
+    char zbuf[32];
+    char msg[256];
+    double stage_x, stage_y;
+    double z_centre, z_half, z_step, z_top, z_bottom;
+    double idle_elapsed;
+    int rank, move_rc, handled_any;
+
+    strcpy(work_dir, "S:/Images/Weihao/NISeA/NIS-E-Automation/work/autofocus");
+
+    z_centre = 7680.0;
+    z_half   = 90.0;
+    z_step   = 10.0;
+    z_top    = z_centre + z_half;
+    z_bottom = z_centre - z_half;
+    sprintf(zbuf, "%.1f", "z_centre");
+
+    idle_elapsed = 0.0;
+
+    while( idle_elapsed < 300.0 )
+    {
+        handled_any = FALSE;
+        rank = 1;
+        while( rank <= 96 )
+        {
+            sprintf(nn, "%02d", "rank");
+            strcpy(trigger_path, work_dir);
+            strcat(trigger_path, "/af_trigger_");
+            strcat(trigger_path, nn);
+            strcat(trigger_path, ".ini");
+
+            if( ExistFile(trigger_path) == TRUE )
+            {
+                handled_any = TRUE;
+
+                spheroid_id[0] = 0;
+                rank_buf[0]    = 0;
+                Int_GetKeyString(trigger_path, SEC, "spheroid_id", spheroid_id, 128);
+                Int_GetKeyString(trigger_path, SEC, "rank", rank_buf, 16);
+                Int_GetKeyString(trigger_path, SEC, "stage_x", numbuf, 64);
+                stage_x = atof(numbuf);
+                Int_GetKeyString(trigger_path, SEC, "stage_y", numbuf, 64);
+                stage_y = atof(numbuf);
+
+                sprintf(msg, "Capture rank %s (%s): moving + Z-stack", "rank_buf,spheroid_id");
+                SetCommandText(msg);
+
+                strcpy(done_path, work_dir);
+                strcat(done_path, "/af_done_");
+                strcat(done_path, nn);
+                strcat(done_path, ".ini");
+
+                strcpy(nd2_path, "S:/Images/Weihao/NISeA/NIS-E-Automation/work/nd2");
+                strcat(nd2_path, "/");
+                strcat(nd2_path, spheroid_id);
+                strcat(nd2_path, "_zstack.nd2");
+
+                move_rc = StgMoveXY(stage_x, stage_y, 0);
+                if( move_rc != 1 )
+                {
+                    DeleteFile(done_path);
+                    Int_SetKeyString(done_path, SEC, "rank", rank_buf);
+                    Int_SetKeyString(done_path, SEC, "spheroid_id", spheroid_id);
+                    Int_SetKeyString(done_path, SEC, "status", "move_failed");
+                    DeleteFile(trigger_path);
+                }
+                else
+                {
+                    ND_SetZSeriesExp(0, z_top, z_centre, z_bottom, z_step, 0, 0, 0, "", "", "");
+                    ND_RunZSeriesExp();
+                    DeleteFile(nd2_path);
+                    ImageSaveAs(nd2_path, 14, 0);
+
+                    DeleteFile(done_path);
+                    Int_SetKeyString(done_path, SEC, "rank", rank_buf);
+                    Int_SetKeyString(done_path, SEC, "spheroid_id", spheroid_id);
+                    Int_SetKeyString(done_path, SEC, "z_centre", zbuf);
+                    Int_SetKeyString(done_path, SEC, "nd2_path", nd2_path);
+                    Int_SetKeyString(done_path, SEC, "status", "ok");
+                    DeleteFile(trigger_path);
+                }
+            }
+            rank = rank + 1;
+        }
+
+        if( handled_any == TRUE )
+        {
+            idle_elapsed = 0.0;
+        }
+        else
+        {
+            SetCommandText("Capture daemon: idle, waiting for triggers");
+            Wait(1.0);
+            idle_elapsed = idle_elapsed + 1.0;
+        }
+    }
+
+    SetCommandText(0);
+    return TRUE;
+}

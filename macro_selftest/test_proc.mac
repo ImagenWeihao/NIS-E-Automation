@@ -1,0 +1,16 @@
+// test_proc.mac -- does a parameterless user procedure that shares GLOBALS work?
+global int gN;
+
+int bump()
+{
+    gN = gN + 1;
+    return TRUE;
+}
+
+int main()
+{
+    gN = 5;
+    bump();
+    WaitText(0, "PASS: parameterless procedure + global works (gN should be 6).");
+    return TRUE;
+}

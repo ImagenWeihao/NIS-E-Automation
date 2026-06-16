@@ -1,0 +1,39 @@
+// zstack_cell06.mac -- single-spheroid Z-stack test (NO autofocus, NO XY move).
+// Stay at the CURRENT stage XY (you are parked on cell #6) and acquire a plain
+// Z-series centered on the known focus plane, then save it. Uses the current ND
+// experiment channels/exposure -- no illumination change.
+//
+// Adjust these three if needed:
+//   Z_CENTRE = 7680  (cell #6 focus plane, um)
+//   Z_HALF   = 90    (+/- range -> 7590..7770)
+//   Z_STEP   = 10    (um per plane -> 19 planes)
+
+int main()
+{
+    char path[256];
+    char msg[256];
+    double z_centre, z_half, z_step, z_top, z_bottom;
+
+    z_centre = 7680.0;
+    z_half   = 90.0;
+    z_step   = 10.0;
+    z_top    = z_centre + z_half;
+    z_bottom = z_centre - z_half;
+
+    sprintf(msg, "Cell #6: Z-series %.0f..%.0f um (step %.0f) at current XY. Continue.", "z_bottom,z_top,z_step");
+    WaitText(0, msg);
+
+    SetCommandText("Cell #6: programming Z-series");
+    ND_SetZSeriesExp(0, z_top, z_centre, z_bottom, z_step, 0, 0, 0, "", "", "");
+
+    SetCommandText("Cell #6: running Z-series");
+    ND_RunZSeriesExp();
+
+    strcpy(path, "S:/Images/Weihao/NISeA/NIS-E-Automation/work/nd2");
+    strcat(path, "/cell06_zstack.nd2");
+    ImageSaveAs(path, 14, 0);
+
+    SetCommandText(0);
+    WaitText(0, "Cell #6 Z-stack done.\nSaved to: work/nd2/cell06_zstack.nd2");
+    return TRUE;
+}

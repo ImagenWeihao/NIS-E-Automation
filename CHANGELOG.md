@@ -1,5 +1,42 @@
 # CHANGELOG
 
+## v1.4.0 — 2026-06-16
+
+### First hardware run: daemons flattened to single main(); capture path validated
+On the live instrument (WellD09, 12 spheroids) this NIS-E build was found to run **only a
+single `main()`** — user-defined functions/procedures (even a parameterless `int bump()`)
+raise "Cannot Evaluate the Expression". Both daemons were rebuilt as one flattened `main()`
+(inline path building, `while` loops, nested `if`, status-flag pattern); the flattened
+autofocus daemon then ran end-to-end on the rig.
+
+### `nis_macro_z_autofocus.mac` — flattened + autofocus tuning
+- Single `main()`; inline work-dir literal; `Int_GetKeyString`+`atof`; quoted-comma `sprintf`.
+- Pre-positions Z with `StgMoveZ`, then `StgFocusInRangeTwoPasses` (fluorescence/noise-resistant
+  criterion, tunable range/step).
+- **Note:** the built-in autofocus fails on the deliberately-low fluorescence signal (returns
+  −3, "total white or black scene"); exposure can't be raised (phototoxicity). Autofocus is
+  shelved in favor of the Z-stack capture below + a future software focus-plane selector.
+
+### Added `nis_macro_capture_zstack.mac` — Z-stack per spheroid (no autofocus)
+Reads each `af_trigger_NN.ini`'s XY, `StgMoveXY`, runs a fixed Z-stack (7590–7770 µm, 10 µm,
+19 planes), saves `<id>_zstack.nd2`, writes `af_done`, deletes the trigger. Flattened single
+`main()`; reuses the `ND_SetZSeriesExp` → `ND_RunZSeriesExp` → `ImageSaveAs` path validated on
+cell #6 (focus blurry→sharp→blurry on `Ti ZDrive`).
+
+### Removed `nis_macro_auto_capture.mac`
+The Z-intensity-corrected capture daemon (multi-function; correction is A1/confocal-only) is
+superseded by `nis_macro_capture_zstack.mac` on this widefield rig.
+
+### Self-test macros
+- `test_func.mac` / `test_proc.mac` — confirm user-defined functions and parameterless
+  procedures are unsupported on this build (both fail at the definition).
+- `zstack_cell06.mac` — single-spheroid Z-stack test that validated the capture path.
+
+### Deferred
+ND2 per-frame `stagePositionUm.z` is a coarse-stage snapshot (constant ~7500), not the focus
+depth; true per-plane Z is in the Z-stack loop (`ZHome` + `homeIndex`/`stepUm`). `_read_nd2_z`
+and the GUI metadata reader to be patched.
+
 ## v1.3.3 — 2026-06-10
 
 ### Fix: daemons couldn't use the hyphenated work path via #define
