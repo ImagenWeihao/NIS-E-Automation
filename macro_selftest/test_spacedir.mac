@@ -1,0 +1,40 @@
+// test_spacedir.mac -- can the macro use a SPACED work dir read at RUNTIME?
+// Reads work_dir (a path with spaces, in the ProgramData Jobs folder) from a
+// fixed space-free config (C:/SpheroidPA/session.ini), then uses that char[]
+// for ExistFile + Int_GetKeyString. If this passes, the GUI can point the work
+// dir at the Jobs folder via the config and the macro follows it.
+//
+// PREREQ: C:\SpheroidPA\session.ini exists with [paths] work_dir=...autofocus,
+// and that folder contains af_trigger_01.ini (the original run's triggers).
+
+int main()
+{
+    char cfg[256];
+    char work_dir[256];
+    char trig[256];
+    char xbuf[64];
+    char out[512];
+    int present;
+    double x;
+
+    strcpy(cfg, "C:/SpheroidPA/session.ini");
+
+    work_dir[0] = 0;
+    Int_GetKeyString(cfg, "paths", "work_dir", work_dir, 256);
+    strcpy(out, "work_dir read from config:\n");
+    strcat(out, work_dir);
+    WaitText(0, out);
+
+    strcpy(trig, work_dir);
+    strcat(trig, "/af_trigger_01.ini");
+    present = ExistFile(trig);
+    sprintf(out, "ExistFile(spaced trigger path) = %d   (expect 1)", "present");
+    WaitText(0, out);
+
+    xbuf[0] = 0;
+    Int_GetKeyString(trig, "spheroid", "stage_x", xbuf, 64);
+    x = atof(xbuf);
+    sprintf(out, "stage_x from spaced-path trigger = %.2f   (expect -24507.25)", "x");
+    WaitText(0, out);
+    return TRUE;
+}

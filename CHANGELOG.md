@@ -1,5 +1,23 @@
 # CHANGELOG
 
+## v1.4.1 — 2026-06-17
+
+### Trigger safeguards: clear-stale + verify-distinct (root-cause of duplicated capture)
+A capture run imaged duplicated coordinates (`sph_03 ≡ sph_01`, `sph_04 ≡ sph_02`). The
+pipeline was proven correct three ways — the surviving original triggers are all distinct,
+re-running `screen → apply_offset → trigger_autofocus_all` is all distinct, and writing to
+the share + reading back through the Win32 profile API (the macro's read path) is all
+distinct. **Root cause:** the daemon consumed a work folder holding a *mix* of fresh and
+stale `af_trigger` files from several re-trigger cycles. `trigger_autofocus_all` now:
+- **verify-distinct** — raises if any two records share `(stage_x, stage_y)` *before*
+  writing or touching the instrument (a duplicate means a corrupted records list);
+- **clear-stale** — removes existing `af_trigger_*`/`af_done_*` first, so the daemon only
+  ever sees the current run's triggers.
+
+Also added `macro_selftest/test_spacedir.mac` — probes whether the macro can use a spaced
+work-dir read at runtime from a fixed config (toward pointing the work dir at the
+ProgramData Jobs folder). Pending rig test.
+
 ## v1.4.0 — 2026-06-16
 
 ### First hardware run: daemons flattened to single main(); capture path validated

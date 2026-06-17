@@ -242,8 +242,38 @@ def _atomic_write_crlf(path: Path, lines: list[str]) -> None:
 
 
 def trigger_autofocus_all(records: list[SpheroidRecord], work_dir: Path) -> int:
-    """Write per-rank autofocus trigger files for NIS-E macro. Returns count written."""
+    """Write per-rank autofocus trigger files for NIS-E macro. Returns count written.
+
+    Two safeguards (added after a capture run imaged duplicated coordinates — the
+    daemon had consumed a folder holding a mix of fresh and stale triggers from
+    earlier re-trigger cycles):
+
+      1. Verify-distinct (pre-check): every record must have a distinct
+         (stage_x, stage_y). A duplicate means a corrupted records list, and
+         capturing it would image the same spot twice — raise before writing
+         anything or touching the instrument.
+      2. Clear-stale: remove any existing af_trigger_* / af_done_* in work_dir
+         first, so the daemon only ever sees this run's triggers (no leftovers
+         from a prior cycle).
+    """
+    # 1. verify-distinct, before we write or delete anything
+    seen: dict[tuple, int] = {}
+    for r in records:
+        key = (round(r.verified_x_um, 2), round(r.verified_y_um, 2))
+        if key in seen:
+            raise ValueError(
+                f"Duplicate trigger coordinate {key} for rank {r.rank} and rank "
+                f"{seen[key]} — records list is corrupted; aborting before capture."
+            )
+        seen[key] = r.rank
+
     work_dir.mkdir(parents=True, exist_ok=True)
+
+    # 2. clear stale triggers/done from any previous re-trigger cycle
+    for stale in (list(work_dir.glob(f"{AF_TRIGGER_PREFIX}*.ini"))
+                  + list(work_dir.glob(f"{AF_DONE_PREFIX}*.ini"))):
+        stale.unlink(missing_ok=True)
+
     n = 0
     for r in records:
         p = work_dir / f"{AF_TRIGGER_PREFIX}{r.rank:02d}.ini"
