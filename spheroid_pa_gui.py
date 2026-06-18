@@ -1587,6 +1587,8 @@ class App(tk.Tk):
         self._pl_zv_b2t    = True
         self._pl_zv_mid    = 0.0  # geometric middle plane index
         self._pl_zv_basez  = 0.0  # GUI Middle-plane Z (um) at the middle plane
+        self._pl_zv_zabs   = None # true per-plane Z from ND2 events (or None)
+        self._pl_zv_center = 0    # focus/centre plane index
         self._pl_zv_thumbs = []   # keep PhotoImage refs alive
 
         tk.Label(parent, text="Captured Spheroid Z-Stacks", bg=BG, fg=MAUVE,
@@ -1615,8 +1617,9 @@ class App(tk.Tk):
                                     justify="left", wraplength=520)
         self._pl_zv_info.pack(fill="x", padx=12, pady=(2, 2))
 
-        tk.Label(parent, text="All focus planes — caption shows each plane's Z depth; the "
-                              "middle plane is the GUI Middle-plane Z. Scroll horizontally.",
+        tk.Label(parent, text="All focus planes — caption shows each plane's Z depth (from the "
+                              "ND2 events Z Coord when recorded, else GUI Middle-plane Z + step); "
+                              "focus-centre plane highlighted. Scroll horizontally.",
                  bg=BG, fg=SUBTEXT, font=("Segoe UI", 8)).pack(anchor="w", padx=12)
 
         # Horizontal filmstrip: one thumbnail per Z plane, captioned with its Z
@@ -1715,6 +1718,44 @@ class App(tk.Tk):
                             break
                 except Exception:
                     pass
+                # True per-plane absolute Z from the acquisition events log
+                # (the scanned Ti ZDrive / Z Coord per frame), plus the home/focus
+                # plane where the Z-series offset is 0. This is the real recorded
+                # Z; stagePositionUm.z is only the constant coarse-stage snapshot.
+                zabs = None; ev_home = None
+                try:
+                    rows = f.events()
+                    if rows:
+                        keys = list(rows[0].keys())
+                        def _fk(*subs):
+                            for k in keys:
+                                kl = k.lower()
+                                if all(s in kl for s in subs):
+                                    return k
+                            return None
+                        zi_key = _fk("z", "index")
+                        zc_key = _fk("z", "coord") or _fk("zdrive") or _fk("ti", "z")
+                        zs_key = _fk("series")
+                        nz = int(sizes.get("Z", 1))
+                        if zi_key and zc_key:
+                            zmap = {}; smap = {}
+                            for r in rows:
+                                iv = r.get(zi_key)
+                                if iv is None:
+                                    continue
+                                iv = int(iv)
+                                cv = r.get(zc_key)
+                                if cv is not None:
+                                    zmap[iv] = float(cv)
+                                sv = r.get(zs_key) if zs_key else None
+                                if sv is not None:
+                                    smap[iv] = float(sv)
+                            if len(zmap) >= nz and all(j in zmap for j in range(nz)):
+                                zabs = [zmap[j] for j in range(nz)]
+                            if smap:
+                                ev_home = min(smap, key=lambda k: abs(smap[k]))
+                except Exception:
+                    zabs = None; ev_home = None
             order = list(sizes.keys())
             sel = [slice(None) if ax in ("Z", "Y", "X") else 0 for ax in order]
             arr = arr[tuple(sel)]
@@ -1731,11 +1772,7 @@ class App(tk.Tk):
             self.after(0, lambda e=exc: self._pl_zv_info.configure(text=f"Load error: {e}"))
             return
         n_planes = arr.shape[0]
-        # NIS-E does not reliably record the per-plane Z in the ND2 metadata, so
-        # the Z grid is reconstructed from the operator's inputs: the GEOMETRIC
-        # MIDDLE plane is the GUI Middle-plane Z, and every other plane steps by
-        # the Z step. Step prefers the file's ZStackLoop stepUm (one reliable
-        # value) and falls back to the GUI Z step.
+        # GUI Middle-plane Z / half-range / step (fallback anchor + geometry check).
         gui_centre = gui_half = gui_step = None
         try: gui_centre = float(self._pl_z_centre.get())
         except Exception: pass
@@ -1745,12 +1782,22 @@ class App(tk.Tk):
         except Exception: pass
         if step is None:
             step = gui_step if (gui_step and gui_step > 0) else 1.0
+        # Prefer the TRUE per-plane Z recorded by NIS-E in the events log
+        # (Z Coord / Ti ZDrive). Only trust it when it actually varies across the
+        # stack; otherwise fall back to GUI Middle-plane Z + step reconstruction.
+        if zabs is not None and (max(zabs) - min(zabs)) <= 1e-6:
+            zabs = None
         self._pl_zv_stack  = arr
         self._pl_zv_vmin, self._pl_zv_vmax = vmin, vmax
         self._pl_zv_step   = step
         self._pl_zv_b2t    = b2t
         self._pl_zv_mid    = (n_planes - 1) / 2.0          # geometric middle index
         self._pl_zv_basez  = gui_centre if gui_centre is not None else 0.0
+        self._pl_zv_zabs   = zabs                          # true per-plane Z, or None
+        if zabs is not None and ev_home is not None:
+            self._pl_zv_center = int(ev_home)              # events home (Z-Series = 0)
+        else:
+            self._pl_zv_center = int(round(self._pl_zv_mid))
         self._pl_zv_check  = self._pl_zv_geom_check(n_planes, home, gui_half, gui_step)
         self.after(0, self._pl_zv_render_filmstrip)
 
@@ -1776,9 +1823,10 @@ class App(tk.Tk):
             return
         z = arr.shape[0]
         vmin, vmax = self._pl_zv_vmin, self._pl_zv_vmax
-        mid = self._pl_zv_mid
-        mid_i = int(round(mid))
-        sign = 1.0 if self._pl_zv_b2t else -1.0
+        zabs   = self._pl_zv_zabs
+        center = self._pl_zv_center
+        mid    = self._pl_zv_mid
+        sign   = 1.0 if self._pl_zv_b2t else -1.0
         THUMB = 150
         for i in range(z):
             a = _np.clip((arr[i].astype(_np.float32) - vmin) / (vmax - vmin), 0.0, 1.0)
@@ -1787,26 +1835,33 @@ class App(tk.Tk):
             im.thumbnail((THUMB, THUMB))
             photo = _PILImageTk.PhotoImage(im)
             self._pl_zv_thumbs.append(photo)
-            absz = self._pl_zv_basez + (i - mid) * (self._pl_zv_step or 0.0) * sign
-            is_mid = (i == mid_i)
-            cellbg = SURFACE2 if is_mid else BG2
-            edge   = BLUE if is_mid else SURFACE
+            if zabs is not None:
+                absz = zabs[i]
+            else:
+                absz = self._pl_zv_basez + (i - mid) * (self._pl_zv_step or 0.0) * sign
+            is_centre = (i == center)
+            cellbg = SURFACE2 if is_centre else BG2
+            edge   = BLUE if is_centre else SURFACE
             cell = tk.Frame(self._pl_zv_strip, bg=cellbg, padx=3, pady=3,
                             highlightthickness=2, highlightbackground=edge,
                             highlightcolor=edge)
             cell.pack(side="left", padx=3, pady=4)
             tk.Label(cell, image=photo, bg=cellbg).pack()
-            cap = f"Z {absz:.1f} um\n" + ("middle (z-centre)" if is_mid else "")
+            cap = f"Z {absz:.1f} um\n" + ("focus centre" if is_centre else "")
             tk.Label(cell, text=cap, bg=cellbg,
-                     fg=(BLUE if is_mid else TEXT2),
+                     fg=(BLUE if is_centre else TEXT2),
                      font=("Segoe UI", 8), justify="center").pack()
         self._pl_zv_strip_canvas.update_idletasks()
         self._pl_zv_strip_canvas.configure(
             scrollregion=self._pl_zv_strip_canvas.bbox("all"))
         chk = getattr(self, "_pl_zv_check", "")
+        if zabs is not None:
+            centre_z = zabs[center]; src = "from ND2 events (Z Coord)"
+        else:
+            centre_z = self._pl_zv_basez; src = "from GUI Middle-plane Z"
         self._pl_zv_info.configure(text=(
             f"Spheroid: {self._pl_zv_sel.get()}     "
-            f"middle plane Z {self._pl_zv_basez:.1f} um     {z} planes, step {self._pl_zv_step:g} um     "
+            f"centre plane Z {centre_z:.1f} um ({src})     {z} planes, step {self._pl_zv_step:g} um     "
             f"{arr.shape[2]}x{arr.shape[1]} px"
             + (f"\n[check] {chk}" if chk else "")))
 

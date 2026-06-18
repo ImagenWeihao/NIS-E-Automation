@@ -10,30 +10,36 @@ is a permanent pane between the dashboard and the table (not a Step-3 swap).
   ND2 dir for `*.nd2`; **Refresh** rescans; **Add...** opens a file dialog to load any ND2
   manually. Reads each stack with the `nd2` lib (handles (Z,Y,X) and singleton/extra axes).
 - **All planes shown at once** as a horizontally-scrollable **filmstrip** (Pillow thumbnails) —
-  one image per Z plane, each captioned with its **Z depth (µm)**. The **middle plane (z-centre)
-  is highlighted** for orientation. Mouse-wheel scrolls.
+  one image per Z plane, each captioned with its **true Z depth (µm)**. The **focus-centre plane
+  is highlighted** (= the autofocus/PFS home plane, which is the best focus). Mouse-wheel scrolls.
+- **Per-plane Z is read from the ND2 events log** (`Z Coord [µm]` / `Ti ZDrive [µm]`), the real
+  scanned focus position. Earlier audit wrongly concluded the Z wasn't recorded — it was, in the
+  events log; the field that read static (`stagePositionUm.z`) is just the coarse-stage snapshot
+  (constant across the stack). The focus/centre plane is identified from the events `Z-Series == 0`.
+  If a file genuinely has no per-plane events Z, the viewer falls back to reconstructing the grid
+  from the GUI Middle-plane Z + the loop `stepUm` (or GUI Z step). A **[check]** line validates the
+  plane count against ±half/step.
 - **No focus score / auto best-focus pick.** Tried gradient-energy, Tenengrad, Laplacian, and an
-  FFT high-frequency metric (with background removal) — none reliably matched the eye across
-  stacks, so automatic focus grading was removed; the operator reads the filmstrip and picks the
-  sharpest plane. (With software autofocus / PFS centring the spheroid at z-centre this is moot.)
-- **Z grid is reconstructed from the operator's inputs, not metadata.** Audit finding: this rig's
-  ND2 does **not** reliably record the per-plane Z (the ZStackLoop stores only `stepUm`/
-  `homeIndex`/`bottomToTop`; `stagePositionUm.z` is a constant coarse-stage snapshot). So the
-  **geometric middle plane = GUI Middle-plane Z** and every other plane = `z_centre + (i − mid)·step`,
-  with `step` taken from the file's `stepUm` (one reliable value) or the GUI Z step. A **[check]**
-  line validates the plane count against ±half/step (so the middle really is z-centre).
-- Summary shows spheroid, middle-plane Z, plane count + step, dimensions, and the geometry check.
-  Thumbnails use 1–99.5 percentile contrast; ND2 load runs off-thread.
+  FFT high-frequency metric (with background removal) — none reliably matched the eye across stacks
+  (e.g. on cell #6 they flagged the stack edges while the true best focus is the centre/home plane).
+  Automatic grading was removed; the **focus-centre (PFS/home) plane is the best focus** and is
+  highlighted, and the operator can read the filmstrip to confirm.
+- Summary shows spheroid, centre-plane Z + source (ND2 events vs GUI), plane count + step,
+  dimensions, and the geometry check. Thumbnails use 1–99.5 percentile contrast; load is off-thread.
 - Default window 1280x820 → 1680x880 to fit the third pane and the filmstrip.
 
 ### New test macro: `macro_selftest/zstack_pfs_zcentre_10x.mac` (PFS-centred Z-stack at 10X)
 Based on `zstack_cell06.mac`. Uses the **Perfect Focus System** to find the focused Z (the
 spheroid z-centre) instead of the unreliable image autofocus:
 `Stg_IsPFSPresent` → `Stg_SetPFSStatus(1)` → `Stg_WaitForPFS(8)` → `Stg_GetPFSStatus()==1` →
-`StgGetAbsPosZ` → `Stg_SetPFSStatus(0)`, then a symmetric Z-series around that Z at **10 µm**
-steps (`ND_SetZSeriesExp` type 0 → `ND_RunZSeriesExp`) and `ImageSaveAs`. Single `main()`,
-CRLF + ASCII; every NIS call verified against the AR macro reference. Operator sets the PFS
-offset to the spheroid plane before running.
+read Z → `Stg_SetPFSStatus(0)`, then a symmetric Z-series around that Z at **10 µm** steps
+(`ND_SetZSeriesExp` type 0 → `ND_RunZSeriesExp`) and `ImageSaveAs`. Single `main()`, CRLF +
+ASCII; every NIS call verified against the AR macro reference. Operator sets the PFS offset to
+the spheroid plane before running.
+- The z-centre is read from `StgGetPosZ(&z, 0)` — the **primary Z device (Ti ZDrive)**, the axis
+  NIS-E logs per plane as `Z Coord`/`Ti ZDrive` — so the recorded per-plane Z is correct. (Not
+  `stagePositionUm.z`, the constant coarse stage.) `StgGetAbsPosZ` is shown alongside in the
+  confirm dialog so the rig run reveals which reading matches the captured Z Coord.
 
 ## v1.4.2 — 2026-06-17
 

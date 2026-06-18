@@ -26,7 +26,7 @@ int main()
 {
     char path[256];
     char msg[256];
-    double z_centre, z_half, z_step, z_top, z_bottom;
+    double z_centre, z_abs, z_half, z_step, z_top, z_bottom;
     int pfs_status;
 
     z_half = 90.0;      // +/- range around z-centre (um); 2*90/10 + 1 = 19 planes
@@ -52,9 +52,18 @@ int main()
         return FALSE;
     }
 
-    // --- 3. Read the PFS-focused absolute Z = spheroid z-centre ---
+    // --- 3. Read the PFS-focused Z = spheroid z-centre ---
+    // Use the PRIMARY Z device (StgGetPosZ device 0) = the Ti ZDrive focus motor.
+    // That is the axis the Z-series scans and that NIS-E logs per plane as the
+    // "Ti ZDrive [um]" / "Z Coord [um]" event, so centring the series on it makes
+    // the recorded per-plane Z correct. Do NOT use the coarse stage Z (the value
+    // NIS-E stamps into stagePositionUm.z, which stays constant across the stack).
+    // StgGetAbsPosZ (sum of all Z drives) is read only to display for comparison
+    // -- on the rig, confirm which reading matches the captured Z Coord (~z-centre).
     z_centre = 0.0;
-    StgGetAbsPosZ(&z_centre);
+    z_abs    = 0.0;
+    StgGetPosZ(&z_centre, 0);
+    StgGetAbsPosZ(&z_abs);
 
     // --- 4. Release PFS so the Z drive is free to scan the series ---
     Stg_SetPFSStatus(0);
@@ -62,8 +71,8 @@ int main()
     // --- 5. Confirm, then program a symmetric Z-series centred on z_centre ---
     z_top    = z_centre + z_half;
     z_bottom = z_centre - z_half;
-    sprintf(msg, "PFS z-centre = %.1f um.\nZ-stack %.0f..%.0f um, step %.0f um. Continue?",
-            "z_centre,z_bottom,z_top,z_step");
+    sprintf(msg, "PFS focused. z-centre (Ti ZDrive) = %.1f um  [StgAbs %.1f].\nZ-stack %.0f..%.0f um, step 10 um. Continue?",
+            "z_centre,z_abs,z_bottom,z_top");
     WaitText(0, msg);
 
     SetCommandText("Capturing PFS-centred Z-stack ...");
