@@ -11,12 +11,13 @@
 // work dir as a direct string literal (a #define with '-'/'.' fails); CRLF+ASCII;
 // Int_GetKeyString+atof for numeric keys; sprintf args as one quoted name list.
 //
-// Z-stack (edit if your spheroids sit higher/lower):
+// Z-stack geometry comes from GUI Step 3 (written into each af_trigger as
+// z_centre / z_half / z_step). If a trigger lacks them, these defaults are used:
 //   Z_CENTRE 7680, Z_HALF 90, Z_STEP 10  ->  7590..7770 um, 19 planes.
 //
 // PREREQ: 20X objective; XY+Z initialized; Z drive NOT in Escape; PFS OFF (it
 // holds focus and defeats the Z-series); camera NOT in Live. Re-run GUI Step 3
-// "Trigger NIS-E Autofocus Captures" first so the af_trigger_NN.ini files exist.
+// "Trigger NIS-E Z-Stack Captures" first so the af_trigger_NN.ini files exist.
 // ============================================================================
 
 #define SEC "spheroid"
@@ -39,13 +40,6 @@ int main()
     int rank, move_rc, handled_any;
 
     strcpy(work_dir, "S:/Images/Weihao/NISeA/NIS-E-Automation/work/autofocus");
-
-    z_centre = 7680.0;
-    z_half   = 90.0;
-    z_step   = 10.0;
-    z_top    = z_centre + z_half;
-    z_bottom = z_centre - z_half;
-    sprintf(zbuf, "%.1f", "z_centre");
 
     idle_elapsed = 0.0;
 
@@ -73,6 +67,24 @@ int main()
                 stage_x = atof(numbuf);
                 Int_GetKeyString(trigger_path, SEC, "stage_y", numbuf, 64);
                 stage_y = atof(numbuf);
+
+                // Z-stack geometry from the trigger (GUI Step 3); fall back to
+                // defaults if a key is absent (atof returns 0 for missing/blank).
+                Int_GetKeyString(trigger_path, SEC, "z_centre", numbuf, 64);
+                z_centre = atof(numbuf);
+                if( z_centre == 0.0 )
+                    z_centre = 7680.0;
+                Int_GetKeyString(trigger_path, SEC, "z_half", numbuf, 64);
+                z_half = atof(numbuf);
+                if( z_half == 0.0 )
+                    z_half = 90.0;
+                Int_GetKeyString(trigger_path, SEC, "z_step", numbuf, 64);
+                z_step = atof(numbuf);
+                if( z_step == 0.0 )
+                    z_step = 10.0;
+                z_top    = z_centre + z_half;
+                z_bottom = z_centre - z_half;
+                sprintf(zbuf, "%.1f", "z_centre");
 
                 sprintf(msg, "Capture rank %s (%s): moving + Z-stack", "rank_buf,spheroid_id");
                 SetCommandText(msg);

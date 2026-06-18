@@ -1,5 +1,29 @@
 # CHANGELOG
 
+## v1.4.2 — 2026-06-17
+
+### Step 3 Z-stack geometry is now GUI-driven (was hardcoded in the macro)
+`nis_macro_capture_zstack.mac` previously hardcoded `z_centre=7680, z_half=90, z_step=10`
+(19 planes) and read only XY from the trigger, so the GUI's Step 3 Z fields had no effect on
+the live stack. Now:
+- **GUI Step 3** exposes **Middle plane Z (um)** (new), **Z half-range (um)**, **Z step (um)**
+  (defaults 7680 / 90 / 10 matching the rig). `trigger_autofocus_all(z_centre, z_half, z_step)`
+  writes all three into every `af_trigger_NN.ini`.
+- **The macro** reads `z_centre`/`z_half`/`z_step` per trigger (`Int_GetKeyString`+`atof`),
+  computes the stack, and falls back to 7680/90/10 if a key is absent. Still a single flat
+  `main()`, CRLF + ASCII.
+- Trigger button relabeled "Trigger NIS-E Z-Stack Captures"; Step 3 hint updated to name
+  `nis_macro_capture_zstack.mac`.
+
+### GUI layout: Spheroid State table no longer overlaps the step content
+- The step content + dashboard and the Spheroid State table are now in a horizontal
+  **paned window** (draggable divider) instead of butting frames, so they can never overlap
+  — previously, at Steps 3/4 the long status text sat flush against the table.
+- The table pane is wider and its six columns are sized to all show by default
+  (no horizontal scroll needed at the default window size); drag the divider for more.
+- Default window 980x740 → 1280x820; long Step 3/4 status labels now wrap (`wraplength`)
+  instead of running into the divider. The step pane keeps >= 560 px before the table shrinks.
+
 ## v1.4.1 — 2026-06-17
 
 ### Trigger safeguards: clear-stale + verify-distinct (root-cause of duplicated capture)

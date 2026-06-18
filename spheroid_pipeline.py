@@ -241,8 +241,15 @@ def _atomic_write_crlf(path: Path, lines: list[str]) -> None:
     os.replace(tmp, path)
 
 
-def trigger_autofocus_all(records: list[SpheroidRecord], work_dir: Path) -> int:
-    """Write per-rank autofocus trigger files for NIS-E macro. Returns count written.
+def trigger_autofocus_all(records: list[SpheroidRecord], work_dir: Path,
+                          z_centre: float | None = None,
+                          z_half: float | None = None,
+                          z_step: float | None = None) -> int:
+    """Write per-rank trigger files for the NIS-E capture daemon. Returns count written.
+
+    z_centre/z_half/z_step (the Z-stack geometry from GUI Step 3) are written into
+    every trigger so nis_macro_capture_zstack.mac reads them instead of hardcoding.
+    They are omitted when None (the macro then falls back to its built-in defaults).
 
     Two safeguards (added after a capture run imaged duplicated coordinates — the
     daemon had consumed a folder holding a mix of fresh and stale triggers from
@@ -284,6 +291,12 @@ def trigger_autofocus_all(records: list[SpheroidRecord], work_dir: Path) -> int:
             f"stage_x={r.verified_x_um}",
             f"stage_y={r.verified_y_um}",
         ]
+        if z_centre is not None:
+            lines.append(f"z_centre={z_centre}")
+        if z_half is not None:
+            lines.append(f"z_half={z_half}")
+        if z_step is not None:
+            lines.append(f"z_step={z_step}")
         _atomic_write_crlf(p, lines)
         n += 1
     return n

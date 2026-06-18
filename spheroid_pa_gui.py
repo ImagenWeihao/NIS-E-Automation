@@ -487,8 +487,8 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("SpheroidPA  v1.2 — NIS-E Spheroid PA Pipeline")
-        self.geometry("980x740")
-        self.minsize(800, 600)
+        self.geometry("1280x820")
+        self.minsize(900, 640)
         self.configure(bg=BG)
 
         self._raw:       list = []
@@ -1246,8 +1246,9 @@ class App(tk.Tk):
         self._pl_out_dir     = tk.StringVar(value=r"S:\Images\Weihao\NISeA\NIS-E-Automation\work")
         self._pl_well_id     = tk.StringVar(value="")
         self._pl_n_spheroids = tk.StringVar(value="")
-        self._pl_z_half      = tk.StringVar(value="18.0")
-        self._pl_z_step      = tk.StringVar(value="2.0")
+        self._pl_z_centre    = tk.StringVar(value="7680.0")
+        self._pl_z_half      = tk.StringVar(value="90.0")
+        self._pl_z_step      = tk.StringVar(value="10.0")
         self._pl_z_rank      = tk.StringVar()
         self._pl_z_nd2_path  = tk.StringVar()
         self._pl_trigger_dir = tk.StringVar(value=r"S:\Images\Weihao\NISeA\NIS-E-Automation\work")
@@ -1257,7 +1258,11 @@ class App(tk.Tk):
         self._pl_L_um        = tk.StringVar(value="165.0")
         self._pl_ref_bin     = tk.StringVar()
 
-        # ── Outer layout: sidebar | step content | data panel ─────────────────
+        # ── Outer layout: sidebar | [ middle (steps+dashboard) || table ] ─────
+        # A horizontal paned window separates the step content + dashboard from
+        # the Spheroid State table. Panes never overlap (the divider is a real
+        # gutter) and the table width is drag-adjustable. Initial split is set in
+        # _pl_init_sash once the window has a width.
         outer = tk.Frame(parent, bg=BG)
         outer.pack(fill="both", expand=True)
 
@@ -1266,14 +1271,16 @@ class App(tk.Tk):
         sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
 
-        # Right-hand panel: spheroid state table only (full height, fixed width)
-        side_panel = tk.Frame(outer, bg=BG2, width=380)
-        side_panel.pack(side="right", fill="y")
-        side_panel.pack_propagate(False)
+        paned = ttk.PanedWindow(outer, orient="horizontal")
+        paned.pack(side="left", fill="both", expand=True)
+        self._pl_paned = paned
 
-        # Middle column: step content at top, live dashboard fills the rest
-        middle = tk.Frame(outer, bg=BG)
-        middle.pack(side="left", fill="both", expand=True)
+        # Left pane: step content (top) + live dashboard (fills the rest)
+        middle = tk.Frame(paned, bg=BG)
+        # Right pane: spheroid state table
+        side_panel = tk.Frame(paned, bg=BG2)
+        paned.add(middle, weight=4)
+        paned.add(side_panel, weight=1)
 
         content_host = tk.Frame(middle, bg=BG)
         content_host.pack(side="top", fill="x")
@@ -1403,15 +1410,17 @@ class App(tk.Tk):
         self._pl_step_frames["s3"] = f_s3
 
         tk.Label(f_s3,
-                 text=("NIS-E macro nis_macro_z_autofocus.mac navigates to each spheroid's\n"
-                       "corrected position, autofocuses, and captures a single-plane 20X ND2.\n"
-                       "After captures complete, global registration refines all coordinates."),
+                 text=("NIS-E macro nis_macro_capture_zstack.mac navigates to each spheroid\n"
+                       "and runs a Z-stack centred on Middle plane Z, spanning +/- Z half-range\n"
+                       "at Z step. These three values are written into each trigger and drive\n"
+                       "the macro's stack. Run Apply Global Registration after captures complete."),
                  bg=BG, fg=SUBTEXT, font=("Segoe UI", 8), justify="left"
                  ).pack(anchor="w", padx=12, pady=(8, 4))
 
         z_params = tk.Frame(f_s3, bg=BG); z_params.pack(fill="x", padx=12, pady=2)
-        for lbl, var in [("Z half-range (um):", self._pl_z_half),
-                          ("Z step (um):",       self._pl_z_step)]:
+        for lbl, var in [("Middle plane Z (um):", self._pl_z_centre),
+                          ("Z half-range (um):",   self._pl_z_half),
+                          ("Z step (um):",         self._pl_z_step)]:
             tk.Label(z_params, text=lbl, bg=BG, fg=TEXT2,
                      font=("Segoe UI", 9)).pack(side="left", padx=(0, 4))
             tk.Entry(z_params, textvariable=var, width=7, bg=SURFACE, fg=TEXT,
@@ -1419,10 +1428,11 @@ class App(tk.Tk):
                      font=("Segoe UI", 9)).pack(side="left", padx=(0, 16))
 
         btn3a = tk.Frame(f_s3, bg=BG); btn3a.pack(fill="x", padx=12, pady=(4, 0))
-        self._btn(btn3a, "Trigger NIS-E Autofocus Captures",
+        self._btn(btn3a, "Trigger NIS-E Z-Stack Captures",
                   self._pl_trigger_autofocus, BLUE, "#1e1e2e")
         self._pl_af_status_lbl = tk.Label(f_s3, text="Autofocus: not started.",
-                                           bg=BG, fg=SUBTEXT, font=("Segoe UI", 9), anchor="w")
+                                           bg=BG, fg=SUBTEXT, font=("Segoe UI", 9), anchor="w",
+                                           justify="left", wraplength=480)
         self._pl_af_status_lbl.pack(fill="x", padx=12)
 
         btn3b = tk.Frame(f_s3, bg=BG); btn3b.pack(fill="x", padx=12, pady=(6, 0))
@@ -1430,7 +1440,8 @@ class App(tk.Tk):
         self._btn(btn3b, "Apply Global Registration",
                   self._pl_global_reg_thread, MAUVE, "#1e1e2e")
         self._pl_reg_lbl = tk.Label(f_s3, text="Registration: not run.",
-                                     bg=BG, fg=SUBTEXT, font=("Segoe UI", 9), anchor="w")
+                                     bg=BG, fg=SUBTEXT, font=("Segoe UI", 9), anchor="w",
+                                     justify="left", wraplength=480)
         self._pl_reg_lbl.pack(fill="x", padx=12)
 
         # Z rank/nd2 widgets kept for fallback _pl_record_z handler (no button exposed)
@@ -1464,7 +1475,8 @@ class App(tk.Tk):
                   lambda: self._pl_browse_bin(self._pl_ref_bin), SURFACE2, TEXT, side="left")
         tk.Label(s4, text="(rig-exported Z-correction .bin — supplies detector/camera identity "
                           "so NIS-E accepts generated bins)",
-                 bg=BG, fg=SUBTEXT, font=("Segoe UI", 8)).pack(anchor="w", padx=2)
+                 bg=BG, fg=SUBTEXT, font=("Segoe UI", 8),
+                 justify="left", wraplength=480).pack(anchor="w", padx=2)
         lp_row = tk.Frame(s4, bg=BG); lp_row.pack(fill="x", pady=2)
         for lbl, var in [("Laser channel field:", self._pl_ch_field),
                           ("P0 (%):", self._pl_P0),
@@ -1478,7 +1490,8 @@ class App(tk.Tk):
         self._btn(btn4, "Generate All Bins",   self._pl_generate_bins_thread, GREEN, "#1e1e2e")
         self._btn(btn4, "Start Capture Queue", self._pl_capture_queue_thread, MAUVE, "#1e1e2e")
         self._pl_capture_lbl = tk.Label(f_s4, text="Capture: idle",
-                                         bg=BG, fg=SUBTEXT, font=("Segoe UI", 9), anchor="w")
+                                         bg=BG, fg=SUBTEXT, font=("Segoe UI", 9), anchor="w",
+                                         justify="left", wraplength=480)
         self._pl_capture_lbl.pack(fill="x", padx=12)
 
         # ── Right panel: spheroid state table (fills the column height) ───────
@@ -1490,12 +1503,15 @@ class App(tk.Tk):
 
         cols = ("rank", "id", "status", "verified_xy", "z_centre", "bin")
         self._pl_tree = ttk.Treeview(tbl_frame, columns=cols, show="headings", height=8)
-        hdrs = {"rank": ("Rank", 44), "id": ("ID", 130), "status": ("Status", 86),
-                "verified_xy": ("Verified XY (um)", 140),
-                "z_centre": ("Z (um)", 70), "bin": ("Bin", 150)}
+        # Widths sum to ~560 so all six columns are visible by default in the
+        # table pane (drag the divider wider for more; horizontal scrollbar covers
+        # any overflow from long IDs / bin names).
+        hdrs = {"rank": ("Rank", 46), "id": ("ID", 130), "status": ("Status", 88),
+                "verified_xy": ("Verified XY (um)", 132),
+                "z_centre": ("Z (um)", 60), "bin": ("Bin", 110)}
         for c, (h, w_) in hdrs.items():
             self._pl_tree.heading(c, text=h)
-            self._pl_tree.column(c, width=w_, minwidth=40, anchor="center")
+            self._pl_tree.column(c, width=w_, minwidth=36, anchor="center")
         vsb_tree = ttk.Scrollbar(tbl_frame, orient="vertical", command=self._pl_tree.yview)
         hsb_tree = ttk.Scrollbar(tbl_frame, orient="horizontal", command=self._pl_tree.xview)
         self._pl_tree.configure(yscrollcommand=vsb_tree.set, xscrollcommand=hsb_tree.set)
@@ -1518,6 +1534,28 @@ class App(tk.Tk):
 
         # Select Step 1 by default
         self._pl_show_step("s1")
+        # Set the initial divider so the table pane is wide enough for all columns.
+        self.after(150, self._pl_init_sash)
+
+    def _pl_init_sash(self):
+        """Place the paned-window divider so the table pane gets ~560 px (all
+        columns visible), while the step/dashboard pane keeps at least ~440 px.
+        Retries until the paned window has been laid out."""
+        try:
+            total = self._pl_paned.winfo_width()
+        except Exception:
+            return
+        if total <= 100:
+            self.after(80, self._pl_init_sash)
+            return
+        table_w = 560
+        # Keep the step/dashboard pane at least 560 px (Step 4's rows need it);
+        # the table pane shrinks first on narrow windows (it has a scrollbar).
+        pos = max(560, total - table_w)
+        try:
+            self._pl_paned.sashpos(0, pos)
+        except Exception:
+            pass
 
     # ── Pipeline tab helpers ──────────────────────────────────────────────────
 
@@ -1763,10 +1801,19 @@ class App(tk.Tk):
         out = self._pl_out_dir.get().strip()
         if not out:
             messagebox.showwarning("No output dir", "Set output directory in Step 1."); return
-        n = _pl.trigger_autofocus_all(self._pl_records, Path(out) / "autofocus")
-        self._pl_log(f"Step 3: {n} autofocus trigger files written to autofocus/")
+        try:
+            z_centre = float(self._pl_z_centre.get())
+            z_half   = float(self._pl_z_half.get())
+            z_step   = float(self._pl_z_step.get())
+        except ValueError:
+            messagebox.showerror(
+                "Bad value", "Middle plane Z, Z half-range, and Z step must be numbers."); return
+        n = _pl.trigger_autofocus_all(self._pl_records, Path(out) / "autofocus",
+                                      z_centre=z_centre, z_half=z_half, z_step=z_step)
+        self._pl_log(f"Step 3: {n} Z-stack trigger files written to autofocus/ "
+                     f"(centre={z_centre} +/-{z_half} step {z_step} um)")
         self.after(0, lambda: self._pl_af_status_lbl.configure(
-            text=f"Triggers written for {n} spheroids. Start nis_macro_z_autofocus.mac in NIS-E.",
+            text=f"Triggers written for {n} spheroids. Run nis_macro_capture_zstack.mac in NIS-E.",
             fg=YELLOW))
 
     def _pl_poll_af_thread(self):
@@ -1782,7 +1829,7 @@ class App(tk.Tk):
             z_half = float(self._pl_z_half.get())
             z_step = float(self._pl_z_step.get())
         except ValueError:
-            z_half, z_step = 18.0, 2.0
+            z_half, z_step = 90.0, 10.0
         _pl.apply_autofocus_results(self._pl_records, done, z_half, z_step)
         n_done  = len(done)
         n_total = len(self._pl_records)
