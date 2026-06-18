@@ -54,6 +54,12 @@ try:
 except ImportError:
     _MPL_TK_OK = False
 
+try:
+    from PIL import Image as _PILImage, ImageTk as _PILImageTk
+    _PIL_OK = True
+except ImportError:
+    _PIL_OK = False
+
 
 # ── Defaults (from SLIM045 / SLIM033) ────────────────────────────────────────
 
@@ -487,8 +493,8 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("SpheroidPA  v1.2 — NIS-E Spheroid PA Pipeline")
-        self.geometry("1280x820")
-        self.minsize(900, 640)
+        self.geometry("1680x880")
+        self.minsize(1000, 660)
         self.configure(bg=BG)
 
         self._raw:       list = []
@@ -1258,11 +1264,11 @@ class App(tk.Tk):
         self._pl_L_um        = tk.StringVar(value="165.0")
         self._pl_ref_bin     = tk.StringVar()
 
-        # ── Outer layout: sidebar | [ middle (steps+dashboard) || table ] ─────
-        # A horizontal paned window separates the step content + dashboard from
-        # the Spheroid State table. Panes never overlap (the divider is a real
-        # gutter) and the table width is drag-adjustable. Initial split is set in
-        # _pl_init_sash once the window has a width.
+        # ── Outer layout: sidebar | [ middle (steps+dashboard) | viewer | table ]
+        # A horizontal paned window holds three draggable panes that never
+        # overlap: the step content + live dashboard, the captured-spheroid
+        # Z-stack image viewer, and the Spheroid State table. Initial split is
+        # set in _pl_init_sash once the window has a width.
         outer = tk.Frame(parent, bg=BG)
         outer.pack(fill="both", expand=True)
 
@@ -1275,12 +1281,15 @@ class App(tk.Tk):
         paned.pack(side="left", fill="both", expand=True)
         self._pl_paned = paned
 
-        # Left pane: step content (top) + live dashboard (fills the rest)
+        # Pane 1: step content (top) + live dashboard (fills the rest)
         middle = tk.Frame(paned, bg=BG)
-        # Right pane: spheroid state table
+        # Pane 2: captured-spheroid Z-stack image viewer
+        viewer_pane = tk.Frame(paned, bg=BG)
+        # Pane 3: spheroid state table
         side_panel = tk.Frame(paned, bg=BG2)
-        paned.add(middle, weight=4)
-        paned.add(side_panel, weight=1)
+        paned.add(middle, weight=3)
+        paned.add(viewer_pane, weight=3)
+        paned.add(side_panel, weight=2)
 
         content_host = tk.Frame(middle, bg=BG)
         content_host.pack(side="top", fill="x")
@@ -1519,7 +1528,7 @@ class App(tk.Tk):
         hsb_tree.pack(side="bottom", fill="x")
         self._pl_tree.pack(side="left", fill="both", expand=True)
 
-        # ── Middle dashboard: fills the large central area below the step form ─
+        # ── Live dashboard: always visible in the middle pane below the steps ──
         tk.Label(dash_host, text="Live Dashboard", bg=BG, fg=MAUVE,
                  font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=12, pady=(8, 2))
         if not _MPL_TK_OK:
@@ -1532,10 +1541,14 @@ class App(tk.Tk):
                      text="Dashboard will appear after Step 1 completes.",
                      bg=BG2, fg=SUBTEXT, font=("Segoe UI", 9)).pack(pady=4)
 
+        # Captured-spheroid Z-stack image viewer (its own pane, always visible)
+        self._pl_build_zviewer(viewer_pane)
+
         # Select Step 1 by default
         self._pl_show_step("s1")
-        # Set the initial divider so the table pane is wide enough for all columns.
+        # Set the initial dividers, then scan for any already-captured ND2s.
         self.after(150, self._pl_init_sash)
+        self.after(220, self._pl_zv_refresh)
 
     def _pl_init_sash(self):
         """Place the paned-window divider so the table pane gets ~560 px (all
@@ -1548,12 +1561,258 @@ class App(tk.Tk):
         if total <= 100:
             self.after(80, self._pl_init_sash)
             return
-        table_w = 560
-        # Keep the step/dashboard pane at least 560 px (Step 4's rows need it);
-        # the table pane shrinks first on narrow windows (it has a scrollbar).
-        pos = max(560, total - table_w)
+        # Three panes: middle (steps+dashboard) | viewer | table.
+        middle_w = 560   # enough for Step 4's rows
+        table_w  = 440   # all six columns visible
+        viewer_w = total - middle_w - table_w
+        if viewer_w < 380:
+            # Not enough width: shrink the table to 320 first, then the middle.
+            deficit = 380 - viewer_w
+            take = min(deficit, table_w - 320); table_w -= take; deficit -= take
+            if deficit > 0:
+                middle_w = max(460, middle_w - deficit)
+            viewer_w = total - middle_w - table_w
         try:
-            self._pl_paned.sashpos(0, pos)
+            self._pl_paned.sashpos(0, middle_w)
+            self._pl_paned.sashpos(1, middle_w + viewer_w)
+        except Exception:
+            pass
+
+    # ── Step 3 captured-spheroid Z-stack viewer ───────────────────────────────
+
+    def _pl_build_zviewer(self, parent):
+        self._pl_zv_files  = {}
+        self._pl_zv_stack  = None
+        self._pl_zv_step   = None
+        self._pl_zv_b2t    = True
+        self._pl_zv_mid    = 0.0  # geometric middle plane index
+        self._pl_zv_basez  = 0.0  # GUI Middle-plane Z (um) at the middle plane
+        self._pl_zv_thumbs = []   # keep PhotoImage refs alive
+
+        tk.Label(parent, text="Captured Spheroid Z-Stacks", bg=BG, fg=MAUVE,
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=12, pady=(8, 2))
+
+        if not _PIL_OK:
+            tk.Label(parent, text="Pillow not installed - image viewer unavailable "
+                                  "(pip install pillow).",
+                     bg=BG, fg=SUBTEXT, font=("Segoe UI", 9)).pack(anchor="w", padx=12)
+            return
+
+        ctl = tk.Frame(parent, bg=BG); ctl.pack(fill="x", padx=12, pady=(0, 2))
+        tk.Label(ctl, text="Spheroid:", bg=BG, fg=TEXT2,
+                 font=("Segoe UI", 9)).pack(side="left", padx=(0, 4))
+        self._pl_zv_sel = tk.StringVar()
+        self._pl_zv_combo = ttk.Combobox(ctl, textvariable=self._pl_zv_sel, width=18,
+                                          state="readonly", font=("Segoe UI", 9))
+        self._pl_zv_combo.pack(side="left", padx=(0, 6))
+        self._pl_zv_combo.bind("<<ComboboxSelected>>", self._pl_zv_on_select)
+        self._btn(ctl, "Add...", self._pl_zv_add_file, BLUE, "#1e1e2e", side="left")
+        self._btn(ctl, "Refresh", self._pl_zv_refresh, SURFACE2, TEXT, side="left")
+
+        # Summary line: spheroid, middle-plane Z, plane count, geometry check.
+        self._pl_zv_info = tk.Label(parent, text="No Z-stack loaded.",
+                                    bg=BG, fg=TEXT, font=("Segoe UI", 9), anchor="w",
+                                    justify="left", wraplength=520)
+        self._pl_zv_info.pack(fill="x", padx=12, pady=(2, 2))
+
+        tk.Label(parent, text="All focus planes — caption shows each plane's Z depth; the "
+                              "middle plane is the GUI Middle-plane Z. Scroll horizontally.",
+                 bg=BG, fg=SUBTEXT, font=("Segoe UI", 8)).pack(anchor="w", padx=12)
+
+        # Horizontal filmstrip: one thumbnail per Z plane, captioned with its Z
+        # depth. The middle plane (z-centre) is highlighted for orientation.
+        strip_wrap = tk.Frame(parent, bg=BG2)
+        strip_wrap.pack(fill="both", expand=True, padx=12, pady=(2, 10))
+        self._pl_zv_strip_canvas = tk.Canvas(strip_wrap, bg=BG2, highlightthickness=0)
+        hsb = ttk.Scrollbar(strip_wrap, orient="horizontal",
+                            command=self._pl_zv_strip_canvas.xview)
+        self._pl_zv_strip_canvas.configure(xscrollcommand=hsb.set)
+        hsb.pack(side="bottom", fill="x")
+        self._pl_zv_strip_canvas.pack(side="top", fill="both", expand=True)
+        self._pl_zv_strip = tk.Frame(self._pl_zv_strip_canvas, bg=BG2)
+        self._pl_zv_strip_canvas.create_window((0, 0), window=self._pl_zv_strip, anchor="nw")
+        self._pl_zv_strip.bind(
+            "<Configure>",
+            lambda e: self._pl_zv_strip_canvas.configure(
+                scrollregion=self._pl_zv_strip_canvas.bbox("all")))
+        self._pl_zv_strip_canvas.bind(
+            "<Enter>",
+            lambda e: self._pl_zv_strip_canvas.bind_all("<MouseWheel>", self._pl_zv_wheel))
+        self._pl_zv_strip_canvas.bind(
+            "<Leave>", lambda e: self._pl_zv_strip_canvas.unbind_all("<MouseWheel>"))
+        tk.Label(self._pl_zv_strip, text="Select or Add a captured Z-stack ND2.",
+                 bg=BG2, fg="#888888", font=("Segoe UI", 9)).pack(padx=20, pady=20)
+
+    def _pl_zv_refresh(self):
+        if not _PIL_OK or not hasattr(self, "_pl_zv_combo"):
+            return
+        out = self._pl_out_dir.get().strip()
+        cand = []
+        if out:
+            cand += [Path(out) / "nd2", Path(out) / "autofocus", Path(out)]
+        nd2_out = self._pl_nd2_out_dir.get().strip()
+        if nd2_out:
+            cand.append(Path(nd2_out))
+        files: dict = {}
+        for d in cand:
+            try:
+                if d.is_dir():
+                    for p in sorted(d.glob("*.nd2")):
+                        files.setdefault(p.name, str(p))
+            except Exception:
+                pass
+        self._pl_zv_files = files
+        names = list(files.keys())
+        self._pl_zv_combo.configure(values=names)
+        cur = self._pl_zv_sel.get()
+        if names and cur not in names:
+            self._pl_zv_sel.set(names[0])
+            self._pl_zv_load(files[names[0]])
+        elif not names:
+            self._pl_zv_info.configure(text="No captured ND2 found in nd2/ or autofocus/.")
+
+    def _pl_zv_add_file(self):
+        if not _PIL_OK or not hasattr(self, "_pl_zv_combo"):
+            return
+        p = filedialog.askopenfilename(
+            title="Select an ND2 file to view",
+            filetypes=[("Nikon ND2 files", "*.nd2"), ("All files", "*.*")])
+        if not p:
+            return
+        name = Path(p).name
+        key = name
+        if key in self._pl_zv_files and self._pl_zv_files[key] != p:
+            key = f"{name}  [{Path(p).parent.name}]"
+        self._pl_zv_files[key] = p
+        self._pl_zv_combo.configure(values=list(self._pl_zv_files.keys()))
+        self._pl_zv_sel.set(key)
+        self._pl_zv_load(p)
+
+    def _pl_zv_on_select(self, event=None):
+        p = self._pl_zv_files.get(self._pl_zv_sel.get())
+        if p:
+            self._pl_zv_load(p)
+
+    def _pl_zv_load(self, path):
+        self._pl_zv_info.configure(text=f"Loading {Path(path).name} ...")
+        threading.Thread(target=self._pl_zv_load_worker, args=(path,), daemon=True).start()
+
+    def _pl_zv_load_worker(self, path):
+        try:
+            import nd2 as _nd2
+            import numpy as _np
+            step = None; home = 0; b2t = True
+            with _nd2.ND2File(path) as f:
+                sizes = dict(f.sizes)
+                arr = _np.asarray(f.asarray())
+                try:
+                    for lp in f.experiment:
+                        if type(lp).__name__ == "ZStackLoop":
+                            pr = lp.parameters
+                            step = float(getattr(pr, "stepUm"))
+                            home = int(getattr(pr, "homeIndex", 0))
+                            b2t  = bool(getattr(pr, "bottomToTop", True))
+                            break
+                except Exception:
+                    pass
+            order = list(sizes.keys())
+            sel = [slice(None) if ax in ("Z", "Y", "X") else 0 for ax in order]
+            arr = arr[tuple(sel)]
+            kept = [ax for ax in order if ax in ("Z", "Y", "X")]
+            if "Z" in kept:
+                arr = _np.moveaxis(arr, kept.index("Z"), 0)
+            else:
+                arr = arr[None, ...]
+            arr = _np.ascontiguousarray(arr)
+            vmin = float(_np.percentile(arr, 1)); vmax = float(_np.percentile(arr, 99.5))
+            if vmax <= vmin:
+                vmax = vmin + 1.0
+        except Exception as exc:
+            self.after(0, lambda e=exc: self._pl_zv_info.configure(text=f"Load error: {e}"))
+            return
+        n_planes = arr.shape[0]
+        # NIS-E does not reliably record the per-plane Z in the ND2 metadata, so
+        # the Z grid is reconstructed from the operator's inputs: the GEOMETRIC
+        # MIDDLE plane is the GUI Middle-plane Z, and every other plane steps by
+        # the Z step. Step prefers the file's ZStackLoop stepUm (one reliable
+        # value) and falls back to the GUI Z step.
+        gui_centre = gui_half = gui_step = None
+        try: gui_centre = float(self._pl_z_centre.get())
+        except Exception: pass
+        try: gui_half = float(self._pl_z_half.get())
+        except Exception: pass
+        try: gui_step = float(self._pl_z_step.get())
+        except Exception: pass
+        if step is None:
+            step = gui_step if (gui_step and gui_step > 0) else 1.0
+        self._pl_zv_stack  = arr
+        self._pl_zv_vmin, self._pl_zv_vmax = vmin, vmax
+        self._pl_zv_step   = step
+        self._pl_zv_b2t    = b2t
+        self._pl_zv_mid    = (n_planes - 1) / 2.0          # geometric middle index
+        self._pl_zv_basez  = gui_centre if gui_centre is not None else 0.0
+        self._pl_zv_check  = self._pl_zv_geom_check(n_planes, home, gui_half, gui_step)
+        self.after(0, self._pl_zv_render_filmstrip)
+
+    def _pl_zv_geom_check(self, n, home_idx, gui_half, gui_step):
+        """Double-check the stack against the GUI Z geometry: does the plane count
+        match 2*half/step+1 (so the middle really is z_centre)?"""
+        msgs = []
+        if gui_half and gui_step and gui_step > 0:
+            exp = int(round(2.0 * gui_half / gui_step)) + 1
+            if exp == n:
+                msgs.append(f"{n} planes match +/-{gui_half:g}/{gui_step:g} um")
+            else:
+                msgs.append(f"{n} planes vs expected {exp} for +/-{gui_half:g}/{gui_step:g} um")
+        return "  |  ".join(msgs)
+
+    def _pl_zv_render_filmstrip(self):
+        import numpy as _np
+        for w in self._pl_zv_strip.winfo_children():
+            w.destroy()
+        self._pl_zv_thumbs = []
+        arr = self._pl_zv_stack
+        if arr is None:
+            return
+        z = arr.shape[0]
+        vmin, vmax = self._pl_zv_vmin, self._pl_zv_vmax
+        mid = self._pl_zv_mid
+        mid_i = int(round(mid))
+        sign = 1.0 if self._pl_zv_b2t else -1.0
+        THUMB = 150
+        for i in range(z):
+            a = _np.clip((arr[i].astype(_np.float32) - vmin) / (vmax - vmin), 0.0, 1.0)
+            a = (a * 255.0).astype("uint8")
+            im = _PILImage.fromarray(a, mode="L")
+            im.thumbnail((THUMB, THUMB))
+            photo = _PILImageTk.PhotoImage(im)
+            self._pl_zv_thumbs.append(photo)
+            absz = self._pl_zv_basez + (i - mid) * (self._pl_zv_step or 0.0) * sign
+            is_mid = (i == mid_i)
+            cellbg = SURFACE2 if is_mid else BG2
+            edge   = BLUE if is_mid else SURFACE
+            cell = tk.Frame(self._pl_zv_strip, bg=cellbg, padx=3, pady=3,
+                            highlightthickness=2, highlightbackground=edge,
+                            highlightcolor=edge)
+            cell.pack(side="left", padx=3, pady=4)
+            tk.Label(cell, image=photo, bg=cellbg).pack()
+            cap = f"Z {absz:.1f} um\n" + ("middle (z-centre)" if is_mid else "")
+            tk.Label(cell, text=cap, bg=cellbg,
+                     fg=(BLUE if is_mid else TEXT2),
+                     font=("Segoe UI", 8), justify="center").pack()
+        self._pl_zv_strip_canvas.update_idletasks()
+        self._pl_zv_strip_canvas.configure(
+            scrollregion=self._pl_zv_strip_canvas.bbox("all"))
+        chk = getattr(self, "_pl_zv_check", "")
+        self._pl_zv_info.configure(text=(
+            f"Spheroid: {self._pl_zv_sel.get()}     "
+            f"middle plane Z {self._pl_zv_basez:.1f} um     {z} planes, step {self._pl_zv_step:g} um     "
+            f"{arr.shape[2]}x{arr.shape[1]} px"
+            + (f"\n[check] {chk}" if chk else "")))
+
+    def _pl_zv_wheel(self, event):
+        try:
+            self._pl_zv_strip_canvas.xview_scroll(int(-event.delta / 120), "units")
         except Exception:
             pass
 

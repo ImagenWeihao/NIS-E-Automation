@@ -1,0 +1,83 @@
+// ============================================================================
+// zstack_pfs_zcentre_10x.mac -- TEST: PFS-centred Z-stack at 10X
+// NIS-Elements AR macro. Single main() (this build runs only one main and no
+// user functions); CRLF + pure ASCII; all declarations at the top; sprintf
+// takes its args as ONE quoted comma-separated list of variable names.
+//
+// PURPOSE
+//   Use the Perfect Focus System (PFS) to find the focused Z = the spheroid
+//   z-centre, then acquire a symmetric Z-stack around it at 10 um steps and
+//   save it. No XY move -- stay parked on the spheroid (like zstack_cell06.mac).
+//
+//   Why PFS instead of the image autofocus: the built-in software autofocus
+//   fails on the weak fluorescence signal; PFS locks on the dish/coverslip
+//   reference with the near-IR LED, giving a reliable, repeatable focus. Set the
+//   PFS OFFSET (Devices > PFS) so the focused plane sits on the spheroid first.
+//
+// PREREQ
+//   - 10X objective selected.
+//   - XY + Z stages initialized; Z drive NOT in Escape mode.
+//   - PFS present, dish type + offset configured for the spheroid plane.
+//   - Camera NOT in Live mode.
+//   - Edit Z_HALF / SAVE path below if needed. Z step is fixed at 10 um.
+// ============================================================================
+
+int main()
+{
+    char path[256];
+    char msg[256];
+    double z_centre, z_half, z_step, z_top, z_bottom;
+    int pfs_status;
+
+    z_half = 90.0;      // +/- range around z-centre (um); 2*90/10 + 1 = 19 planes
+    z_step = 10.0;      // um per plane (requested)
+
+    // --- 1. PFS must be present ---
+    if( Stg_IsPFSPresent() == 0 )
+    {
+        WaitText(0, "PFS is not present / not connected. Aborting.");
+        return FALSE;
+    }
+
+    // --- 2. Engage PFS and wait for it to lock onto the focused plane ---
+    SetCommandText("PFS: focusing ...");
+    Stg_SetPFSStatus(1);         // turn PFS ON: find and keep the focused position
+    Stg_WaitForPFS(8.0);         // wait up to 8 s for the lock
+    pfs_status = Stg_GetPFSStatus();
+    if( pfs_status != 1 )        // 1 = Focused / ON
+    {
+        Stg_SetPFSStatus(0);
+        sprintf(msg, "PFS did not lock (status %d). Check offset / dish / range.", "pfs_status");
+        WaitText(0, msg);
+        return FALSE;
+    }
+
+    // --- 3. Read the PFS-focused absolute Z = spheroid z-centre ---
+    z_centre = 0.0;
+    StgGetAbsPosZ(&z_centre);
+
+    // --- 4. Release PFS so the Z drive is free to scan the series ---
+    Stg_SetPFSStatus(0);
+
+    // --- 5. Confirm, then program a symmetric Z-series centred on z_centre ---
+    z_top    = z_centre + z_half;
+    z_bottom = z_centre - z_half;
+    sprintf(msg, "PFS z-centre = %.1f um.\nZ-stack %.0f..%.0f um, step %.0f um. Continue?",
+            "z_centre,z_bottom,z_top,z_step");
+    WaitText(0, msg);
+
+    SetCommandText("Capturing PFS-centred Z-stack ...");
+    ND_SetZSeriesExp(0, z_top, z_centre, z_bottom, z_step, 0, 0, 0, "", "", "");
+
+    // --- 6. Run and save ---
+    ND_RunZSeriesExp();
+    strcpy(path, "S:/Images/Weihao/NISeA/NIS-E-Automation/work/nd2");
+    strcat(path, "/pfs_zcentre_10x_test.nd2");
+    DeleteFile(path);
+    ImageSaveAs(path, 14, 0);
+
+    SetCommandText(0);
+    sprintf(msg, "Done. PFS z-centre %.1f um. Saved:\n%s", "z_centre,path");
+    WaitText(0, msg);
+    return TRUE;
+}

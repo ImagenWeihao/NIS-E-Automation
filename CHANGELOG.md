@@ -1,5 +1,40 @@
 # CHANGELOG
 
+## v1.4.3 — 2026-06-17
+
+### Captured-spheroid Z-stack image viewer (its own pane)
+The PA Workflow tab is now a three-pane layout: **steps + live dashboard | Z-stack viewer |
+Spheroid State table** (all draggable). The dashboard stays visible at all times; the viewer
+is a permanent pane between the dashboard and the table (not a Step-3 swap).
+- **Spheroid selector** (dropdown) auto-scans `<out>/nd2`, `<out>/autofocus`, and the Step 4
+  ND2 dir for `*.nd2`; **Refresh** rescans; **Add...** opens a file dialog to load any ND2
+  manually. Reads each stack with the `nd2` lib (handles (Z,Y,X) and singleton/extra axes).
+- **All planes shown at once** as a horizontally-scrollable **filmstrip** (Pillow thumbnails) —
+  one image per Z plane, each captioned with its **Z depth (µm)**. The **middle plane (z-centre)
+  is highlighted** for orientation. Mouse-wheel scrolls.
+- **No focus score / auto best-focus pick.** Tried gradient-energy, Tenengrad, Laplacian, and an
+  FFT high-frequency metric (with background removal) — none reliably matched the eye across
+  stacks, so automatic focus grading was removed; the operator reads the filmstrip and picks the
+  sharpest plane. (With software autofocus / PFS centring the spheroid at z-centre this is moot.)
+- **Z grid is reconstructed from the operator's inputs, not metadata.** Audit finding: this rig's
+  ND2 does **not** reliably record the per-plane Z (the ZStackLoop stores only `stepUm`/
+  `homeIndex`/`bottomToTop`; `stagePositionUm.z` is a constant coarse-stage snapshot). So the
+  **geometric middle plane = GUI Middle-plane Z** and every other plane = `z_centre + (i − mid)·step`,
+  with `step` taken from the file's `stepUm` (one reliable value) or the GUI Z step. A **[check]**
+  line validates the plane count against ±half/step (so the middle really is z-centre).
+- Summary shows spheroid, middle-plane Z, plane count + step, dimensions, and the geometry check.
+  Thumbnails use 1–99.5 percentile contrast; ND2 load runs off-thread.
+- Default window 1280x820 → 1680x880 to fit the third pane and the filmstrip.
+
+### New test macro: `macro_selftest/zstack_pfs_zcentre_10x.mac` (PFS-centred Z-stack at 10X)
+Based on `zstack_cell06.mac`. Uses the **Perfect Focus System** to find the focused Z (the
+spheroid z-centre) instead of the unreliable image autofocus:
+`Stg_IsPFSPresent` → `Stg_SetPFSStatus(1)` → `Stg_WaitForPFS(8)` → `Stg_GetPFSStatus()==1` →
+`StgGetAbsPosZ` → `Stg_SetPFSStatus(0)`, then a symmetric Z-series around that Z at **10 µm**
+steps (`ND_SetZSeriesExp` type 0 → `ND_RunZSeriesExp`) and `ImageSaveAs`. Single `main()`,
+CRLF + ASCII; every NIS call verified against the AR macro reference. Operator sets the PFS
+offset to the spheroid plane before running.
+
 ## v1.4.2 — 2026-06-17
 
 ### Step 3 Z-stack geometry is now GUI-driven (was hardcoded in the macro)
