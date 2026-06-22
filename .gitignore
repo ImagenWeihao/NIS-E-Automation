@@ -35,3 +35,9 @@ Thumbs.db
 
 # SpheroidPA runtime work dir (triggers, bins, nd2)
 work/
+
+# SpheroidPA per-run output (dated run folders, figures, generated/reference bins, captures)
+[0-9][0-9][0-9][0-9]/
+nise*_figures/
+*.bin
+*.nd2

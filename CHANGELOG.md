@@ -1,5 +1,39 @@
 # CHANGELOG
 
+## v1.5.0 — 2026-06-22
+
+### Coordinate registration: flip-aware Step 2 + per-spheroid re-center (WellD05, 20X)
+- **Flip-aware anchor transform** (`apply_anchor_transform`): the mosaic<->stage map is a
+  ~180 deg axis flip, which a single averaged translation can't represent (only the matched
+  spheroid landed). Step 2 now fits a `SimilarityTransform` from >=2 anchor correspondences
+  (captures the flip+scale) -> 6/6 spheroids in frame (was 2/6). With 1 anchor it falls back to
+  the known 180 deg flip + that anchor's translation (`flip1`) so even one match places all six.
+- **Per-spheroid re-center from captures** (`recenter_from_captures` + GUI "Re-center from
+  captures"): measures each spheroid's intensity centroid offset in its own capture and nudges
+  its stage XY so the next pass lands centred -- exact per-spheroid, independent of anchor
+  quality; corrects the systematic camera-centre vs stage offset the 2-anchor fit can't see.
+  Flip-X/Y axis-sign toggles, "# to use" count (default all), "re-alignment in process" status,
+  per-spheroid delta shown + re-centred rows highlighted in the Spheroid State table.
+
+### Step 4: A1 confocal Z-intensity-corrected capture
+- New daemon `nis_macro_capture_zcorrected.mac`: per spheroid loads its Z-correction `.bin`
+  (`ND_ZIntensityControlLoad`), confirms `ND_ZIntensityControlIsDataReady`, runs
+  `ND_RunZSeriesExpWithZIntensityCorrection`, saves, writes done. Reads the trigger fully then
+  deletes it before capturing so the sequential queue can't be clobbered. Bins generate from a
+  rig reference `.bin` (Beer-Lambert CH2 laser ramp). Z-correction is A1-confocal-ONLY -- on the
+  Flash 4.0 camera `IsDataReady` returns `zcorr_not_ready` (incompatible detector).
+
+### Workflow + viewer
+- **session.ini pointer file**: daemons read `work_dir`/`nd2_dir` from `C:/SpheroidPA/session.ini`
+  (written by Step 3 `trigger_autofocus_all`) -> follow the Step 1 save dir, no hardcoded paths.
+- **Auto Load + filmstrip list**: one click loads all captured stacks as a vertical list of
+  filmstrip rows (per spheroid), newest first, auto-locating the nd2 folder.
+- **1-plane "Locate only" mode**: Step 3 writes `z_half=0` triggers; the capture macro then does a
+  single `Capture()` (fast locate pass for re-centering) instead of the full Z-series.
+- **Capture macro stops after the batch** (no 300 s lingering that grabbed the next pass's
+  triggers); Step 3 Z-step default 5 um for 20X.
+- **Removed "Apply Global Registration"** (unreliable matching 20X Z-stacks against the 10X mosaic).
+
 ## v1.4.3 — 2026-06-17
 
 ### Captured-spheroid Z-stack image viewer (its own pane)

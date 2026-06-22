@@ -216,6 +216,53 @@ def apply_offset(records: list[SpheroidRecord], dx: float, dy: float) -> None:
             r.status = Status.VERIFIED
 
 
+def apply_anchor_transform(records: list[SpheroidRecord], corrs: list) -> dict:
+    """Map every record's mosaic XY -> verified (stage) XY from anchor correspondences.
+
+    corrs: list of ((mosaic_x, mosaic_y), (stage_x, stage_y)) pairs, one per verified
+    anchor (stage = the anchor's matched mosaic point + its measured dx/dy).
+
+    With >= 2 anchors, fit a SimilarityTransform (scale + rotation + translation),
+    which captures a mosaic<->stage axis flip (a ~180 deg rotation) that a single
+    averaged translation cannot -- that flip is why captures landed off the spheroids.
+    With 1 anchor, fall back to a pure translation. Returns a summary dict for the GUI.
+    """
+    if len(corrs) >= 2:
+        import math
+        import numpy as np
+        from skimage.transform import SimilarityTransform
+        src = np.array([c[0] for c in corrs], dtype=float)
+        dst = np.array([c[1] for c in corrs], dtype=float)
+        tform = SimilarityTransform()
+        if not tform.estimate(src, dst):
+            raise ValueError("anchor transform fit failed (degenerate anchors?)")
+        pts = np.array([(r.mosaic_x_um, r.mosaic_y_um) for r in records], dtype=float)
+        mapped = tform(pts)
+        for r, xy in zip(records, mapped):
+            r.verified_x_um = round(float(xy[0]), 2)
+            r.verified_y_um = round(float(xy[1]), 2)
+            if r.status == Status.DETECTED:
+                r.status = Status.VERIFIED
+        return {"mode": "similarity", "n": len(corrs), "scale": float(tform.scale),
+                "rotation_deg": math.degrees(tform.rotation),
+                "tx": float(tform.translation[0]), "ty": float(tform.translation[1])}
+
+    # 1 anchor: a pure translation can't represent the characterized mosaic<->stage
+    # ~180 deg axis flip, so only the matched spheroid would land. Apply the known
+    # flip (R = -I) and pin the translation from this one anchor:
+    #   stage = -mosaic + t,  with  t = stage_a + mosaic_a.
+    # This is a rough placement -- a 2nd good anchor gives the precise fitted
+    # rotation/scale (the >=2-anchor branch above).
+    (mx, my), (sx, sy) = corrs[0]
+    tx, ty = sx + mx, sy + my
+    for r in records:
+        r.verified_x_um = round(tx - r.mosaic_x_um, 2)
+        r.verified_y_um = round(ty - r.mosaic_y_um, 2)
+        if r.status == Status.DETECTED:
+            r.status = Status.VERIFIED
+    return {"mode": "flip1", "n": 1, "tx": tx, "ty": ty}
+
+
 # ── Step 3: Automated autofocus trigger / global registration ─────────────────
 
 AF_TRIGGER_PREFIX = "af_trigger_"
@@ -225,6 +272,11 @@ AF_DONE_PREFIX    = "af_done_"
 # require a Windows-style [section] header. parse_ini() ignores the header line
 # (no '='), so the same files round-trip on the Python side.
 INI_SECTION = "spheroid"
+
+# Fixed, space-free pointer file the NIS-E capture daemon reads to find this run's
+# folders (proven by macro_selftest/test_spacedir.mac). trigger_autofocus_all writes
+# it so the daemon follows the GUI's Step 1 save dir instead of a hardcoded path.
+SESSION_INI = Path("C:/SpheroidPA/session.ini")
 
 
 def _atomic_write_crlf(path: Path, lines: list[str]) -> None:
@@ -299,6 +351,18 @@ def trigger_autofocus_all(records: list[SpheroidRecord], work_dir: Path,
             lines.append(f"z_step={z_step}")
         _atomic_write_crlf(p, lines)
         n += 1
+
+    # Point the NIS-E capture daemon at THIS run's folders (no hardcoded path in the
+    # macro): write the fixed pointer file it reads. work_dir is <save-dir>/autofocus,
+    # so the nd2 captures go to the sibling <save-dir>/nd2.
+    nd2_dir = work_dir.parent / "nd2"
+    nd2_dir.mkdir(parents=True, exist_ok=True)
+    SESSION_INI.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_crlf(SESSION_INI, [
+        "[paths]",
+        f"work_dir={work_dir.as_posix()}",
+        f"nd2_dir={nd2_dir.as_posix()}",
+    ])
     return n
 
 
@@ -341,93 +405,58 @@ def apply_autofocus_results(
                 r.status = Status.Z_KNOWN
 
 
-def global_registration(
-    records: list[SpheroidRecord],
-    mosaic_nd2: Path,
-    out_dir: Path,
-    done_nd2s: dict[int, str],
-) -> dict:
+def recenter_from_captures(records: list[SpheroidRecord], nd2_dir: Path,
+                           flip_x: bool = False, flip_y: bool = False,
+                           suffix: str = "_zstack.nd2") -> list[tuple]:
+    """Second-pass re-centering. For each record, read its capture
+    <spheroid_id><suffix> in nd2_dir, measure the spheroid's intensity-weighted
+    centroid offset from the frame centre, and nudge verified_x/y so the NEXT
+    capture lands centred -- exact per-spheroid, independent of anchor quality.
+
+    flip_x/flip_y set the camera-pixel -> stage-um axis sign (verify on one
+    spheroid; toggle a flip if it nudges the wrong way). Pixel size is read from
+    each nd2 (so it works at any magnification). Returns
+    [(rank, dcol_px, drow_px, dx_um, dy_um), ...] for review.
     """
-    NCC-match each captured 20X ND2 vs mosaic to get precise XY per spheroid.
-    Fit similarity transform across all matches; update verified_x/y on all records.
-    Returns summary dict with n_matched, residuals_um, mean_residual_um, transform.
-    """
-    import math as _math2
-
-    src: list[tuple[float, float]] = []
-    dst: list[tuple[float, float]] = []
-
-    for rank, nd2_path in done_nd2s.items():
-        if not nd2_path:
+    import numpy as np
+    import nd2 as _nd2
+    sx = -1.0 if flip_x else 1.0
+    sy = -1.0 if flip_y else 1.0
+    out: list[tuple] = []
+    for r in records:
+        p = Path(nd2_dir) / f"{r.spheroid_id}{suffix}"
+        if not p.exists():
             continue
-        rec = next((r for r in records if r.rank == rank), None)
-        if rec is None:
+        with _nd2.ND2File(p) as f:
+            a = np.squeeze(np.asarray(f.asarray())).astype(np.float32)
+            try:
+                px = float(f.voxel_size().x)
+            except Exception:
+                px = 0.0
+        if px <= 0.0:
             continue
-        try:
-            dx, dy, _ncc, _mr = estimate_offset_from_nd2(
-                mosaic_nd2, Path(nd2_path), records, out_dir, expected_rank=rank)
-            src.append((rec.verified_x_um, rec.verified_y_um))
-            dst.append((rec.mosaic_x_um + dx, rec.mosaic_y_um + dy))
-        except (ValueError, Exception):
-            pass
-
-    if not src:
-        raise ValueError("No successful NCC matches for global registration")
-
-    n = len(src)
-
-    try:
-        import numpy as np
-        src_a = np.array(src)
-        dst_a = np.array(dst)
-
-        if n >= 2:
-            from skimage.transform import SimilarityTransform
-            tform = SimilarityTransform()
-            tform.estimate(src_a, dst_a)
-            pred = tform(src_a)
-            residuals = [float(np.linalg.norm(pred[i] - dst_a[i])) for i in range(n)]
-            for r in records:
-                xy_t = tform(np.array([[r.verified_x_um, r.verified_y_um]]))[0]
-                r.verified_x_um = round(float(xy_t[0]), 2)
-                r.verified_y_um = round(float(xy_t[1]), 2)
-            return {
-                "n_matched": n,
-                "residuals_um": residuals,
-                "mean_residual_um": float(np.mean(residuals)),
-                "transform": {
-                    "dx": float(tform.translation[0]),
-                    "dy": float(tform.translation[1]),
-                    "scale": float(tform.scale),
-                    "angle_deg": float(_math2.degrees(tform.rotation)),
-                },
-            }
-        else:
-            ddx = float(dst_a[0, 0] - src_a[0, 0])
-            ddy = float(dst_a[0, 1] - src_a[0, 1])
-            for r in records:
-                r.verified_x_um = round(r.verified_x_um + ddx, 2)
-                r.verified_y_um = round(r.verified_y_um + ddy, 2)
-            return {
-                "n_matched": 1, "residuals_um": [0.0],
-                "mean_residual_um": 0.0,
-                "transform": {"dx": ddx, "dy": ddy},
-            }
-    except ImportError:
-        ddx = sum(d[0] - s[0] for s, d in zip(src, dst)) / n
-        ddy = sum(d[1] - s[1] for s, d in zip(src, dst)) / n
-        for r in records:
-            r.verified_x_um = round(r.verified_x_um + ddx, 2)
-            r.verified_y_um = round(r.verified_y_um + ddy, 2)
-        residuals = [
-            _math2.sqrt((dst[i][0] - src[i][0] - ddx) ** 2 + (dst[i][1] - src[i][1] - ddy) ** 2)
-            for i in range(n)
-        ]
-        return {
-            "n_matched": n, "residuals_um": residuals,
-            "mean_residual_um": sum(residuals) / n,
-            "transform": {"dx": ddx, "dy": ddy},
-        }
+        while a.ndim > 3:
+            a = a[a.shape[0] // 2]
+        proj = a.max(0) if a.ndim == 3 else a          # max over Z
+        h, w = proj.shape
+        bg = float(np.median(proj))
+        mad = float(np.median(np.abs(proj - bg))) * 1.4826 + 1e-6
+        mask = proj > bg + max(60.0, 6.0 * mad)        # bright spheroid pixels
+        if int(mask.sum()) < 100:
+            continue
+        ys, xs = np.nonzero(mask)
+        wgt = proj[ys, xs] - bg
+        cx = float((xs * wgt).sum() / wgt.sum())
+        cy = float((ys * wgt).sum() / wgt.sum())
+        dcol = cx - w / 2.0
+        drow = cy - h / 2.0
+        # move the stage opposite the image-centroid offset to bring it to centre
+        dx = round(-dcol * px * sx, 2)
+        dy = round(-drow * px * sy, 2)
+        r.verified_x_um = round(r.verified_x_um + dx, 2)
+        r.verified_y_um = round(r.verified_y_um + dy, 2)
+        out.append((r.rank, round(dcol, 1), round(drow, 1), dx, dy))
+    return out
 
 
 # ── Step 3: Z-centre from 20X autofocus nd2 (manual fallback) ──────────────────

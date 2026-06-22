@@ -1254,7 +1254,12 @@ class App(tk.Tk):
         self._pl_n_spheroids = tk.StringVar(value="")
         self._pl_z_centre    = tk.StringVar(value="7680.0")
         self._pl_z_half      = tk.StringVar(value="90.0")
-        self._pl_z_step      = tk.StringVar(value="10.0")
+        self._pl_z_step      = tk.StringVar(value="5.0")
+        self._pl_recenter_flipx = tk.BooleanVar(value=False)
+        self._pl_recenter_flipy = tk.BooleanVar(value=False)
+        self._pl_recenter_n  = tk.StringVar(value="all")
+        self._pl_recentered  = {}
+        self._pl_locate_only = tk.BooleanVar(value=False)
         self._pl_z_rank      = tk.StringVar()
         self._pl_z_nd2_path  = tk.StringVar()
         self._pl_trigger_dir = tk.StringVar(value=r"S:\Images\Weihao\NISeA\NIS-E-Automation\work")
@@ -1371,7 +1376,7 @@ class App(tk.Tk):
         self._pl_step_frames["s2"] = f_s2
 
         tk.Label(f_s2,
-                 text="Navigate stage to a spheroid in NIS-E, capture sub-10X nd2, type its rank, browse the nd2.\n"
+                 text="Navigate stage to a spheroid in NIS-E, capture an nd2 in the mosaic's channel (10X/wide field matches best); use 2 strong, well-separated spheroids. Type its rank, browse the nd2.\n"
                       "Leave rank blank to auto-match by NCC. After Verify, the box shows the actually matched rank.",
                  bg=BG, fg=SUBTEXT, font=("Segoe UI", 8), justify="left").pack(anchor="w", padx=12, pady=(8, 2))
 
@@ -1414,7 +1419,7 @@ class App(tk.Tk):
                                         bg=BG, fg=SUBTEXT, font=("Segoe UI", 9), anchor="w")
         self._pl_offset_lbl.pack(fill="x", padx=12)
 
-        # Step 3 content (automated autofocus + global registration)
+        # Step 3 content (Z-stack capture triggers)
         f_s3 = tk.Frame(content_host, bg=BG)
         self._pl_step_frames["s3"] = f_s3
 
@@ -1422,7 +1427,7 @@ class App(tk.Tk):
                  text=("NIS-E macro nis_macro_capture_zstack.mac navigates to each spheroid\n"
                        "and runs a Z-stack centred on Middle plane Z, spanning +/- Z half-range\n"
                        "at Z step. These three values are written into each trigger and drive\n"
-                       "the macro's stack. Run Apply Global Registration after captures complete."),
+                       "the macro's stack."),
                  bg=BG, fg=SUBTEXT, font=("Segoe UI", 8), justify="left"
                  ).pack(anchor="w", padx=12, pady=(8, 4))
 
@@ -1439,6 +1444,9 @@ class App(tk.Tk):
         btn3a = tk.Frame(f_s3, bg=BG); btn3a.pack(fill="x", padx=12, pady=(4, 0))
         self._btn(btn3a, "Trigger NIS-E Z-Stack Captures",
                   self._pl_trigger_autofocus, BLUE, "#1e1e2e")
+        tk.Checkbutton(btn3a, text="Locate only (1 plane)", variable=self._pl_locate_only,
+                       bg=BG, fg=TEXT2, selectcolor=SURFACE, activebackground=BG,
+                       activeforeground=TEXT, font=("Segoe UI", 8)).pack(side="left", padx=(8, 0))
         self._pl_af_status_lbl = tk.Label(f_s3, text="Autofocus: not started.",
                                            bg=BG, fg=SUBTEXT, font=("Segoe UI", 9), anchor="w",
                                            justify="left", wraplength=480)
@@ -1446,12 +1454,16 @@ class App(tk.Tk):
 
         btn3b = tk.Frame(f_s3, bg=BG); btn3b.pack(fill="x", padx=12, pady=(6, 0))
         self._btn(btn3b, "Refresh Status", self._pl_poll_af_thread, SURFACE2, TEXT)
-        self._btn(btn3b, "Apply Global Registration",
-                  self._pl_global_reg_thread, MAUVE, "#1e1e2e")
-        self._pl_reg_lbl = tk.Label(f_s3, text="Registration: not run.",
-                                     bg=BG, fg=SUBTEXT, font=("Segoe UI", 9), anchor="w",
-                                     justify="left", wraplength=480)
-        self._pl_reg_lbl.pack(fill="x", padx=12)
+        self._btn(btn3b, "Re-center from captures", self._pl_recenter_thread, MAUVE, "#1e1e2e")
+        tk.Label(btn3b, text="  # to use:", bg=BG, fg=TEXT2, font=("Segoe UI", 8)).pack(side="left")
+        tk.Entry(btn3b, textvariable=self._pl_recenter_n, width=5, bg=SURFACE, fg=TEXT,
+                 insertbackground=TEXT, relief="flat", font=("Segoe UI", 9)).pack(side="left", padx=(2, 6))
+        tk.Checkbutton(btn3b, text="flip X", variable=self._pl_recenter_flipx, bg=BG, fg=TEXT2,
+                       selectcolor=SURFACE, activebackground=BG, activeforeground=TEXT,
+                       font=("Segoe UI", 8)).pack(side="left", padx=(8, 0))
+        tk.Checkbutton(btn3b, text="flip Y", variable=self._pl_recenter_flipy, bg=BG, fg=TEXT2,
+                       selectcolor=SURFACE, activebackground=BG, activeforeground=TEXT,
+                       font=("Segoe UI", 8)).pack(side="left", padx=(4, 0))
 
         # Z rank/nd2 widgets kept for fallback _pl_record_z handler (no button exposed)
         self._pl_z_rank_combo = ttk.Combobox(f_s3, textvariable=self._pl_z_rank, width=6,
@@ -1516,11 +1528,12 @@ class App(tk.Tk):
         # table pane (drag the divider wider for more; horizontal scrollbar covers
         # any overflow from long IDs / bin names).
         hdrs = {"rank": ("Rank", 46), "id": ("ID", 130), "status": ("Status", 88),
-                "verified_xy": ("Verified XY (um)", 132),
+                "verified_xy": ("Verified XY (um)", 172),
                 "z_centre": ("Z (um)", 60), "bin": ("Bin", 110)}
         for c, (h, w_) in hdrs.items():
             self._pl_tree.heading(c, text=h)
             self._pl_tree.column(c, width=w_, minwidth=36, anchor="center")
+        self._pl_tree.tag_configure("recentered", background="#3a2c52", foreground="#e6d8ff")
         vsb_tree = ttk.Scrollbar(tbl_frame, orient="vertical", command=self._pl_tree.yview)
         hsb_tree = ttk.Scrollbar(tbl_frame, orient="horizontal", command=self._pl_tree.xview)
         self._pl_tree.configure(yscrollcommand=vsb_tree.set, xscrollcommand=hsb_tree.set)
@@ -1608,6 +1621,7 @@ class App(tk.Tk):
                                           state="readonly", font=("Segoe UI", 9))
         self._pl_zv_combo.pack(side="left", padx=(0, 6))
         self._pl_zv_combo.bind("<<ComboboxSelected>>", self._pl_zv_on_select)
+        self._btn(ctl, "Auto Load", self._pl_zv_autoload, MAUVE, "#1e1e2e", side="left")
         self._btn(ctl, "Add...", self._pl_zv_add_file, BLUE, "#1e1e2e", side="left")
         self._btn(ctl, "Refresh", self._pl_zv_refresh, SURFACE2, TEXT, side="left")
 
@@ -1629,8 +1643,11 @@ class App(tk.Tk):
         self._pl_zv_strip_canvas = tk.Canvas(strip_wrap, bg=BG2, highlightthickness=0)
         hsb = ttk.Scrollbar(strip_wrap, orient="horizontal",
                             command=self._pl_zv_strip_canvas.xview)
-        self._pl_zv_strip_canvas.configure(xscrollcommand=hsb.set)
+        vsb = ttk.Scrollbar(strip_wrap, orient="vertical",
+                            command=self._pl_zv_strip_canvas.yview)
+        self._pl_zv_strip_canvas.configure(xscrollcommand=hsb.set, yscrollcommand=vsb.set)
         hsb.pack(side="bottom", fill="x")
+        vsb.pack(side="right", fill="y")
         self._pl_zv_strip_canvas.pack(side="top", fill="both", expand=True)
         self._pl_zv_strip = tk.Frame(self._pl_zv_strip_canvas, bg=BG2)
         self._pl_zv_strip_canvas.create_window((0, 0), window=self._pl_zv_strip, anchor="nw")
@@ -1673,6 +1690,60 @@ class App(tk.Tk):
             self._pl_zv_load(files[names[0]])
         elif not names:
             self._pl_zv_info.configure(text="No captured ND2 found in nd2/ or autofocus/.")
+
+    def _pl_zv_autoload(self):
+        """Auto-discover the latest capture output dir (from C:/SpheroidPA/session.ini,
+        which the capture daemon follows) and load all captured ND2 stacks into the
+        viewer, newest first -- no manual path needed."""
+        if not _PIL_OK or not hasattr(self, "_pl_zv_combo"):
+            return
+        import configparser
+        import spheroid_pipeline as _pl
+        cand = []
+        try:
+            cp = configparser.ConfigParser()
+            cp.read(_pl.SESSION_INI)
+            nd = cp.get("paths", "nd2_dir", fallback="").strip()
+            if nd:
+                cand.append(Path(nd))
+            wd = cp.get("paths", "work_dir", fallback="").strip()
+            if wd:
+                cand.append(Path(wd).parent / "nd2")
+        except Exception:
+            pass
+        nd2_out = self._pl_nd2_out_dir.get().strip()
+        if nd2_out:
+            cand.append(Path(nd2_out))
+        out = self._pl_out_dir.get().strip()
+        if out:
+            cand.append(Path(out) / "nd2")
+        files, chosen = {}, None
+        for d in cand:
+            try:
+                if d.is_dir():
+                    nd2s = sorted(d.glob("*.nd2"),
+                                  key=lambda p: p.stat().st_mtime, reverse=True)
+                    if nd2s:
+                        chosen = d
+                        for p in nd2s:
+                            files.setdefault(p.name, str(p))
+                        break
+            except Exception:
+                pass
+        if not files:
+            self._pl_zv_info.configure(
+                text="Auto Load: no captured ND2 found (run a capture first).")
+            return
+        self._pl_zv_files = files
+        names = list(files.keys())
+        self._pl_zv_combo.configure(values=names)
+        self._pl_zv_sel.set(names[0])
+        if chosen is not None:
+            self._pl_nd2_out_dir.set(str(chosen))
+        self._pl_log(f"Auto Load: {len(names)} ND2 from {chosen} (newest first)")
+        self._pl_zv_info.configure(text=f"Auto Load: reading {len(names)} stack(s) ...")
+        items = [(n, files[n]) for n in names]
+        threading.Thread(target=self._pl_zv_load_all, args=(items,), daemon=True).start()
 
     def _pl_zv_add_file(self):
         if not _PIL_OK or not hasattr(self, "_pl_zv_combo"):
@@ -1799,6 +1870,7 @@ class App(tk.Tk):
         else:
             self._pl_zv_center = int(round(self._pl_zv_mid))
         self._pl_zv_check  = self._pl_zv_geom_check(n_planes, home, gui_half, gui_step)
+        self._pl_zv_list_mode = False
         self.after(0, self._pl_zv_render_filmstrip)
 
     def _pl_zv_geom_check(self, n, home_idx, gui_half, gui_step):
@@ -1867,9 +1939,95 @@ class App(tk.Tk):
 
     def _pl_zv_wheel(self, event):
         try:
-            self._pl_zv_strip_canvas.xview_scroll(int(-event.delta / 120), "units")
+            if getattr(self, "_pl_zv_list_mode", False) and not (event.state & 0x0001):
+                self._pl_zv_strip_canvas.yview_scroll(int(-event.delta / 120), "units")
+            else:
+                self._pl_zv_strip_canvas.xview_scroll(int(-event.delta / 120), "units")
         except Exception:
             pass
+
+    def _pl_zv_begin_list(self):
+        for w in self._pl_zv_strip.winfo_children():
+            w.destroy()
+        self._pl_zv_thumbs = []
+        self._pl_zv_list_mode = True
+        self._pl_zv_strip_canvas.xview_moveto(0.0)
+        self._pl_zv_strip_canvas.yview_moveto(0.0)
+
+    def _pl_zv_load_all(self, items):
+        """List mode: render every (name, path) as its own filmstrip row, newest first.
+        Lighter than the single-stack view (smaller thumbs, no per-plane caption)."""
+        import nd2 as _nd2
+        import numpy as _np
+        self.after(0, self._pl_zv_begin_list)
+        gui_centre = gui_step = None
+        try: gui_centre = float(self._pl_z_centre.get())
+        except Exception: pass
+        try: gui_step = float(self._pl_z_step.get())
+        except Exception: pass
+        done = 0
+        for name, path in items:
+            try:
+                with _nd2.ND2File(path) as f:
+                    sizes = dict(f.sizes)
+                    arr = _np.asarray(f.asarray())
+                    b2t = True
+                    try:
+                        for lp in f.experiment:
+                            if type(lp).__name__ == "ZStackLoop":
+                                b2t = bool(getattr(lp.parameters, "bottomToTop", True))
+                                break
+                    except Exception:
+                        pass
+                order = list(sizes.keys())
+                sel = [slice(None) if ax in ("Z", "Y", "X") else 0 for ax in order]
+                arr = arr[tuple(sel)]
+                kept = [ax for ax in order if ax in ("Z", "Y", "X")]
+                arr = _np.moveaxis(arr, kept.index("Z"), 0) if "Z" in kept else arr[None, ...]
+                arr = _np.ascontiguousarray(arr)
+                vmin = float(_np.percentile(arr, 1)); vmax = float(_np.percentile(arr, 99.5))
+                if vmax <= vmin:
+                    vmax = vmin + 1.0
+                n = arr.shape[0]
+                st = dict(arr=arr, vmin=vmin, vmax=vmax, n_planes=n,
+                          center=int(round((n - 1) / 2.0)),
+                          basez=(gui_centre if gui_centre is not None else 0.0),
+                          step=(gui_step or 0.0), b2t=b2t)
+                self.after(0, lambda nm=name, s=st: self._pl_zv_append_row(nm, s))
+                done += 1
+            except Exception:
+                continue
+        self.after(0, lambda d=done: self._pl_zv_info.configure(
+            text=(f"Auto Load: {d} stack(s) listed, newest first — one row per spheroid "
+                  "(focus-centre plane outlined). Wheel scrolls the list; pick one in the "
+                  "dropdown for the full-size filmstrip.")))
+
+    def _pl_zv_append_row(self, name, st):
+        import numpy as _np
+        arr = st["arr"]; vmin = st["vmin"]; vmax = st["vmax"]; center = st["center"]
+        row = tk.Frame(self._pl_zv_strip, bg=BG2)
+        row.pack(side="top", fill="x", anchor="w", pady=(2, 8))
+        tk.Label(row,
+                 text=f"{name}     centre Z {st['basez']:.1f} um     {st['n_planes']} planes",
+                 bg=BG2, fg=MAUVE, font=("Segoe UI", 9, "bold"), anchor="w"
+                 ).pack(side="top", anchor="w", padx=2)
+        sub = tk.Frame(row, bg=BG2); sub.pack(side="top", anchor="w")
+        for i in range(arr.shape[0]):
+            a = _np.clip((arr[i].astype(_np.float32) - vmin) / (vmax - vmin), 0.0, 1.0)
+            im = _PILImage.fromarray((a * 255.0).astype("uint8"), mode="L")
+            im.thumbnail((96, 96))
+            photo = _PILImageTk.PhotoImage(im)
+            self._pl_zv_thumbs.append(photo)
+            is_c = (i == center)
+            cbg = SURFACE2 if is_c else BG2
+            edge = BLUE if is_c else SURFACE
+            cell = tk.Frame(sub, bg=cbg, padx=1, pady=1, highlightthickness=2,
+                            highlightbackground=edge, highlightcolor=edge)
+            cell.pack(side="left", padx=1, pady=1)
+            tk.Label(cell, image=photo, bg=cbg).pack()
+        self._pl_zv_strip_canvas.update_idletasks()
+        self._pl_zv_strip_canvas.configure(
+            scrollregion=self._pl_zv_strip_canvas.bbox("all"))
 
     # ── Pipeline tab helpers ──────────────────────────────────────────────────
 
@@ -1944,12 +2102,18 @@ class App(tk.Tk):
     def _pl_update_table(self):
         for row in self._pl_tree.get_children():
             self._pl_tree.delete(row)
+        rc = getattr(self, "_pl_recentered", {})
         for r in self._pl_records:
             xy = (f"({r.verified_x_um:.1f}, {r.verified_y_um:.1f})"
                   if r.verified_x_um else "—")
+            tags = ()
+            if r.rank in rc:
+                dx, dy = rc[r.rank]
+                xy = f"{xy}  Δ{dx:+.0f},{dy:+.0f}"
+                tags = ("recentered",)
             zc = f"{r.z_centre_um:.2f}" if r.z_centre_um else "—"
             bn = Path(r.bin_path).name if r.bin_path else "—"
-            self._pl_tree.insert("", "end", values=(
+            self._pl_tree.insert("", "end", tags=tags, values=(
                 r.rank, r.spheroid_id, r.status, xy, zc, bn))
 
     def _pl_log(self, msg: str):
@@ -2026,7 +2190,7 @@ class App(tk.Tk):
             messagebox.showwarning("Missing paths", "Set mosaic ND2 and output dir."); return
         screen_csv = Path(out) / "spheroid_screen_latest.csv"
 
-        dxs, dys = [], []
+        corrs = []
         for i, (nd2_var, rk_var, (_, lbl)) in enumerate(
                 zip(self._pl_anchor_paths, self._pl_anchor_ranks, self._pl_anchor_frames)):
             nd2_path = nd2_var.get().strip()
@@ -2042,7 +2206,10 @@ class App(tk.Tk):
             try:
                 dx, dy, ncc, matched_rank = _pl.estimate_offset_from_nd2(
                     Path(mosaic), Path(nd2_path), self._pl_records, Path(out), exp_rank)
-                dxs.append(dx); dys.append(dy)
+                rec_m = next((r for r in self._pl_records if r.rank == matched_rank), None)
+                if rec_m is not None:
+                    mxy = (rec_m.mosaic_x_um, rec_m.mosaic_y_um)
+                    corrs.append((mxy, (mxy[0] + dx, mxy[1] + dy)))
                 self.after(0, lambda v=matched_rank, var=rk_var: var.set(str(v)))
                 mism = (exp_rank is not None and matched_rank != exp_rank)
                 self.after(0, lambda l=lbl, dx_=dx, dy_=dy, n=ncc, mr=matched_rank, mm=mism:
@@ -2058,19 +2225,27 @@ class App(tk.Tk):
                     text=f"FAILED: {e}", fg=RED))
                 self._pl_log(f"  Anchor {i+1} failed: {exc}")
 
-        if not dxs:
+        if not corrs:
             self.after(0, lambda: self._pl_offset_lbl.configure(
                 text="Offset: FAILED — no successful anchor", fg=RED))
             self._pl_log("All anchors failed — cannot proceed.")
             return
-        mean_dx = sum(dxs) / len(dxs)
-        mean_dy = sum(dys) / len(dys)
-        _pl.apply_offset(self._pl_records, mean_dx, mean_dy)
-        self._pl_offset = (mean_dx, mean_dy)
+        info = _pl.apply_anchor_transform(self._pl_records, corrs)
+        if info["mode"] == "similarity":
+            self._pl_offset = (info["tx"], info["ty"])
+            msg = (f"Transform applied ({info['n']} anchors): scale={info['scale']:.3f}  "
+                   f"rot={info['rotation_deg']:+.1f} deg  (flip-aware similarity)")
+        elif info["mode"] == "flip1":
+            self._pl_offset = (info["tx"], info["ty"])
+            msg = ("1 anchor + assumed 180-deg mosaic/stage flip applied (rough). "
+                   "Add a 2nd strong anchor for the precise fitted transform.")
+        else:
+            self._pl_offset = (info.get("dx", 0.0), info.get("dy", 0.0))
+            msg = (f"Offset applied: dx={info.get('dx', 0.0):+.1f} um  "
+                   f"dy={info.get('dy', 0.0):+.1f} um  (translation)")
         self.after(0, self._pl_update_table)
         self.after(0, self._pl_refresh_dashboard)
-        msg = f"Offset applied: dx={mean_dx:+.1f} um  dy={mean_dy:+.1f} um  (from {len(dxs)} anchor(s))"
-        self.after(0, lambda: self._pl_offset_lbl.configure(text=msg, fg=GREEN))
+        self.after(0, lambda m=msg: self._pl_offset_lbl.configure(text=m, fg=GREEN))
         self._pl_log(msg)
         self._pl_update_step_dots()
 
@@ -2122,13 +2297,15 @@ class App(tk.Tk):
         except ValueError:
             messagebox.showerror(
                 "Bad value", "Middle plane Z, Z half-range, and Z step must be numbers."); return
+        locate = self._pl_locate_only.get()
+        if locate:
+            z_half = 0.0          # single plane at z_centre -- fast locate pass for re-centering
         n = _pl.trigger_autofocus_all(self._pl_records, Path(out) / "autofocus",
                                       z_centre=z_centre, z_half=z_half, z_step=z_step)
-        self._pl_log(f"Step 3: {n} Z-stack trigger files written to autofocus/ "
-                     f"(centre={z_centre} +/-{z_half} step {z_step} um)")
-        self.after(0, lambda: self._pl_af_status_lbl.configure(
-            text=f"Triggers written for {n} spheroids. Run nis_macro_capture_zstack.mac in NIS-E.",
-            fg=YELLOW))
+        mode = "1-plane LOCATE" if locate else f"Z-stack +/-{z_half:g}/{z_step:g} um"
+        self._pl_log(f"Step 3: {n} {mode} triggers written to autofocus/ (centre={z_centre})")
+        self.after(0, lambda m=mode: self._pl_af_status_lbl.configure(
+            text=f"{n} {m} triggers written. Run nis_macro_capture_zstack.mac in NIS-E.", fg=YELLOW))
 
     def _pl_poll_af_thread(self):
         threading.Thread(target=self._pl_poll_af, daemon=True).start()
@@ -2155,43 +2332,76 @@ class App(tk.Tk):
         self._pl_log(f"Step 3 poll: {msg}")
         self._pl_update_step_dots()
 
-    def _pl_global_reg_thread(self):
-        threading.Thread(target=self._pl_global_reg, daemon=True).start()
+    def _pl_recenter_thread(self):
+        self._pl_af_status_lbl.configure(text="Re-alignment in process …", fg=YELLOW)
+        threading.Thread(target=self._pl_recenter, daemon=True).start()
 
-    def _pl_global_reg(self):
+    def _pl_recenter(self):
         import spheroid_pipeline as _pl
-        out = self._pl_out_dir.get().strip()
-        if not out or not self._pl_records:
-            return
-        done = _pl.poll_autofocus_done(self._pl_records, Path(out) / "autofocus")
-        if not done:
-            self.after(0, lambda: self._pl_reg_lbl.configure(
-                text="No autofocus done files found — run captures first.", fg=RED)); return
-        done_nd2s = {rank: d["nd2_path"] for rank, d in done.items()}
-        mosaic = self._pl_mosaic_path.get().strip()
-        if not mosaic:
-            self.after(0, lambda: self._pl_reg_lbl.configure(
-                text="Set mosaic ND2 path (Step 1).", fg=RED)); return
-        self._pl_log(f"Step 3: running global registration on {len(done_nd2s)} ND2s ...")
+        if not self._pl_records:
+            messagebox.showwarning("No records", "Run Steps 1-3 (capture) first."); return
+        # Find the folder that actually holds the *_zstack.nd2 captures, robustly, so
+        # the user never has to hand-set a dir: session.ini nd2_dir -> <Output dir>/nd2
+        # -> the Step-4 ND2 field (or its /nd2 child).
+        def _caps(d):
+            try:
+                return bool(d) and Path(d).is_dir() and any(Path(d).glob("*_zstack.nd2"))
+            except Exception:
+                return False
+        nd2_dir = ""
         try:
-            result = _pl.global_registration(
-                self._pl_records, Path(mosaic), Path(out), done_nd2s)
-            n  = result["n_matched"]
-            mr = result["mean_residual_um"]
-            t  = result["transform"]
-            msg = (f"Global reg: {n} matches, mean residual={mr:.1f} um, "
-                   f"dx={t.get('dx', 0):.1f} dy={t.get('dy', 0):.1f} um")
-            if "scale" in t:
-                msg += f" scale={t['scale']:.4f} angle={t.get('angle_deg', 0):.2f}deg"
-            self.after(0, lambda: self._pl_reg_lbl.configure(text=msg, fg=GREEN))
-            self._pl_log(f"Step 3 global reg done: {msg}")
-        except ValueError as e:
-            self.after(0, lambda: self._pl_reg_lbl.configure(
-                text=f"Failed: {e}", fg=RED))
-            self._pl_log(f"Step 3 global reg failed: {e}")
+            import configparser
+            cp = configparser.ConfigParser(); cp.read(_pl.SESSION_INI)
+            c = cp.get("paths", "nd2_dir", fallback="").strip()
+            if _caps(c):
+                nd2_dir = c
+        except Exception:
+            pass
+        if not nd2_dir:
+            out = self._pl_out_dir.get().strip()
+            if out and _caps(str(Path(out) / "nd2")):
+                nd2_dir = str(Path(out) / "nd2")
+        if not nd2_dir:
+            c = self._pl_nd2_out_dir.get().strip()
+            if _caps(c):
+                nd2_dir = c
+            elif c and _caps(str(Path(c) / "nd2")):
+                nd2_dir = str(Path(c) / "nd2")
+        if not nd2_dir:
+            messagebox.showwarning(
+                "No captures",
+                "Couldn't find any *_zstack.nd2. Set the Step 1 Output dir to your run "
+                "folder (e.g. ...\\0622) and capture first."); return
+        targets = sorted(self._pl_records, key=lambda r: r.rank)
+        n_s = self._pl_recenter_n.get().strip().lower()
+        if n_s not in ("", "all", "0"):
+            try:
+                n = int(n_s)
+            except ValueError:
+                messagebox.showwarning("Bad number", "'# to use' must be a whole number or 'all'."); return
+            if n > 0:
+                targets = targets[:n]
+        try:
+            res = _pl.recenter_from_captures(targets, Path(nd2_dir),
+                                             flip_x=self._pl_recenter_flipx.get(),
+                                             flip_y=self._pl_recenter_flipy.get())
+        except Exception as exc:
+            self._pl_log(f"Re-center error: {exc}")
+            self.after(0, lambda e=exc: self._pl_af_status_lbl.configure(
+                text=f"Re-center error: {e}", fg=RED)); return
+        if not res:
+            self.after(0, lambda: self._pl_af_status_lbl.configure(
+                text="Re-center: no captures found in the ND2 dir (capture first).", fg=RED)); return
+        self._pl_recentered = {rank: (dx, dy) for rank, dcol, drow, dx, dy in res}
+        for rank, dcol, drow, dx, dy in res:
+            self._pl_log(f"  rank {rank}: centroid ({dcol:+.0f},{drow:+.0f})px -> nudge ({dx:+.1f},{dy:+.1f}) um")
         self.after(0, self._pl_update_table)
         self.after(0, self._pl_refresh_dashboard)
-        self._pl_update_step_dots()
+        deltas = "   ".join(f"#{rank} Δ({dx:+.0f},{dy:+.0f})" for rank, dcol, drow, dx, dy in res)
+        self.after(0, lambda n=len(res), d=deltas: self._pl_af_status_lbl.configure(
+            text=(f"Re-aligned {n} from captures (Δum):  {d}.   Re-Trigger + re-run the macro "
+                  "(toggle flip X/Y if more off-center)."), fg=GREEN))
+        self._pl_log(f"Re-center: adjusted {len(res)} spheroids from their captures.")
 
     # ── Step 4 handlers ───────────────────────────────────────────────────────
 
@@ -2247,7 +2457,17 @@ class App(tk.Tk):
             import spheroid_pipeline as _pl
         except ImportError as e:
             messagebox.showerror("Import error", str(e)); return
+        # Prefer the session.ini work_dir (where nis_macro_capture_zcorrected.mac polls)
+        # so the GUI and macro always agree on the trigger location, matching Step 3.
         trigger_dir = self._pl_trigger_dir.get().strip()
+        try:
+            import configparser
+            cp = configparser.ConfigParser(); cp.read(_pl.SESSION_INI)
+            wd = cp.get("paths", "work_dir", fallback="").strip()
+            if wd:
+                trigger_dir = wd
+        except Exception:
+            pass
         nd2_out_dir = self._pl_nd2_out_dir.get().strip()
         if not trigger_dir or not nd2_out_dir:
             messagebox.showwarning("Missing dirs", "Set trigger dir and ND2 output dir."); return

@@ -8,16 +8,19 @@
 // -- no illumination change.
 //
 // Rig constraints baked in (verified): single main() only (no user functions);
-// work dir as a direct string literal (a #define with '-'/'.' fails); CRLF+ASCII;
-// Int_GetKeyString+atof for numeric keys; sprintf args as one quoted name list.
+// work dir + nd2 dir read at RUNTIME from C:/SpheroidPA/session.ini -- the GUI
+// Step 3 writes that pointer file, so this daemon follows the current Step 1 save
+// dir with NO hardcoded path; CRLF+ASCII; Int_GetKeyString+atof for numeric keys;
+// sprintf args as one quoted name list.
 //
 // Z-stack geometry comes from GUI Step 3 (written into each af_trigger as
 // z_centre / z_half / z_step). If a trigger lacks them, these defaults are used:
 //   Z_CENTRE 7680, Z_HALF 90, Z_STEP 10  ->  7590..7770 um, 19 planes.
 //
 // PREREQ: 20X objective; XY+Z initialized; Z drive NOT in Escape; PFS OFF (it
-// holds focus and defeats the Z-series); camera NOT in Live. Re-run GUI Step 3
-// "Trigger NIS-E Z-Stack Captures" first so the af_trigger_NN.ini files exist.
+// holds focus and defeats the Z-series); camera NOT in Live. Run GUI Step 3
+// "Trigger NIS-E Z-Stack Captures" first -- it writes the af_trigger_NN.ini files
+// AND C:/SpheroidPA/session.ini (work_dir + nd2_dir) that this macro reads.
 // ============================================================================
 
 #define SEC "spheroid"
@@ -25,6 +28,8 @@
 int main()
 {
     char work_dir[256];
+    char cfg[256];
+    char nd2_dir[256];
     char trigger_path[256];
     char done_path[256];
     char nd2_path[256];
@@ -37,11 +42,23 @@ int main()
     double stage_x, stage_y;
     double z_centre, z_half, z_step, z_top, z_bottom;
     double idle_elapsed;
-    int rank, move_rc, handled_any;
+    int rank, move_rc, handled_any, handled_total;
 
-    strcpy(work_dir, "S:/Images/Weihao/NISeA/NIS-E-Automation/work/autofocus");
+    // Trigger + output dirs are NOT hardcoded: read them from the fixed pointer
+    // file the GUI writes at Step 3, so this daemon follows the Step 1 save dir.
+    strcpy(cfg, "C:/SpheroidPA/session.ini");
+    work_dir[0] = 0;
+    nd2_dir[0]  = 0;
+    Int_GetKeyString(cfg, "paths", "work_dir", work_dir, 256);
+    Int_GetKeyString(cfg, "paths", "nd2_dir", nd2_dir, 256);
+    if( work_dir[0] == 0 )
+    {
+        WaitText(0, "session.ini has no work_dir.\nRun GUI Step 3 (Trigger NIS-E Z-Stack Captures) first, then re-run this macro.");
+        return FALSE;
+    }
 
     idle_elapsed = 0.0;
+    handled_total = 0;
 
     while( idle_elapsed < 300.0 )
     {
@@ -58,6 +75,7 @@ int main()
             if( ExistFile(trigger_path) == TRUE )
             {
                 handled_any = TRUE;
+                handled_total = handled_total + 1;
 
                 spheroid_id[0] = 0;
                 rank_buf[0]    = 0;
@@ -75,9 +93,10 @@ int main()
                 if( z_centre == 0.0 )
                     z_centre = 7680.0;
                 Int_GetKeyString(trigger_path, SEC, "z_half", numbuf, 64);
-                z_half = atof(numbuf);
-                if( z_half == 0.0 )
-                    z_half = 90.0;
+                if( numbuf[0] == 0 )
+                    z_half = 90.0;            // key absent -> default full stack
+                else
+                    z_half = atof(numbuf);    // 0 = locate (single plane), >0 = stack
                 Int_GetKeyString(trigger_path, SEC, "z_step", numbuf, 64);
                 z_step = atof(numbuf);
                 if( z_step == 0.0 )
@@ -94,7 +113,7 @@ int main()
                 strcat(done_path, nn);
                 strcat(done_path, ".ini");
 
-                strcpy(nd2_path, "S:/Images/Weihao/NISeA/NIS-E-Automation/work/nd2");
+                strcpy(nd2_path, nd2_dir);
                 strcat(nd2_path, "/");
                 strcat(nd2_path, spheroid_id);
                 strcat(nd2_path, "_zstack.nd2");
@@ -110,8 +129,18 @@ int main()
                 }
                 else
                 {
-                    ND_SetZSeriesExp(0, z_top, z_centre, z_bottom, z_step, 0, 0, 0, "", "", "");
-                    ND_RunZSeriesExp();
+                    if( z_half < 0.5 )
+                    {
+                        // 1-plane LOCATE pass (z_half=0): just the centre plane, fast,
+                        // enough to find the spheroid centroid for re-centering.
+                        StgMoveZ(z_centre, 0);
+                        Capture();
+                    }
+                    else
+                    {
+                        ND_SetZSeriesExp(0, z_top, z_centre, z_bottom, z_step, 0, 0, 0, "", "", "");
+                        ND_RunZSeriesExp();
+                    }
                     DeleteFile(nd2_path);
                     ImageSaveAs(nd2_path, 14, 0);
 
@@ -133,9 +162,19 @@ int main()
         }
         else
         {
-            SetCommandText("Capture daemon: idle, waiting for triggers");
-            Wait(1.0);
-            idle_elapsed = idle_elapsed + 1.0;
+            if( handled_total > 0 )
+            {
+                // Batch done and the queue is empty -> STOP. Do not linger and grab
+                // the next pass's triggers (e.g. the full Z-stack written after
+                // re-center); re-run this macro once per Trigger click.
+                idle_elapsed = 9999.0;
+            }
+            else
+            {
+                SetCommandText("Capture daemon: waiting for triggers (click GUI Step 3 Trigger)");
+                Wait(1.0);
+                idle_elapsed = idle_elapsed + 1.0;
+            }
         }
     }
 
