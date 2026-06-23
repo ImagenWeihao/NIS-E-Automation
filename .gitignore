@@ -38,6 +38,7 @@ work/
 
 # SpheroidPA per-run output (dated run folders, figures, generated/reference bins, captures)
 [0-9][0-9][0-9][0-9]/
+[0-9][0-9][0-9][0-9]_*/
 nise*_figures/
 *.bin
 *.nd2

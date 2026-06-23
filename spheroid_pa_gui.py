@@ -1,5 +1,5 @@
 """
-spheroid_pa_gui.py  v1.6.0
+spheroid_pa_gui.py  v1.7.0
 NIS-E Spheroid PA Pipeline — ND2-native I/O
 
 Pipeline:  Job A ND2 → [parse metadata + detect spheroids]
@@ -492,7 +492,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("SpheroidPA  v1.6.0 — NIS-E Spheroid PA Pipeline")
+        self.title("SpheroidPA  v1.7.0 — NIS-E Spheroid PA Pipeline")
         self.geometry("1680x880")
         self.minsize(1000, 660)
         self.configure(bg=BG)
@@ -524,7 +524,7 @@ class App(tk.Tk):
     def _build_ui(self):
         hdr = tk.Frame(self, bg=BG2)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="  SpheroidPA  v1.6.0",
+        tk.Label(hdr, text="  SpheroidPA  v1.7.0",
                  bg=BG2, fg=MAUVE, font=("Segoe UI", 13, "bold"), pady=8
                  ).pack(side="left")
         tk.Label(hdr, text="Screen → Anchor → Autofocus → Capture  ",
@@ -1381,6 +1381,11 @@ class App(tk.Tk):
         self._pl_screen_lbl.pack(fill="x", padx=12)
 
         # Step 2 content
+        # TODO(step2): let the user remove unwanted spheroid IDs from the detected
+        # list here (debris / edge / merged or close-pair detections) before
+        # anchoring -- e.g. a multi-select or per-row "exclude" so they drop out of
+        # records + the dashboard + the triggers, instead of carrying every
+        # detection through to capture/PA.
         f_s2 = tk.Frame(content_host, bg=BG)
         self._pl_step_frames["s2"] = f_s2
 

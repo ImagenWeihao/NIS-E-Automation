@@ -1,0 +1,65 @@
+// ============================================================================
+// nis_macro_pa_pick_current.mac -- SpheroidPA: grab the CURRENT spheroid
+//
+// For when the plate has moved and the saved triggers are stale. You navigate
+// live to a spheroid, CENTRE it in the field and FOCUS it, then run this macro:
+// it reads the current stage X/Y/Z (StgGetPos), writes it as af_trigger_01.ini
+// in the session work_dir, and builds a 1-point ND multipoint -- so the
+// step3_zstack_PA job can Import Point Set from ND immediately, and pa_validate
+// can re-image it. No screen / anchor / re-align needed for one manual spheroid.
+//
+// Flow:  centre+focus a spheroid (1050 nm)  ->  pa_pick_current  ->  pa_setup
+//        ->  job: Import Point Set from ND -> Run  ->  pa_validate (count=1).
+//
+// Rig dialect (verified): single main() only; CRLF + ASCII; char[] paths;
+// sprintf args as one quoted comma-list of variable names.
+// ============================================================================
+
+#define SEC "spheroid"
+
+int main()
+{
+    char cfg[256];
+    char work_dir[256];
+    char tp[256];
+    char xbuf[32];
+    char ybuf[32];
+    char zbuf[32];
+    char msg[256];
+    double x, y, z;
+
+    strcpy(cfg, "C:/SpheroidPA/session.ini");
+    work_dir[0] = 0;
+    Int_GetKeyString(cfg, "paths", "work_dir", work_dir, 256);
+    if( work_dir[0] == 0 )
+    {
+        WaitText(0, "session.ini has no work_dir.\nRun GUI Step 3 first.");
+        return FALSE;
+    }
+
+    // Current stage position of the spheroid you just centred + focused.
+    StgGetPos(&x, &y, &z);
+
+    // 1) Write af_trigger_01.ini (so pa_validate / records find this spheroid).
+    sprintf(xbuf, "%.2f", "x");
+    sprintf(ybuf, "%.2f", "y");
+    sprintf(zbuf, "%.2f", "z");
+    strcpy(tp, work_dir);
+    strcat(tp, "/af_trigger_01.ini");
+    DeleteFile(tp);
+    Int_SetKeyString(tp, SEC, "rank", "1");
+    Int_SetKeyString(tp, SEC, "spheroid_id", "sph_pick_01");
+    Int_SetKeyString(tp, SEC, "stage_x", xbuf);
+    Int_SetKeyString(tp, SEC, "stage_y", ybuf);
+    Int_SetKeyString(tp, SEC, "z_centre", zbuf);
+    Int_SetKeyString(tp, SEC, "z_half", "90.0");
+    Int_SetKeyString(tp, SEC, "z_step", "5.0");
+
+    // 2) Build a 1-point ND multipoint for the job's Import Point Set from ND.
+    ND_ResetMultipointExp();
+    ND_AppendMultipointPoint(x, y, z, "sph_pick_01");
+
+    sprintf(msg, "Picked spheroid: X %.1f  Y %.1f  Z %.1f\nWrote af_trigger_01 + 1-point ND multipoint.\nNext: pa_setup -> job Import Point Set from ND -> Run -> pa_validate (count=1).", "x,y,z");
+    WaitText(0, msg);
+    return TRUE;
+}

@@ -1,0 +1,74 @@
+// ============================================================================
+// nis_macro_pa_points.mac -- SpheroidPA: build the ND multipoint for PA
+//
+// Reads the first COUNT saved triggers (af_trigger_01..NN) from the session
+// work_dir and builds the ND multipoint experiment (ND_ResetMultipointExp +
+// ND_AppendMultipointPoint per spheroid). The step3_zstack_PA JOB can then
+// "Import Point Set from ND" and photoactivate every point in one run.
+//
+// Use this to test multi-spheroid PA: set COUNT (e.g. 3), run this macro, then
+// in the job click Import Point Set from ND -> Run. Pair with nis_macro_pa_setup
+// (hardware prep) which is run once before the job.
+//
+// Rig dialect (verified): single main() only; CRLF + ASCII; Int_GetKeyString +
+// atof for INI values; sprintf args as one quoted comma-list of variable names.
+// Stage X/Y/Z are taken from the triggers (same um coords that drove captures).
+// ============================================================================
+
+#define SEC "spheroid"
+
+int main()
+{
+    char cfg[256];
+    char work_dir[256];
+    char tp[256];
+    char nn[8];
+    char id[128];
+    char numbuf[64];
+    char msg[256];
+    double x, y, z;
+    int count, i, added;
+
+    // ---- number of spheroids to photoactivate (first N saved triggers) ------
+    count = 9;
+    // -------------------------------------------------------------------------
+
+    strcpy(cfg, "C:/SpheroidPA/session.ini");
+    work_dir[0] = 0;
+    Int_GetKeyString(cfg, "paths", "work_dir", work_dir, 256);
+    if( work_dir[0] == 0 )
+    {
+        WaitText(0, "session.ini has no work_dir.\nRun GUI Step 3 first.");
+        return FALSE;
+    }
+
+    ND_ResetMultipointExp();
+    added = 0;
+    i = 1;
+    while( i <= count )
+    {
+        sprintf(nn, "%02d", "i");
+        strcpy(tp, work_dir);
+        strcat(tp, "/af_trigger_");
+        strcat(tp, nn);
+        strcat(tp, ".ini");
+        if( ExistFile(tp) == TRUE )
+        {
+            id[0] = 0;
+            Int_GetKeyString(tp, SEC, "spheroid_id", id, 128);
+            Int_GetKeyString(tp, SEC, "stage_x", numbuf, 64);
+            x = atof(numbuf);
+            Int_GetKeyString(tp, SEC, "stage_y", numbuf, 64);
+            y = atof(numbuf);
+            Int_GetKeyString(tp, SEC, "z_centre", numbuf, 64);
+            z = atof(numbuf);
+            ND_AppendMultipointPoint(x, y, z, id);
+            added = added + 1;
+        }
+        i = i + 1;
+    }
+
+    sprintf(msg, "Built ND multipoint with %d spheroid(s).\nIn step3_zstack_PA: Import Point Set from ND, then Run.", "added");
+    WaitText(0, msg);
+    return TRUE;
+}

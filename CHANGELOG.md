@@ -1,5 +1,18 @@
 # CHANGELOG
 
+## v1.7.0 — 2026-06-23
+
+- **Multi-spheroid PA macros:**
+  - `nis_macro_pa_points.mac` — builds an N-point ND multipoint from the first N
+    `af_trigger` files; the job's "Import Point Set from ND" then sweeps all N in one run.
+  - `nis_macro_pa_validate.mac` — 1050 nm post-PA re-image (zoom 2.5, Z-stack at each
+    trigger's focus Z, PFS dichroic OUT — IR imaging is incompatible with the PFS dichroic
+    in path) to confirm the faded squares.
+  - `nis_macro_pa_pick_current.mac` — grabs the current centred spheroid (`StgGetPos`)
+    into `af_trigger_01` + a 1-point multipoint, for when the plate has moved.
+- Step 2: TODO to add removal of unwanted spheroid IDs before anchoring.
+- `.gitignore`: also ignore dated run folders with suffixes (e.g. `0623_2/`).
+
 ## v1.6.0 — 2026-06-23
 
 - **Step 4 Photoactivation panel** — Job / Activation OC / Power% / Well / Loops / Zoom /

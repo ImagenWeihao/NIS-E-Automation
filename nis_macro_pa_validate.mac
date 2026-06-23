@@ -1,0 +1,124 @@
+// ============================================================================
+// nis_macro_pa_validate.mac -- SpheroidPA: validate PA marks (1050 nm imaging)
+//
+// Visits the same first COUNT spheroids that pa_points.mac photoactivated
+// (af_trigger_01..NN in the session work_dir) and images each as a short Z-stack
+// in the 1050 nm visualization OC, saving <id>_pacheck.nd2 in nd2_dir -- so you
+// can confirm the faded square activation mark inside each PA'd spheroid.
+//
+// Tuned from the first attempt (cross-validated vs the PA outputs):
+//   * VIZ_ZOOM frames just the spheroid at 20X (the first try used full field /
+//     zoom 1 -> 636 um FOV, so the 80 um square was tiny -- the "10X look").
+//   * Images a Z-stack centred on the PA plane (~7640), NOT the trigger's stale
+//     z_centre=7680 -- the PA actually ran at Z ~7632-7657, so 7680 was ~40 um
+//     off and missed the bleached square entirely.
+//
+// Does NOT activate (no 850 nm): 1050 OC only.
+//
+// PREREQ: PA already run on these spheroids; A1 active; 20X; the GUI session.ini
+// points at work_dir/nd2_dir (GUI Step 3). Set VIZ_OC + the Z/zoom below.
+//
+// Rig dialect (verified): single main() only; CRLF + ASCII; Int_GetKeyString +
+// atof for INI values; char[] paths; sprintf args as one quoted comma-list of
+// variable names.
+// ============================================================================
+
+#define SEC "spheroid"
+
+int main()
+{
+    char cfg[256];
+    char work_dir[256];
+    char nd2_dir[256];
+    char viz_oc[128];
+    char tp[256];
+    char nn[8];
+    char id[128];
+    char numbuf[64];
+    char nd2_path[256];
+    char msg[256];
+    double x, y;
+    double viz_zoom, viz_z, viz_zhalf, viz_zstep, z_top, z_bottom;
+    int count, i, done;
+
+    // ---- EDIT for your rig --------------------------------------------------
+    strcpy(viz_oc, "1050nm");   // <-- your 1050 nm visualization OC name
+    count     = 9;              // same count pa_points.mac used (first N triggers)
+    viz_zoom  = 2.5;            // scan-area zoom: frames the ~250 um spheroid (~254 um FOV)
+    viz_z     = 7640.0;         // Z centre of the validation stack = the PA/focus plane
+    viz_zhalf = 25.0;           // +/- range to bracket the bleached planes (PA ~7632-7657)
+    viz_zstep = 5.0;            // Z step
+    // -------------------------------------------------------------------------
+
+    strcpy(cfg, "C:/SpheroidPA/session.ini");
+    work_dir[0] = 0;
+    nd2_dir[0]  = 0;
+    Int_GetKeyString(cfg, "paths", "work_dir", work_dir, 256);
+    Int_GetKeyString(cfg, "paths", "nd2_dir", nd2_dir, 256);
+    if( work_dir[0] == 0 )
+    {
+        WaitText(0, "session.ini has no work_dir.\nRun GUI Step 3 first.");
+        return FALSE;
+    }
+    if( nd2_dir[0] == 0 )
+        strcpy(nd2_dir, work_dir);
+
+    // Imaging prep: clear interlock, select the 1050 nm OC, keep the PFS dichroic
+    // OUT (1050 is an IR/multiphoton laser -- IR acquisition is NOT compatible with
+    // the PFS dichroic in the optical path), and zoom to frame just the spheroid.
+    Stg_RemoveInterlock();
+    SelectOptConf(viz_oc);
+    Stg_PFSInsertExtractDM(0);
+    Confocal_SetScanArea(viz_zoom, 0.0, 0.0, 0.0, 1.0);
+
+    z_top    = viz_z + viz_zhalf;
+    z_bottom = viz_z - viz_zhalf;
+
+    done = 0;
+    i = 1;
+    while( i <= count )
+    {
+        sprintf(nn, "%02d", "i");
+        strcpy(tp, work_dir);
+        strcat(tp, "/af_trigger_");
+        strcat(tp, nn);
+        strcat(tp, ".ini");
+        if( ExistFile(tp) == TRUE )
+        {
+            id[0] = 0;
+            Int_GetKeyString(tp, SEC, "spheroid_id", id, 128);
+            Int_GetKeyString(tp, SEC, "stage_x", numbuf, 64);
+            x = atof(numbuf);
+            Int_GetKeyString(tp, SEC, "stage_y", numbuf, 64);
+            y = atof(numbuf);
+            Int_GetKeyString(tp, SEC, "z_centre", numbuf, 64);
+            if( atof(numbuf) > 1.0 )
+            {
+                viz_z    = atof(numbuf);          // use this spheroid's focus Z
+                z_top    = viz_z + viz_zhalf;
+                z_bottom = viz_z - viz_zhalf;
+            }
+
+            sprintf(msg, "PA check %s: 1050 nm Z-stack at the PA plane", "id");
+            SetCommandText(msg);
+
+            StgMoveXY(x, y, 0);
+            ND_SetZSeriesExp(0, z_top, viz_z, z_bottom, viz_zstep, 0, 0, 0, "", "", "");
+            ND_RunZSeriesExp();
+
+            strcpy(nd2_path, nd2_dir);
+            strcat(nd2_path, "/");
+            strcat(nd2_path, id);
+            strcat(nd2_path, "_pacheck.nd2");
+            DeleteFile(nd2_path);
+            ImageSaveAs(nd2_path, 14, 0);
+            done = done + 1;
+        }
+        i = i + 1;
+    }
+
+    sprintf(msg, "PA validation done: imaged %d spheroid(s) at 1050 nm (zoom %.1f, Z ~%.0f).\nSaved <id>_pacheck.nd2 -- scroll Z to find the faded square.", "done,viz_zoom,viz_z");
+    WaitText(0, msg);
+    SetCommandText(0);
+    return TRUE;
+}
