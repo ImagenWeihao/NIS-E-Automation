@@ -1,5 +1,5 @@
 """
-spheroid_pa_gui.py  v1.2
+spheroid_pa_gui.py  v1.6.0
 NIS-E Spheroid PA Pipeline — ND2-native I/O
 
 Pipeline:  Job A ND2 → [parse metadata + detect spheroids]
@@ -492,7 +492,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("SpheroidPA  v1.2 — NIS-E Spheroid PA Pipeline")
+        self.title("SpheroidPA  v1.6.0 — NIS-E Spheroid PA Pipeline")
         self.geometry("1680x880")
         self.minsize(1000, 660)
         self.configure(bg=BG)
@@ -524,7 +524,7 @@ class App(tk.Tk):
     def _build_ui(self):
         hdr = tk.Frame(self, bg=BG2)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="  SpheroidPA  v1.2",
+        tk.Label(hdr, text="  SpheroidPA  v1.6.0",
                  bg=BG2, fg=MAUVE, font=("Segoe UI", 13, "bold"), pady=8
                  ).pack(side="left")
         tk.Label(hdr, text="Screen → Anchor → Autofocus → Capture  ",
@@ -1268,6 +1268,15 @@ class App(tk.Tk):
         self._pl_P0          = tk.StringVar(value="15.0")
         self._pl_L_um        = tk.StringVar(value="165.0")
         self._pl_ref_bin     = tk.StringVar()
+        # Photoactivation (Step 4) -- parameters for the NIS-E JOB step3_zstack_PA.
+        self._pl_pa_job      = tk.StringVar(value="step3_zstack_PA")
+        self._pl_pa_oc       = tk.StringVar(value="850 nm power loop full reso2")
+        self._pl_pa_power    = tk.StringVar(value="30")
+        self._pl_pa_well     = tk.StringVar(value="D6")
+        self._pl_pa_loops    = tk.StringVar(value="70")
+        self._pl_pa_zoom     = tk.StringVar(value="8")
+        self._pl_pa_dichroic = tk.BooleanVar(value=True)   # True = dichroic OUT
+        self._pl_pa_interlock = tk.BooleanVar(value=True)  # True = remove A1 interlock first
 
         # ── Outer layout: sidebar | [ middle (steps+dashboard) | viewer | table ]
         # A horizontal paned window holds three draggable panes that never
@@ -1514,6 +1523,52 @@ class App(tk.Tk):
                                          bg=BG, fg=SUBTEXT, font=("Segoe UI", 9), anchor="w",
                                          justify="left", wraplength=480)
         self._pl_capture_lbl.pack(fill="x", padx=12)
+
+        # ── Photoactivation: parameters for the NIS-E JOB step3_zstack_PA ─────
+        pa = tk.Frame(f_s4, bg=BG); pa.pack(fill="x", padx=12, pady=(8, 2))
+        tk.Label(pa, text="Photoactivation  ·  NIS-E JOB", bg=BG, fg=MAUVE,
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        tk.Label(pa, text="Define params -> 'Run Photoactivation Job' writes pa_trigger.ini -> run "
+                          "nis_macro_pa_setup.mac in NIS-E (clears A1 interlock, sets the 850 OC + "
+                          "dichroic OUT + centred zoom square) -> run step3_zstack_PA in JOBS Explorer. "
+                          "The job opens its progress window and leaves a square laser-mark centred "
+                          "on the spheroid.",
+                 bg=BG, fg=SUBTEXT, font=("Segoe UI", 8),
+                 justify="left", wraplength=480).pack(anchor="w", pady=(0, 2))
+        # Job + OC are editable comboboxes seeded with the known names (NIS-E job /
+        # optical-config lists can't be auto-imported, so type any other if needed).
+        pjob = tk.Frame(pa, bg=BG); pjob.pack(fill="x", pady=1)
+        tk.Label(pjob, text="Job:", width=13, anchor="w", bg=BG, fg=TEXT2,
+                 font=("Segoe UI", 9)).pack(side="left")
+        ttk.Combobox(pjob, textvariable=self._pl_pa_job, width=30, font=("Segoe UI", 9),
+                     values=["step3_zstack_PA"]).pack(side="left", fill="x", expand=True)
+        poc = tk.Frame(pa, bg=BG); poc.pack(fill="x", pady=1)
+        tk.Label(poc, text="Activation OC:", width=13, anchor="w", bg=BG, fg=TEXT2,
+                 font=("Segoe UI", 9)).pack(side="left")
+        ttk.Combobox(poc, textvariable=self._pl_pa_oc, width=30, font=("Segoe UI", 9),
+                     values=["850 nm power loop full reso2"]).pack(side="left", fill="x", expand=True)
+        pnum = tk.Frame(pa, bg=BG); pnum.pack(fill="x", pady=1)
+        for lbl, var, w in [("Power %:", self._pl_pa_power, 5),
+                            ("Well:",   self._pl_pa_well,  5),
+                            ("Loops:",  self._pl_pa_loops, 5),
+                            ("Zoom:",   self._pl_pa_zoom,  5)]:
+            tk.Label(pnum, text=lbl, bg=BG, fg=TEXT2,
+                     font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
+            tk.Entry(pnum, textvariable=var, width=w, bg=SURFACE, fg=TEXT,
+                     insertbackground=TEXT, relief="flat",
+                     font=("Segoe UI", 9)).pack(side="left", padx=(0, 10))
+        tk.Checkbutton(pnum, text="Dichroic OUT", variable=self._pl_pa_dichroic,
+                       bg=BG, fg=TEXT2, selectcolor=SURFACE, activebackground=BG,
+                       activeforeground=TEXT, font=("Segoe UI", 9)).pack(side="left")
+        tk.Checkbutton(pnum, text="Remove A1 interlock", variable=self._pl_pa_interlock,
+                       bg=BG, fg=TEXT2, selectcolor=SURFACE, activebackground=BG,
+                       activeforeground=TEXT, font=("Segoe UI", 9)).pack(side="left")
+        pbtn = tk.Frame(pa, bg=BG); pbtn.pack(fill="x", pady=(3, 0))
+        self._btn(pbtn, "Run Photoactivation Job", self._pl_pa_run, BLUE, "#1e1e2e")
+        self._pl_pa_status = tk.Label(pa, text="Photoactivation: idle",
+                                      bg=BG, fg=SUBTEXT, font=("Segoe UI", 9), anchor="w",
+                                      justify="left", wraplength=480)
+        self._pl_pa_status.pack(fill="x", pady=(2, 0))
 
         # ── Right panel: spheroid state table (fills the column height) ───────
         tk.Label(side_panel, text="Spheroid State", bg=BG2, fg=MAUVE,
@@ -2405,6 +2460,65 @@ class App(tk.Tk):
 
     # ── Step 4 handlers ───────────────────────────────────────────────────────
 
+    def _pl_pa_run(self):
+        """Write the photoactivation parameters to pa_trigger.ini in the session work
+        dir, ready for the NIS-E JOB step3_zstack_PA. PA output is pinned to the Step-1
+        Output dir (<base>/pa) -- NOT the NIS-E default save location."""
+        import configparser
+        base = self._pl_out_dir.get().strip()
+        if not base:
+            messagebox.showwarning("No output dir", "Set the Step-1 Output dir first."); return
+        save_dir = Path(base) / "pa"            # same dest family as autofocus/ nd2/ bins/
+        # Trigger file -> session work dir (session.ini work_dir, else the Trigger dir).
+        work = ""
+        try:
+            sp = Path("C:/SpheroidPA/session.ini")
+            if sp.exists():
+                c0 = configparser.ConfigParser(); c0.read(sp)
+                work = (c0.get("paths", "work_dir", fallback="") or "").strip()
+        except Exception:
+            work = ""
+        if not work:
+            work = self._pl_trigger_dir.get().strip()
+        if not work:
+            messagebox.showwarning("No work dir",
+                                   "Run Step 3 (Trigger) first, or set the Trigger dir."); return
+        try:
+            save_dir.mkdir(parents=True, exist_ok=True)
+            wd = Path(work); wd.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            messagebox.showerror("Dir error", str(exc)); return
+        pa_path = wd / "pa_trigger.ini"
+        cp = configparser.ConfigParser()
+        cp["photoactivation"] = {
+            "job":            self._pl_pa_job.get().strip(),
+            "optical_config": self._pl_pa_oc.get().strip(),
+            "power_pct":      self._pl_pa_power.get().strip(),
+            "well":           self._pl_pa_well.get().strip(),
+            "loops":          self._pl_pa_loops.get().strip(),
+            "zoom":             self._pl_pa_zoom.get().strip(),
+            "dichroic_out":     "1" if self._pl_pa_dichroic.get() else "0",
+            "remove_interlock": "1" if self._pl_pa_interlock.get() else "0",
+            "save_dir":         save_dir.as_posix(),
+        }
+        try:
+            with open(pa_path, "w") as f:
+                cp.write(f)
+        except Exception as exc:
+            messagebox.showerror("Write failed", str(exc)); return
+        self._pl_log(f"Photoactivation params -> {pa_path}")
+        self._pl_log(f"  job={self._pl_pa_job.get()}  OC='{self._pl_pa_oc.get()}'  "
+                     f"power={self._pl_pa_power.get()}%  well={self._pl_pa_well.get()}  "
+                     f"loops={self._pl_pa_loops.get()}  zoom={self._pl_pa_zoom.get()}  "
+                     f"dichroic={'OUT' if self._pl_pa_dichroic.get() else 'IN'}")
+        self._pl_log(f"  PA save dir (Step-1 dest) -> {save_dir}")
+        self._pl_log(f"  interlock={'remove' if self._pl_pa_interlock.get() else 'leave'}")
+        self._pl_pa_status.configure(
+            text=(f"PA params -> {pa_path.name}. Next: run nis_macro_pa_setup.mac in NIS-E "
+                  f"(clears interlock, sets OC + dichroic OUT + centred square), then run "
+                  f"step3_zstack_PA in JOBS Explorer.\n"
+                  f"PA save dir -> {save_dir}  (set as the job's Alternative Storage Location)."))
+
     def _pl_generate_bins_thread(self):
         threading.Thread(target=self._pl_generate_bins, daemon=True).start()
 
@@ -2432,10 +2546,24 @@ class App(tk.Tk):
         if ref_bin is None:
             self._pl_log("WARNING: no reference .bin set — generated bins will be flagged "
                          "'Incompatible Z Correction and Camera' by NIS-E. Browse a rig export.")
+        # Fall back to the Step-3 Middle plane Z / half / step when a record has no
+        # recorded z_centre (e.g. Refresh Status wasn't run) -- the spheroids are all
+        # captured centred on that plane, so it IS the correct bin z-centre.
+        try: gui_z = float(self._pl_z_centre.get())
+        except Exception: gui_z = 0.0
+        try: gui_h = float(self._pl_z_half.get())
+        except Exception: gui_h = 90.0
+        try: gui_s = float(self._pl_z_step.get())
+        except Exception: gui_s = 10.0
         n_ok = 0
         for r in self._pl_records:
+            if r.z_centre_um == 0.0 and gui_z > 0.0:
+                r.z_centre_um = gui_z
+                if not r.z_half_um: r.z_half_um = gui_h
+                if not r.z_step_um: r.z_step_um = gui_s
             if r.z_centre_um == 0.0:
-                self._pl_log(f"Rank {r.rank}: skipping bin — Z not recorded"); continue
+                self._pl_log(f"Rank {r.rank}: skipping bin — Z not recorded "
+                             "(set Step-3 Middle plane Z or run Refresh Status)"); continue
             try:
                 _pl.generate_bin(r, P0, L_um, ch_field, bin_dir, reference_bin=ref_bin)
                 n_ok += 1

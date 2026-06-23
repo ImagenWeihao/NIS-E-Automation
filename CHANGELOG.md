@@ -1,5 +1,26 @@
 # CHANGELOG
 
+## v1.6.0 — 2026-06-23
+
+- **Step 4 Photoactivation panel** — Job / Activation OC / Power% / Well / Loops / Zoom /
+  Dichroic OUT / Remove A1 interlock inputs. "Run Photoactivation Job" writes `pa_trigger.ini`
+  with PA output pinned to `<Step-1 base>/pa` (not the NIS-E default save location).
+- **`nis_macro_pa_setup.mac`** (NEW) — reads `pa_trigger.ini` and preps the rig for the
+  `step3_zstack_PA` JOB: `Stg_RemoveInterlock` (clear A1 interlock), `SelectOptConf` (850 nm OC),
+  `Stg_PFSInsertExtractDM(0)` (dichroic OUT), optional `Stg_SetMultiLaserPower`, and
+  `Confocal_SetScanArea` (centred zoom square). Validated on the rig for one spheroid.
+
+## v1.5.1 — 2026-06-22
+
+- **Generate All Bins falls back to the Step-3 Middle plane Z** when a record has no
+  recorded z_centre (Refresh Status not run) -- the spheroids are captured centred on
+  that plane, so it is the correct bin z-centre; no more silent 0/6.
+- GUI header/title version label bumped to v1.5.1 (was stale at v1.2).
+- Added `focus_scores()` library helper (variance / tenengrad / laplacian / brenner / fft).
+  Graded all WellD05 stacks: every metric snaps to a stack *edge*, not the focus centre
+  (the +/-25 um range over a ~250 um spheroid has no sharpness peak), so it is deliberately
+  NOT wired into the GUI -- the PFS/home plane stays the best-focus reference.
+
 ## v1.5.0 — 2026-06-22
 
 ### Coordinate registration: flip-aware Step 2 + per-spheroid re-center (WellD05, 20X)

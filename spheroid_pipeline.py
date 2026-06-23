@@ -444,6 +444,11 @@ def recenter_from_captures(records: list[SpheroidRecord], nd2_dir: Path,
         mask = proj > bg + max(60.0, 6.0 * mad)        # bright spheroid pixels
         if int(mask.sum()) < 100:
             continue
+        # TODO(re-center): two spheroids close together in one FOV -> this whole-frame
+        # intensity centroid lands BETWEEN them, so the nudge moves to the midpoint
+        # instead of the target (e.g. adjacent ranks #3/#4). Fix: label connected components
+        # in `mask` and use the component nearest the frame centre (the targeted
+        # spheroid), not the global centroid.
         ys, xs = np.nonzero(mask)
         wgt = proj[ys, xs] - bg
         cx = float((xs * wgt).sum() / wgt.sum())
@@ -457,6 +462,45 @@ def recenter_from_captures(records: list[SpheroidRecord], nd2_dir: Path,
         r.verified_y_um = round(r.verified_y_um + dy, 2)
         out.append((r.rank, round(dcol, 1), round(drow, 1), dx, dy))
     return out
+
+
+def focus_scores(stack, method: str = "variance") -> list:
+    """Per-plane sharpness score for a (Z,Y,X) stack -- higher = sharper, background-
+    subtracted. `method`: variance (normalized), tenengrad, laplacian, brenner, fft.
+    (Trialled in v1.4.3; none matched the eye reliably, so they're a manual tool here.)"""
+    import numpy as np
+    a = np.asarray(stack, dtype=np.float32)
+    if a.ndim == 2:
+        a = a[None, ...]
+    while a.ndim > 3:
+        a = a[a.shape[0] // 2]
+    m = (method or "variance").lower()
+    scores = []
+    for p in a:
+        bg = float(np.median(p))
+        q = np.clip(p - bg, 0.0, None)
+        if "tenengrad" in m:
+            gy, gx = np.gradient(q)
+            s = float((gx * gx + gy * gy).mean())
+        elif "laplacian" in m:
+            lap = (-4.0 * q + np.roll(q, 1, 0) + np.roll(q, -1, 0)
+                   + np.roll(q, 1, 1) + np.roll(q, -1, 1))
+            s = float(lap.var())
+        elif "brenner" in m:
+            d = q[:, 2:] - q[:, :-2]
+            s = float((d * d).mean())
+        elif "fft" in m or "freq" in m:
+            F = np.abs(np.fft.fftshift(np.fft.fft2(q)))
+            h, w = F.shape
+            yy, xx = np.ogrid[:h, :w]
+            rr = (min(h, w) / 8.0) ** 2
+            hi = ((yy - h / 2.0) ** 2 + (xx - w / 2.0) ** 2) > rr
+            s = float(F[hi].sum() / (F.sum() + 1e-6))
+        else:  # normalized variance
+            mu = float(q.mean()) + 1e-6
+            s = float(q.var()) / (mu * mu)
+        scores.append(s)
+    return scores
 
 
 # ── Step 3: Z-centre from 20X autofocus nd2 (manual fallback) ──────────────────
