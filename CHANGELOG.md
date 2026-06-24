@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## v1.7.1 — 2026-06-24
+
+- **Step 3 per-spheroid selection** — the Spheroid State table gains a leading **Use**
+  checkbox column (`[x]`/`[ ]`, default checked). Click a row's Use cell to include/exclude
+  that spheroid. **Trigger NIS-E Z-Stack Captures** now writes `af_trigger` files only for the
+  checked spheroids (unchecked are skipped, reported in the status line); **Re-center from
+  captures** also honors the selection. Implements the Step-2/3 "remove unwanted spheroid IDs"
+  TODO — previously the only selection was the Step-1 "Top N" count.
+
 ## v1.7.0 — 2026-06-23
 
 - **Multi-spheroid PA macros:**

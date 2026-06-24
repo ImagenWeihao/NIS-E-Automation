@@ -1578,22 +1578,29 @@ class App(tk.Tk):
         # ── Right panel: spheroid state table (fills the column height) ───────
         tk.Label(side_panel, text="Spheroid State", bg=BG2, fg=MAUVE,
                  font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=8, pady=(6, 2))
+        tk.Label(side_panel, text="Click the Use box to include/exclude a spheroid from the "
+                              "Step 3 triggers (default: all checked).",
+                 bg=BG2, fg=SUBTEXT, font=("Segoe UI", 8), justify="left",
+                 wraplength=340).pack(anchor="w", padx=8, pady=(0, 2))
 
         tbl_frame = tk.Frame(side_panel, bg=BG2)
         tbl_frame.pack(fill="both", expand=True, padx=4, pady=(0, 6))
 
-        cols = ("rank", "id", "status", "verified_xy", "z_centre", "bin")
+        # Ranks the operator unchecked in the Use column -> excluded from Step 3.
+        self._pl_excluded = set()
+        cols = ("use", "rank", "id", "status", "verified_xy", "z_centre", "bin")
         self._pl_tree = ttk.Treeview(tbl_frame, columns=cols, show="headings", height=8)
-        # Widths sum to ~560 so all six columns are visible by default in the
-        # table pane (drag the divider wider for more; horizontal scrollbar covers
+        # First column is a click-to-toggle "Use" checkbox ([x]/[ ]); the rest are
+        # sized so all columns are visible by default (horizontal scrollbar covers
         # any overflow from long IDs / bin names).
-        hdrs = {"rank": ("Rank", 46), "id": ("ID", 130), "status": ("Status", 88),
-                "verified_xy": ("Verified XY (um)", 172),
+        hdrs = {"use": ("Use", 40), "rank": ("Rank", 46), "id": ("ID", 130),
+                "status": ("Status", 88), "verified_xy": ("Verified XY (um)", 172),
                 "z_centre": ("Z (um)", 60), "bin": ("Bin", 110)}
         for c, (h, w_) in hdrs.items():
             self._pl_tree.heading(c, text=h)
-            self._pl_tree.column(c, width=w_, minwidth=36, anchor="center")
+            self._pl_tree.column(c, width=w_, minwidth=32, anchor="center")
         self._pl_tree.tag_configure("recentered", background="#3a2c52", foreground="#e6d8ff")
+        self._pl_tree.bind("<Button-1>", self._pl_toggle_use)
         vsb_tree = ttk.Scrollbar(tbl_frame, orient="vertical", command=self._pl_tree.yview)
         hsb_tree = ttk.Scrollbar(tbl_frame, orient="horizontal", command=self._pl_tree.xview)
         self._pl_tree.configure(yscrollcommand=vsb_tree.set, xscrollcommand=hsb_tree.set)
@@ -2162,7 +2169,8 @@ class App(tk.Tk):
     def _pl_update_table(self):
         for row in self._pl_tree.get_children():
             self._pl_tree.delete(row)
-        rc = getattr(self, "_pl_recentered", {})
+        rc   = getattr(self, "_pl_recentered", {})
+        excl = getattr(self, "_pl_excluded", set())
         for r in self._pl_records:
             xy = (f"({r.verified_x_um:.1f}, {r.verified_y_um:.1f})"
                   if r.verified_x_um else "—")
@@ -2173,8 +2181,29 @@ class App(tk.Tk):
                 tags = ("recentered",)
             zc = f"{r.z_centre_um:.2f}" if r.z_centre_um else "—"
             bn = Path(r.bin_path).name if r.bin_path else "—"
-            self._pl_tree.insert("", "end", tags=tags, values=(
-                r.rank, r.spheroid_id, r.status, xy, zc, bn))
+            use = "[ ]" if r.rank in excl else "[x]"
+            self._pl_tree.insert("", "end", iid=f"r{r.rank}", tags=tags, values=(
+                use, r.rank, r.spheroid_id, r.status, xy, zc, bn))
+
+    def _pl_toggle_use(self, event):
+        """Toggle a spheroid's Use checkbox when its Use cell ([x]/[ ]) is clicked."""
+        if self._pl_tree.identify_region(event.x, event.y) != "cell":
+            return
+        if self._pl_tree.identify_column(event.x) != "#1":   # the "use" column
+            return
+        row = self._pl_tree.identify_row(event.y)
+        if not row or not row.startswith("r"):
+            return
+        try:
+            rank = int(row[1:])
+        except ValueError:
+            return
+        excl = self._pl_excluded
+        if rank in excl:
+            excl.discard(rank)
+        else:
+            excl.add(rank)
+        self._pl_tree.set(row, "use", "[ ]" if rank in excl else "[x]")
 
     def _pl_log(self, msg: str):
         self._log_line(f"[Pipeline] {msg}", "info")
@@ -2360,12 +2389,20 @@ class App(tk.Tk):
         locate = self._pl_locate_only.get()
         if locate:
             z_half = 0.0          # single plane at z_centre -- fast locate pass for re-centering
-        n = _pl.trigger_autofocus_all(self._pl_records, Path(out) / "autofocus",
+        excl = getattr(self, "_pl_excluded", set())
+        recs = [r for r in self._pl_records if r.rank not in excl]
+        if not recs:
+            messagebox.showwarning(
+                "None selected",
+                "Every spheroid is unchecked in the Use column — nothing to trigger."); return
+        n = _pl.trigger_autofocus_all(recs, Path(out) / "autofocus",
                                       z_centre=z_centre, z_half=z_half, z_step=z_step)
         mode = "1-plane LOCATE" if locate else f"Z-stack +/-{z_half:g}/{z_step:g} um"
-        self._pl_log(f"Step 3: {n} {mode} triggers written to autofocus/ (centre={z_centre})")
-        self.after(0, lambda m=mode: self._pl_af_status_lbl.configure(
-            text=f"{n} {m} triggers written. Run nis_macro_capture_zstack.mac in NIS-E.", fg=YELLOW))
+        skipped = len(self._pl_records) - len(recs)
+        extra = f" ({skipped} unchecked skipped)" if skipped else ""
+        self._pl_log(f"Step 3: {n} {mode} triggers written to autofocus/ (centre={z_centre}){extra}")
+        self.after(0, lambda m=mode, e=extra: self._pl_af_status_lbl.configure(
+            text=f"{n} {m} triggers written{e}. Run nis_macro_capture_zstack.mac in NIS-E.", fg=YELLOW))
 
     def _pl_poll_af_thread(self):
         threading.Thread(target=self._pl_poll_af, daemon=True).start()
@@ -2432,7 +2469,9 @@ class App(tk.Tk):
                 "No captures",
                 "Couldn't find any *_zstack.nd2. Set the Step 1 Output dir to your run "
                 "folder (e.g. ...\\0622) and capture first."); return
-        targets = sorted(self._pl_records, key=lambda r: r.rank)
+        excl = getattr(self, "_pl_excluded", set())
+        targets = sorted((r for r in self._pl_records if r.rank not in excl),
+                         key=lambda r: r.rank)
         n_s = self._pl_recenter_n.get().strip().lower()
         if n_s not in ("", "all", "0"):
             try:
