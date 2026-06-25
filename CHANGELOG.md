@@ -17,6 +17,13 @@
   - `nis_macro_z_autofocus.mac`: now reads `work_dir` from `session.ini` (was a
     hardcoded path), so the dispatcher routes it to the GUI's current run folder.
   - **Needs rig verification** before merge — see README TODO #9.
+- **PA Validate OC fix (laser-safety)** — `pa_validate.mac` could silently image at the
+  850 nm PA laser: `SelectOptConf` needs the exact OC name, but the default was the
+  placeholder `"1050nm"` (matches no config), so the switch no-opped and the validation
+  re-image ran with the PA laser still on (root cause of the June-23 `trail2` pacheck
+  captured at 850 nm). Fixed: `viz_oc` default is now the exact `1050nm_Galvo_561nm_NDD2_JL2`
+  (from nd2 metadata), and the macro reads back the active laser via `GetLaserParams` and
+  **aborts** before imaging if it's still ~850 nm.
 
 ## v1.7.2 — 2026-06-25
 
