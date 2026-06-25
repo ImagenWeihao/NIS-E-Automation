@@ -26,6 +26,11 @@
   zhalf/zstep` + `count` from `pa_trigger.ini` (`[photoactivation]` / `[validate]`),
   falling back to their previous hardcoded defaults. The Log-tab dispatcher panel
   now hosts only the capture macros (autofocus / zstack / zcorrected).
+- **Step 4 right-pane swap** — on Step 4 the right pane hides the Spheroid State &
+  Dashboard table and shows the Photoactivation macro cards instead (steps 1-3 keep
+  the table); `_pl_show_step` toggles `_pl_table_host` / `_pl_pa_host`. The PA cards
+  moved out of the Step-4 middle content (now just the Z-corrected-capture section),
+  so the live dashboard sits in the middle pane with full room, same as steps 1-3.
 
 ## v1.7.2 — 2026-06-25
 

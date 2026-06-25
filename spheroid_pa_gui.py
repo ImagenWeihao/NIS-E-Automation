@@ -1586,15 +1586,77 @@ class App(tk.Tk):
                                          justify="left", wraplength=480)
         self._pl_capture_lbl.pack(fill="x", padx=12)
 
-        # ── Photoactivation: per-macro dispatcher cards ──────────────────────
-        # Each PA macro is its own card: edit params -> Reload writes them to
-        # pa_trigger.ini, Run dispatches that macro via nis_macro_dispatcher.mac.
-        # Check a card to include it in "Run Pipeline" (runs the checked macros in
-        # order). Requires nis_macro_dispatcher.mac running once in NIS-E.
-        pa = tk.LabelFrame(f_s4, text=" Photoactivation - NIS-E Macro Dispatcher ",
+        # ── Right pane: per-step content ──────────────────────────────────────
+        # Steps 1-3 show the merged Spheroid State & Dashboard table; Step 4 swaps
+        # it for the Photoactivation macro cards (toggled in _pl_show_step). The
+        # live dashboard stays in the middle pane for every step.
+        self._pl_table_host = tk.Frame(side_panel, bg=BG2)
+        self._pl_pa_host    = tk.Frame(side_panel, bg=BG)
+
+        tk.Label(self._pl_table_host, text="Spheroid State & Dashboard", bg=BG2, fg=MAUVE,
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=8, pady=(6, 2))
+        tk.Label(self._pl_table_host, text="Click the Use box to include/exclude a spheroid from the "
+                              "Step 3 triggers (default: all checked).",
+                 bg=BG2, fg=SUBTEXT, font=("Segoe UI", 8), justify="left",
+                 wraplength=520).pack(anchor="w", padx=8, pady=(0, 2))
+
+        tbl_frame = tk.Frame(self._pl_table_host, bg=BG2)
+        tbl_frame.pack(fill="both", expand=True, padx=4, pady=(0, 6))
+
+        # Dashboard-styled Treeview: dark field, lavender monospace headings.
+        dstyle = ttk.Style(self)
+        dstyle.configure("Dash.Treeview",
+                         background=BG2, foreground=TEXT, fieldbackground=BG2,
+                         rowheight=22, borderwidth=0, font=("Consolas", 9))
+        dstyle.configure("Dash.Treeview.Heading",
+                         background=SURFACE, foreground=LAVENDER, relief="flat",
+                         font=("Consolas", 9, "bold"))
+        dstyle.map("Dash.Treeview",
+                   background=[("selected", SURFACE2)], foreground=[("selected", TEXT)])
+        dstyle.map("Dash.Treeview.Heading", background=[("active", SURFACE2)])
+
+        # Ranks the operator unchecked in the Use column -> excluded from Step 3.
+        self._pl_excluded = set()
+        cols = ("use", "rank", "id", "status", "mosaic_xy", "verified_xy",
+                "z_centre", "diam", "score", "bin")
+        self._pl_tree = ttk.Treeview(tbl_frame, columns=cols, show="headings",
+                                     height=12, style="Dash.Treeview")
+        # Use = click-to-toggle checkbox ([x]/[ ]); the rest mirror the dashboard
+        # table. Widths sum to all-visible at the default table-pane width; the
+        # horizontal scrollbar covers overflow from long IDs / bin names.
+        hdrs = {"use": ("Use", 40), "rank": ("Rank", 44), "id": ("Spheroid ID", 108),
+                "status": ("Status", 84), "mosaic_xy": ("Mosaic XY (µm)", 96),
+                "verified_xy": ("Verified XY (µm)", 112), "z_centre": ("Z-centre (µm)", 80),
+                "diam": ("Diam (µm)", 60), "score": ("Score", 64), "bin": ("Bin file", 120)}
+        for c, (h, w_) in hdrs.items():
+            self._pl_tree.heading(c, text=h)
+            self._pl_tree.column(c, width=w_, minwidth=32, anchor="center", stretch=False)
+        # Per-status row colors, reusing the dashboard's _ROW_BG / _STATUS_STYLE.
+        try:
+            import spheroid_pipeline as _pl
+            for st, sty in _pl._STATUS_STYLE.items():
+                self._pl_tree.tag_configure(
+                    str(st), background=_pl._ROW_BG.get(st, BG2), foreground=sty["fc"])
+        except Exception:
+            pass
+        self._pl_tree.tag_configure("recentered", background="#3a2c52", foreground="#e6d8ff")
+        self._pl_tree.bind("<Button-1>", self._pl_toggle_use)
+        vsb_tree = ttk.Scrollbar(tbl_frame, orient="vertical", command=self._pl_tree.yview)
+        hsb_tree = ttk.Scrollbar(tbl_frame, orient="horizontal", command=self._pl_tree.xview)
+        self._pl_tree.configure(yscrollcommand=vsb_tree.set, xscrollcommand=hsb_tree.set)
+        vsb_tree.pack(side="right", fill="y")
+        hsb_tree.pack(side="bottom", fill="x")
+        self._pl_tree.pack(side="left", fill="both", expand=True)
+
+        # ── Right pane (Step 4 only): Photoactivation per-macro dispatcher cards
+        #    Shown instead of the table when Step 4 is selected (see _pl_show_step).
+        #    Each PA macro is its own card: edit params -> Reload writes them to
+        #    pa_trigger.ini, Run dispatches that macro via nis_macro_dispatcher.mac;
+        #    tick a card to include it in "Run Pipeline" (checked macros, in order).
+        pa = tk.LabelFrame(self._pl_pa_host, text=" Photoactivation - NIS-E Macro Dispatcher ",
                            bg=BG, fg=MAUVE, font=("Segoe UI", 9, "bold"),
                            bd=1, relief="groove")
-        pa.pack(fill="x", padx=12, pady=(8, 2))
+        pa.pack(fill="both", expand=True, padx=4, pady=(6, 6))
         tk.Label(pa, text="Start nis_macro_dispatcher.mac once in NIS-E. Per card: edit params, "
                           "Reload writes pa_trigger.ini, Run dispatches that macro. Tick a card to "
                           "include it in Run Pipeline (checked macros run in order, waiting for each).",
@@ -1666,65 +1728,6 @@ class App(tk.Tk):
         self._pl_pa_status = tk.Label(pa, text="Photoactivation: idle", bg=BG, fg=SUBTEXT,
                                       font=("Segoe UI", 9), anchor="w", justify="left", wraplength=520)
         self._pl_pa_status.pack(fill="x", padx=8, pady=(0, 6))
-
-        # ── Right panel: combined Spheroid State + Dashboard table ────────────
-        # One table merging the interactive state view (the Use checkbox) with
-        # the dashboard's columns, styled like the matplotlib dashboard (dark
-        # field, monospace, per-status row colors), expanded to full width.
-        tk.Label(side_panel, text="Spheroid State & Dashboard", bg=BG2, fg=MAUVE,
-                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=8, pady=(6, 2))
-        tk.Label(side_panel, text="Click the Use box to include/exclude a spheroid from the "
-                              "Step 3 triggers (default: all checked).",
-                 bg=BG2, fg=SUBTEXT, font=("Segoe UI", 8), justify="left",
-                 wraplength=520).pack(anchor="w", padx=8, pady=(0, 2))
-
-        tbl_frame = tk.Frame(side_panel, bg=BG2)
-        tbl_frame.pack(fill="both", expand=True, padx=4, pady=(0, 6))
-
-        # Dashboard-styled Treeview: dark field, lavender monospace headings.
-        dstyle = ttk.Style(self)
-        dstyle.configure("Dash.Treeview",
-                         background=BG2, foreground=TEXT, fieldbackground=BG2,
-                         rowheight=22, borderwidth=0, font=("Consolas", 9))
-        dstyle.configure("Dash.Treeview.Heading",
-                         background=SURFACE, foreground=LAVENDER, relief="flat",
-                         font=("Consolas", 9, "bold"))
-        dstyle.map("Dash.Treeview",
-                   background=[("selected", SURFACE2)], foreground=[("selected", TEXT)])
-        dstyle.map("Dash.Treeview.Heading", background=[("active", SURFACE2)])
-
-        # Ranks the operator unchecked in the Use column -> excluded from Step 3.
-        self._pl_excluded = set()
-        cols = ("use", "rank", "id", "status", "mosaic_xy", "verified_xy",
-                "z_centre", "diam", "score", "bin")
-        self._pl_tree = ttk.Treeview(tbl_frame, columns=cols, show="headings",
-                                     height=12, style="Dash.Treeview")
-        # Use = click-to-toggle checkbox ([x]/[ ]); the rest mirror the dashboard
-        # table. Widths sum to all-visible at the default table-pane width; the
-        # horizontal scrollbar covers overflow from long IDs / bin names.
-        hdrs = {"use": ("Use", 40), "rank": ("Rank", 44), "id": ("Spheroid ID", 108),
-                "status": ("Status", 84), "mosaic_xy": ("Mosaic XY (µm)", 96),
-                "verified_xy": ("Verified XY (µm)", 112), "z_centre": ("Z-centre (µm)", 80),
-                "diam": ("Diam (µm)", 60), "score": ("Score", 64), "bin": ("Bin file", 120)}
-        for c, (h, w_) in hdrs.items():
-            self._pl_tree.heading(c, text=h)
-            self._pl_tree.column(c, width=w_, minwidth=32, anchor="center", stretch=False)
-        # Per-status row colors, reusing the dashboard's _ROW_BG / _STATUS_STYLE.
-        try:
-            import spheroid_pipeline as _pl
-            for st, sty in _pl._STATUS_STYLE.items():
-                self._pl_tree.tag_configure(
-                    str(st), background=_pl._ROW_BG.get(st, BG2), foreground=sty["fc"])
-        except Exception:
-            pass
-        self._pl_tree.tag_configure("recentered", background="#3a2c52", foreground="#e6d8ff")
-        self._pl_tree.bind("<Button-1>", self._pl_toggle_use)
-        vsb_tree = ttk.Scrollbar(tbl_frame, orient="vertical", command=self._pl_tree.yview)
-        hsb_tree = ttk.Scrollbar(tbl_frame, orient="horizontal", command=self._pl_tree.xview)
-        self._pl_tree.configure(yscrollcommand=vsb_tree.set, xscrollcommand=hsb_tree.set)
-        vsb_tree.pack(side="right", fill="y")
-        hsb_tree.pack(side="bottom", fill="x")
-        self._pl_tree.pack(side="left", fill="both", expand=True)
 
         # ── Live dashboard: always visible in the middle pane below the steps ──
         tk.Label(dash_host, text="Live Dashboard", bg=BG, fg=MAUVE,
@@ -2221,6 +2224,14 @@ class App(tk.Tk):
         for k, frame in self._pl_step_frames.items():
             frame.pack_forget()
         self._pl_step_frames[key].pack(side="top", fill="x")
+        # Right pane: Step 4 shows the Photoactivation macro cards; steps 1-3 show
+        # the merged Spheroid State & Dashboard table.
+        if key == "s4":
+            self._pl_table_host.pack_forget()
+            self._pl_pa_host.pack(fill="both", expand=True)
+        else:
+            self._pl_pa_host.pack_forget()
+            self._pl_table_host.pack(fill="both", expand=True)
         for k, card in self._pl_step_cards.items():
             bg = SURFACE2 if k == key else BG2
             card.configure(bg=bg)
