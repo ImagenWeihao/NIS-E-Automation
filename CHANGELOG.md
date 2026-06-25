@@ -1,6 +1,6 @@
 # CHANGELOG
 
-## v1.8.0 (unreleased — NISE-dispatcher branch) — 2026-06-25
+## v1.8.0 — 2026-06-25
 
 - **NIS-E macro dispatcher** — the GUI can now trigger macros without hand-loading
   each `.mac` per step. New `nis_macro_dispatcher.mac` is started once in NIS-E
