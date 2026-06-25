@@ -843,6 +843,35 @@ class App(tk.Tk):
         return tree
 
     def _build_log_tab(self, parent):
+        # ── NIS-E macro dispatcher: drive macros from the GUI ─────────────────
+        # Start nis_macro_dispatcher.mac ONCE in NIS-E; these buttons then write a
+        # cmd.ini the dispatcher runs in-process (RunMacro), so no .mac has to be
+        # hand-loaded per step.
+        disp = tk.LabelFrame(parent, text=" NIS-E Macro Dispatcher ", bg=BG, fg=MAUVE,
+                             font=("Segoe UI", 9, "bold"), bd=1, relief="groove")
+        disp.pack(fill="x", padx=8, pady=(8, 0))
+        tk.Label(disp, text="Start nis_macro_dispatcher.mac once in NIS-E (Macro > Run, or flag it "
+                            "Run-on-Startup). Each button writes a command the dispatcher runs "
+                            "in-process — no per-step macro loading.",
+                 bg=BG, fg=SUBTEXT, font=("Segoe UI", 8), justify="left",
+                 wraplength=920).pack(anchor="w", padx=8, pady=(4, 2))
+        row = tk.Frame(disp, bg=BG); row.pack(fill="x", padx=8, pady=(0, 4))
+        for label, action, aid, color in [
+            ("Autofocus", "autofocus", 1, BLUE),
+            ("Z-Stack", "zstack", 2, BLUE),
+            ("Z-Corr Capture", "zcorrected", 3, BLUE),
+            ("PA Setup", "pa_setup", 4, MAUVE),
+            ("PA Points", "pa_points", 5, MAUVE),
+            ("PA Pick Current", "pa_pick", 6, MAUVE),
+            ("PA Validate", "pa_validate", 7, MAUVE),
+        ]:
+            self._btn(row, label, lambda a=action, i=aid: self._pl_send_command(a, i),
+                      color, "#1e1e2e", side="left")
+        self._pl_dispatch_status = tk.Label(disp, text="Dispatcher: idle.", bg=BG, fg=SUBTEXT,
+                                            font=("Segoe UI", 9), anchor="w", justify="left",
+                                            wraplength=920)
+        self._pl_dispatch_status.pack(fill="x", padx=8, pady=(0, 6))
+
         self._log = scrolledtext.ScrolledText(
             parent, bg=BG2, fg=TEXT, font=("Consolas", 9),
             relief="flat", insertbackground=TEXT, state="disabled")
@@ -2744,6 +2773,70 @@ class App(tk.Tk):
             self._pl_log(f"State CSV written → {out}/pipeline_state.csv")
 
     # ── _btn grid-mode overload ────────────────────────────────────────────────
+
+    def _pl_send_command(self, action, action_id):
+        """Write a dispatcher command (cmd.ini) for the always-on nis_macro_dispatcher.mac
+        to RunMacro the matching step macro in-process; poll cmd_done.ini for the result.
+        Reuses session.ini's work_dir so the dispatcher and the step daemons agree."""
+        import configparser, spheroid_pipeline as _pl
+        cp = configparser.ConfigParser()
+        try:
+            if _pl.SESSION_INI.exists():
+                cp.read(_pl.SESSION_INI)
+        except Exception:
+            pass
+        work = cp.get("paths", "work_dir", fallback="").strip() or self._pl_trigger_dir.get().strip()
+        if not work:
+            o = self._pl_out_dir.get().strip()
+            work = str(Path(o) / "autofocus") if o else ""
+        if not work:
+            messagebox.showwarning("No work dir",
+                                   "Run Step 3 (Trigger) first, or set the Trigger dir."); return
+        nd2 = cp.get("paths", "nd2_dir", fallback="").strip()
+        macro_dir = _pl.MACRO_DIR.as_posix()
+        wd = Path(work)
+        try:
+            wd.mkdir(parents=True, exist_ok=True)
+            _pl.SESSION_INI.parent.mkdir(parents=True, exist_ok=True)
+            lines = ["[paths]", f"work_dir={wd.as_posix()}"]
+            if nd2:
+                lines.append(f"nd2_dir={nd2}")
+            lines.append(f"macro_dir={macro_dir}")
+            _pl._atomic_write_crlf(_pl.SESSION_INI, lines)
+            try:
+                (wd / "cmd_done.ini").unlink()
+            except FileNotFoundError:
+                pass
+            _pl._atomic_write_crlf(wd / "cmd.ini",
+                                   ["[command]", f"action={action}", f"action_id={action_id}"])
+        except Exception as exc:
+            messagebox.showerror("Dispatcher", f"Failed to write command: {exc}"); return
+        self._pl_log(f"Dispatcher: sent '{action}' (id {action_id}) -> {wd / 'cmd.ini'}")
+        self._pl_dispatch_status.configure(
+            text=f"Sent '{action}'. If nothing runs, start nis_macro_dispatcher.mac once in NIS-E.",
+            fg=YELLOW)
+        threading.Thread(target=self._pl_poll_cmd_done, args=(wd, action), daemon=True).start()
+
+    def _pl_poll_cmd_done(self, work_dir, action):
+        import configparser, time
+        done = Path(work_dir) / "cmd_done.ini"
+        for _ in range(1800):          # up to ~30 min (a step macro may loop internally)
+            if done.exists():
+                cp = configparser.ConfigParser()
+                try:
+                    cp.read(done)
+                    status = cp.get("command", "status", fallback="?")
+                except Exception:
+                    time.sleep(1.0); continue
+                fg = GREEN if status == "ok" else RED
+                self.after(0, lambda s=status, a=action: self._pl_dispatch_status.configure(
+                    text=f"Dispatcher: '{a}' -> {s}", fg=fg))
+                self._pl_log(f"Dispatcher: '{action}' completed -> {status}")
+                return
+            time.sleep(1.0)
+        self.after(0, lambda a=action: self._pl_dispatch_status.configure(
+            text=f"Dispatcher: '{a}' — no cmd_done.ini yet (is nis_macro_dispatcher.mac running?)",
+            fg=YELLOW))
 
     def _btn(self, parent, text, command, bg, fg, bold=False, side="left", grid=None):
         b = tk.Button(parent, text=text, command=command,

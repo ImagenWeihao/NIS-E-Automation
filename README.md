@@ -343,6 +343,7 @@ Circles always use **mosaic XY** — verified XY is a different stage frame (sub
 | 6 | GUI `_btn()` defined twice (lines ~720 and ~1646) — harmless (Python uses last definition), but should be merged | Open |
 | 7 | `nis_macro_auto_capture.mac` not yet tested against live NIS-E hardware | Open |
 | 8 | PA dose has no depth (Beer-Lambert) compensation — the `step3_zstack_PA` Job holds 405/488 at a fixed Power % across all planes, and the Beer-Lambert bin only drives the separate `capture_zcorrected` imaging path, so the spheroid core is under-dosed. To close: run the Job's Z-series with Z-intensity correction loading a bin (P0 = PA Power %, lp_field = 405/488) — **needs rig check** that `step3_zstack_PA` exposes a Z-correction / `.bin` option (Route A). **Decision: treat all PA as fixed power for now.** | Deferred (needs rig) |
+| 9 | NIS-E macro dispatcher (`nis_macro_dispatcher.mac`, NISE-dispatcher branch) needs on-rig verification before merge: (a) `RunMacro(path)` runs the target `.mac` **in-process and returns when it completes** (so `cmd_done.ini` isn't written early); (b) `RunMacro` accepts the `macro_dir` path written to session.ini (`S:/...`) on this NIS build; (c) sub-macros that pop `WaitText` dialogs (pa_setup/pa_validate) behave sanely when launched via `RunMacro`; (d) optional: the Macro Run-on-Startup flag auto-starts the dispatcher (removes the start-once step). | Open (needs rig) |
 
 ---
 

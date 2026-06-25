@@ -1,5 +1,23 @@
 # CHANGELOG
 
+## v1.8.0 (unreleased — NISE-dispatcher branch) — 2026-06-25
+
+- **NIS-E macro dispatcher** — the GUI can now trigger macros without hand-loading
+  each `.mac` per step. New `nis_macro_dispatcher.mac` is started once in NIS-E
+  (Macro > Run, or Run-on-Startup) and loops polling `<work_dir>/cmd.ini` for a
+  numeric `action_id`, then `RunMacro()`s the matching pipeline macro in-process
+  and writes `cmd_done.ini`. Thin router — the 7 existing step macros are unchanged.
+  - `spheroid_pipeline.py`: `MACRO_DIR` constant (abspath, not resolve, so a mapped
+    `S:` drive stays `S:/...` rather than a `//host/share` UNC that `RunMacro` may
+    reject) is written into `session.ini [paths] macro_dir`.
+  - GUI **Log** tab gains a "NIS-E Macro Dispatcher" panel: 7 buttons
+    (Autofocus / Z-Stack / Z-Corr Capture / PA Setup / PA Points / PA Pick / PA
+    Validate) that write `cmd.ini` via `_pl_send_command` and poll `cmd_done.ini`
+    via `_pl_poll_cmd_done`, reusing the session work_dir and the atomic-CRLF writer.
+  - `nis_macro_z_autofocus.mac`: now reads `work_dir` from `session.ini` (was a
+    hardcoded path), so the dispatcher routes it to the GUI's current run folder.
+  - **Needs rig verification** before merge — see README TODO #9.
+
 ## v1.7.2 — 2026-06-25
 
 - **Merged Spheroid State + Dashboard table** — the Step-3 side-panel table and the dashboard's

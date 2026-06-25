@@ -32,6 +32,7 @@
 int main()
 {
     char work_dir[256];
+    char cfg[256];
     char trigger_path[256];
     char done_path[256];
     char nd2_path[256];
@@ -46,7 +47,17 @@ int main()
     double idle_elapsed;
     int rank, move_rc, af_result, handled_any, ok_flag;
 
-    strcpy(work_dir, "S:/Images/Weihao/NISeA/NIS-E-Automation/work/autofocus");
+    // Trigger dir is NOT hardcoded: follow the GUI's session.ini (Step 1 save dir),
+    // matching nis_macro_capture_zstack.mac so the dispatcher can route this macro
+    // to whatever run folder the GUI is using.
+    strcpy(cfg, "C:/SpheroidPA/session.ini");
+    work_dir[0] = 0;
+    Int_GetKeyString(cfg, "paths", "work_dir", work_dir, 256);
+    if( work_dir[0] == 0 )
+    {
+        WaitText(0, "session.ini has no work_dir.\nRun GUI Step 3 (Trigger) first, then re-run this macro.");
+        return FALSE;
+    }
     idle_elapsed = 0.0;
 
     while( idle_elapsed < 300.0 )

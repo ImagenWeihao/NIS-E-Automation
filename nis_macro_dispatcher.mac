@@ -1,0 +1,129 @@
+// ============================================================================
+// nis_macro_dispatcher.mac -- SpheroidPA GUI<->NIS-E command dispatcher
+//
+// Start this ONCE per NIS-E session (Macro > Run, or flag it Run-on-Startup in
+// Edit > Options > Macro). It loops, polling <work_dir>/cmd.ini that the GUI
+// writes, and RunMacro()s the matching pipeline macro IN-PROCESS -- so the
+// operator never has to open and Run a different .mac per step again. After each
+// command it writes <work_dir>/cmd_done.ini and deletes cmd.ini.
+//
+// cmd.ini (written by the GUI, [command] section):
+//   action     = human-readable name (echoed back in cmd_done.ini)
+//   action_id  = 1 autofocus | 2 zstack | 3 zcorrected | 4 pa_setup
+//                5 pa_points | 6 pa_pick | 7 pa_validate
+//
+// Paths come at RUNTIME from C:/SpheroidPA/session.ini [paths]:
+//   work_dir  = where cmd.ini / cmd_done.ini live (the GUI's current run dir)
+//   macro_dir = folder holding the nis_macro_*.mac files (the GUI writes its own
+//               directory here so RunMacro() resolves them with no hardcoded path)
+//
+// Rig dialect (verified, same as nis_macro_capture_zstack.mac): single main()
+// only (no user functions); CRLF + ASCII; Int_GetKeyString + atof for INI values
+// (Int_GetKeyValue is unreliable); action dispatched by NUMERIC action_id via
+// atof (avoids strcmp); sprintf args as ONE quoted comma-list of variable names;
+// RunMacro(file) runs a .mac in-process and returns when it completes.
+//
+// PREREQ: the GUI has written C:/SpheroidPA/session.ini (any Step 3/4 action, or
+// a Dispatcher button, writes work_dir + macro_dir). Press Esc to stop the loop.
+// ============================================================================
+
+#define SEC "command"
+
+int main()
+{
+    char cfg[256];
+    char work_dir[256];
+    char macro_dir[256];
+    char cmd_path[256];
+    char done_path[256];
+    char action[64];
+    char numbuf[64];
+    char macro_name[64];
+    char macro_path[320];
+    char msg[256];
+    double aid, idle;
+    int found;
+
+    strcpy(cfg, "C:/SpheroidPA/session.ini");
+    idle = 0.0;
+
+    // Loop for up to ~4 h of inactivity; press Esc to stop, or re-run to resume.
+    while( idle < 14400.0 )
+    {
+        // Re-read paths every pass so the dispatcher follows the GUI's current run.
+        work_dir[0]  = 0;
+        macro_dir[0] = 0;
+        Int_GetKeyString(cfg, "paths", "work_dir", work_dir, 256);
+        Int_GetKeyString(cfg, "paths", "macro_dir", macro_dir, 256);
+
+        found = 0;
+        if( work_dir[0] != 0 )
+        {
+            strcpy(cmd_path, work_dir);
+            strcat(cmd_path, "/cmd.ini");
+            if( ExistFile(cmd_path) == TRUE )
+            {
+                found = 1;
+                action[0] = 0;
+                Int_GetKeyString(cmd_path, SEC, "action", action, 64);
+                Int_GetKeyString(cmd_path, SEC, "action_id", numbuf, 64);
+                aid = atof(numbuf);
+
+                macro_name[0] = 0;
+                if( aid == 1.0 ) strcpy(macro_name, "nis_macro_z_autofocus.mac");
+                if( aid == 2.0 ) strcpy(macro_name, "nis_macro_capture_zstack.mac");
+                if( aid == 3.0 ) strcpy(macro_name, "nis_macro_capture_zcorrected.mac");
+                if( aid == 4.0 ) strcpy(macro_name, "nis_macro_pa_setup.mac");
+                if( aid == 5.0 ) strcpy(macro_name, "nis_macro_pa_points.mac");
+                if( aid == 6.0 ) strcpy(macro_name, "nis_macro_pa_pick_current.mac");
+                if( aid == 7.0 ) strcpy(macro_name, "nis_macro_pa_validate.mac");
+
+                // Consume the command first so it runs exactly once.
+                DeleteFile(cmd_path);
+                strcpy(done_path, work_dir);
+                strcat(done_path, "/cmd_done.ini");
+                DeleteFile(done_path);
+
+                if( macro_name[0] == 0 )
+                {
+                    Int_SetKeyString(done_path, SEC, "action", action);
+                    Int_SetKeyString(done_path, SEC, "status", "unknown_action");
+                }
+                else
+                {
+                    if( macro_dir[0] == 0 )
+                    {
+                        Int_SetKeyString(done_path, SEC, "action", action);
+                        Int_SetKeyString(done_path, SEC, "status", "no_macro_dir");
+                    }
+                    else
+                    {
+                        strcpy(macro_path, macro_dir);
+                        strcat(macro_path, "/");
+                        strcat(macro_path, macro_name);
+
+                        sprintf(msg, "SpheroidPA dispatcher: running %s", "action");
+                        SetCommandText(msg);
+
+                        RunMacro(macro_path);
+
+                        Int_SetKeyString(done_path, SEC, "action", action);
+                        Int_SetKeyString(done_path, SEC, "macro", macro_name);
+                        Int_SetKeyString(done_path, SEC, "status", "ok");
+                    }
+                }
+                idle = 0.0;
+            }
+        }
+
+        if( found == 0 )
+        {
+            SetCommandText("SpheroidPA dispatcher: idle -- waiting for GUI command (cmd.ini)");
+            Wait(1.0);
+            idle = idle + 1.0;
+        }
+    }
+
+    SetCommandText("SpheroidPA dispatcher: stopped after idle timeout. Re-run nis_macro_dispatcher.mac to resume.");
+    return TRUE;
+}
