@@ -17,6 +17,15 @@
   - `nis_macro_z_autofocus.mac`: now reads `work_dir` from `session.ini` (was a
     hardcoded path), so the dispatcher routes it to the GUI's current run folder.
   - **Needs rig verification** before merge — see README TODO #9.
+- **Step 4 PA section rebuilt as per-macro dispatcher cards** — each PA macro
+  (Setup / Points / Pick Current / Validate) is its own card with a pipeline
+  checkbox, editable params, and **Reload** (write params to `pa_trigger.ini`) +
+  **Run** (dispatch it) buttons; a bottom **Run Pipeline** runs the checked cards
+  in order, waiting on `cmd_done.ini` between each. To make the params live,
+  `pa_points.mac` now reads `count` and `pa_validate.mac` reads `viz_oc/zoom/z/
+  zhalf/zstep` + `count` from `pa_trigger.ini` (`[photoactivation]` / `[validate]`),
+  falling back to their previous hardcoded defaults. The Log-tab dispatcher panel
+  now hosts only the capture macros (autofocus / zstack / zcorrected).
 
 ## v1.7.2 — 2026-06-25
 

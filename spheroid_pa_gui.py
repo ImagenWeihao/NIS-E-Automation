@@ -851,8 +851,8 @@ class App(tk.Tk):
                              font=("Segoe UI", 9, "bold"), bd=1, relief="groove")
         disp.pack(fill="x", padx=8, pady=(8, 0))
         tk.Label(disp, text="Start nis_macro_dispatcher.mac once in NIS-E (Macro > Run, or flag it "
-                            "Run-on-Startup). Each button writes a command the dispatcher runs "
-                            "in-process — no per-step macro loading.",
+                            "Run-on-Startup). These run the capture macros in-process — no per-step "
+                            "macro loading. (The PA macros have their own cards in Step 4.)",
                  bg=BG, fg=SUBTEXT, font=("Segoe UI", 8), justify="left",
                  wraplength=920).pack(anchor="w", padx=8, pady=(4, 2))
         row = tk.Frame(disp, bg=BG); row.pack(fill="x", padx=8, pady=(0, 4))
@@ -860,10 +860,6 @@ class App(tk.Tk):
             ("Autofocus", "autofocus", 1, BLUE),
             ("Z-Stack", "zstack", 2, BLUE),
             ("Z-Corr Capture", "zcorrected", 3, BLUE),
-            ("PA Setup", "pa_setup", 4, MAUVE),
-            ("PA Points", "pa_points", 5, MAUVE),
-            ("PA Pick Current", "pa_pick", 6, MAUVE),
-            ("PA Validate", "pa_validate", 7, MAUVE),
         ]:
             self._btn(row, label, lambda a=action, i=aid: self._pl_send_command(a, i),
                       color, "#1e1e2e", side="left")
@@ -1311,6 +1307,19 @@ class App(tk.Tk):
         self._pl_pa_zoom     = tk.StringVar(value="8")
         self._pl_pa_dichroic = tk.BooleanVar(value=True)   # True = dichroic OUT
         self._pl_pa_interlock = tk.BooleanVar(value=True)  # True = remove A1 interlock first
+        # pa_points / pa_validate params (read by those macros from pa_trigger.ini)
+        self._pl_pa_count     = tk.StringVar(value="9")     # # spheroids (points + validate)
+        self._pl_pa_viz_oc    = tk.StringVar(value="1050nm")
+        self._pl_pa_viz_zoom  = tk.StringVar(value="2.5")
+        self._pl_pa_viz_z     = tk.StringVar(value="7640.0")
+        self._pl_pa_viz_zhalf = tk.StringVar(value="25.0")
+        self._pl_pa_viz_zstep = tk.StringVar(value="5.0")
+        # Per-macro "include in Run Pipeline" selections.
+        self._pl_pa_sel_setup    = tk.BooleanVar(value=True)
+        self._pl_pa_sel_points   = tk.BooleanVar(value=True)
+        self._pl_pa_sel_pick     = tk.BooleanVar(value=False)
+        self._pl_pa_sel_validate = tk.BooleanVar(value=True)
+        self._pl_dispatch_busy   = False   # one dispatcher command in flight at a time
 
         # ── Outer layout: sidebar | [ middle (steps+dashboard) | table ]
         # A horizontal paned window holds two draggable panes that never overlap:
@@ -1577,51 +1586,86 @@ class App(tk.Tk):
                                          justify="left", wraplength=480)
         self._pl_capture_lbl.pack(fill="x", padx=12)
 
-        # ── Photoactivation: parameters for the NIS-E JOB step3_zstack_PA ─────
-        pa = tk.Frame(f_s4, bg=BG); pa.pack(fill="x", padx=12, pady=(8, 2))
-        tk.Label(pa, text="Photoactivation  ·  NIS-E JOB", bg=BG, fg=MAUVE,
-                 font=("Segoe UI", 9, "bold")).pack(anchor="w")
-        tk.Label(pa, text="Define params -> 'Run Photoactivation Job' writes pa_trigger.ini -> run "
-                          "nis_macro_pa_setup.mac in NIS-E (clears A1 interlock, sets the 850 OC + "
-                          "dichroic OUT + centred zoom square) -> run step3_zstack_PA in JOBS Explorer. "
-                          "The job opens its progress window and leaves a square laser-mark centred "
-                          "on the spheroid.",
-                 bg=BG, fg=SUBTEXT, font=("Segoe UI", 8),
-                 justify="left", wraplength=480).pack(anchor="w", pady=(0, 2))
-        # Job + OC are editable comboboxes seeded with the known names (NIS-E job /
-        # optical-config lists can't be auto-imported, so type any other if needed).
-        pjob = tk.Frame(pa, bg=BG); pjob.pack(fill="x", pady=1)
-        tk.Label(pjob, text="Job:", width=13, anchor="w", bg=BG, fg=TEXT2,
-                 font=("Segoe UI", 9)).pack(side="left")
-        ttk.Combobox(pjob, textvariable=self._pl_pa_job, width=30, font=("Segoe UI", 9),
-                     values=["step3_zstack_PA"]).pack(side="left", fill="x", expand=True)
-        poc = tk.Frame(pa, bg=BG); poc.pack(fill="x", pady=1)
-        tk.Label(poc, text="Activation OC:", width=13, anchor="w", bg=BG, fg=TEXT2,
-                 font=("Segoe UI", 9)).pack(side="left")
-        ttk.Combobox(poc, textvariable=self._pl_pa_oc, width=30, font=("Segoe UI", 9),
-                     values=["850 nm power loop full reso2"]).pack(side="left", fill="x", expand=True)
-        pnum = tk.Frame(pa, bg=BG); pnum.pack(fill="x", pady=1)
-        for lbl, var, w in [("Power %:", self._pl_pa_power, 5),
-                            ("Well:",   self._pl_pa_well,  5),
-                            ("Loops:",  self._pl_pa_loops, 5),
-                            ("Zoom:",   self._pl_pa_zoom,  5)]:
-            tk.Label(pnum, text=lbl, bg=BG, fg=TEXT2,
-                     font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
-            tk.Entry(pnum, textvariable=var, width=w, bg=SURFACE, fg=TEXT,
-                     insertbackground=TEXT, relief="flat",
-                     font=("Segoe UI", 9)).pack(side="left", padx=(0, 10))
-        tk.Checkbutton(pnum, text="Dichroic OUT", variable=self._pl_pa_dichroic,
-                       bg=BG, fg=TEXT2, selectcolor=SURFACE, activebackground=BG,
-                       activeforeground=TEXT, font=("Segoe UI", 9)).pack(side="left")
-        tk.Checkbutton(pnum, text="Remove A1 interlock", variable=self._pl_pa_interlock,
-                       bg=BG, fg=TEXT2, selectcolor=SURFACE, activebackground=BG,
-                       activeforeground=TEXT, font=("Segoe UI", 9)).pack(side="left")
-        pbtn = tk.Frame(pa, bg=BG); pbtn.pack(fill="x", pady=(3, 0))
-        self._btn(pbtn, "Run Photoactivation Job", self._pl_pa_run, BLUE, "#1e1e2e")
-        self._pl_pa_status = tk.Label(pa, text="Photoactivation: idle",
-                                      bg=BG, fg=SUBTEXT, font=("Segoe UI", 9), anchor="w",
-                                      justify="left", wraplength=480)
-        self._pl_pa_status.pack(fill="x", pady=(2, 0))
+        # ── Photoactivation: per-macro dispatcher cards ──────────────────────
+        # Each PA macro is its own card: edit params -> Reload writes them to
+        # pa_trigger.ini, Run dispatches that macro via nis_macro_dispatcher.mac.
+        # Check a card to include it in "Run Pipeline" (runs the checked macros in
+        # order). Requires nis_macro_dispatcher.mac running once in NIS-E.
+        pa = tk.LabelFrame(f_s4, text=" Photoactivation - NIS-E Macro Dispatcher ",
+                           bg=BG, fg=MAUVE, font=("Segoe UI", 9, "bold"),
+                           bd=1, relief="groove")
+        pa.pack(fill="x", padx=12, pady=(8, 2))
+        tk.Label(pa, text="Start nis_macro_dispatcher.mac once in NIS-E. Per card: edit params, "
+                          "Reload writes pa_trigger.ini, Run dispatches that macro. Tick a card to "
+                          "include it in Run Pipeline (checked macros run in order, waiting for each).",
+                 bg=BG, fg=SUBTEXT, font=("Segoe UI", 8), justify="left",
+                 wraplength=520).pack(anchor="w", padx=8, pady=(3, 4))
+
+        # Card 1 -- PA Setup (action 4): hardware prep + centred activation square.
+        card, body = self._pl_pa_card(pa, "PA Setup  (interlock / OC / dichroic / centred square)",
+                                      self._pl_pa_sel_setup)
+        r = tk.Frame(body, bg=BG2); r.pack(fill="x")
+        tk.Label(r, text="Activation OC:", bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
+        ttk.Combobox(r, textvariable=self._pl_pa_oc, width=26, font=("Segoe UI", 9),
+                     values=["850 nm power loop full reso2"]).pack(side="left")
+        r = tk.Frame(body, bg=BG2); r.pack(fill="x", pady=(2, 0))
+        for lbl, var, w in [("Power %:", self._pl_pa_power, 5), ("Zoom:", self._pl_pa_zoom, 5),
+                            ("Well:", self._pl_pa_well, 5), ("Loops:", self._pl_pa_loops, 5)]:
+            tk.Label(r, text=lbl, bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
+            tk.Entry(r, textvariable=var, width=w, bg=SURFACE, fg=TEXT, insertbackground=TEXT,
+                     relief="flat", font=("Segoe UI", 9)).pack(side="left", padx=(0, 8))
+        r = tk.Frame(body, bg=BG2); r.pack(fill="x", pady=(2, 0))
+        tk.Checkbutton(r, text="Dichroic OUT", variable=self._pl_pa_dichroic, bg=BG2, fg=TEXT2,
+                       selectcolor=SURFACE, activebackground=BG2, activeforeground=TEXT,
+                       font=("Segoe UI", 9)).pack(side="left")
+        tk.Checkbutton(r, text="Remove A1 interlock", variable=self._pl_pa_interlock, bg=BG2, fg=TEXT2,
+                       selectcolor=SURFACE, activebackground=BG2, activeforeground=TEXT,
+                       font=("Segoe UI", 9)).pack(side="left", padx=(10, 0))
+        self._pl_pa_card_buttons(card, "pa_setup", 4)
+
+        # Card 2 -- PA Points (action 5): build the ND multipoint from N triggers.
+        card, body = self._pl_pa_card(pa, "PA Points  (build ND multipoint from triggers)",
+                                      self._pl_pa_sel_points)
+        r = tk.Frame(body, bg=BG2); r.pack(fill="x")
+        tk.Label(r, text="Count (first N spheroids):", bg=BG2, fg=TEXT2,
+                 font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
+        tk.Entry(r, textvariable=self._pl_pa_count, width=5, bg=SURFACE, fg=TEXT, insertbackground=TEXT,
+                 relief="flat", font=("Segoe UI", 9)).pack(side="left")
+        self._pl_pa_card_buttons(card, "pa_points", 5)
+
+        # Card 3 -- PA Pick Current (action 6): grab the live-centred spheroid (no params).
+        card, body = self._pl_pa_card(pa, "PA Pick Current  (grab the live-centred spheroid)",
+                                      self._pl_pa_sel_pick)
+        tk.Label(body, text="Uses the current live stage X/Y/Z -- centre + focus a spheroid in NIS-E "
+                            "first. No params.", bg=BG2, fg=SUBTEXT, font=("Segoe UI", 8),
+                 justify="left", wraplength=460).pack(anchor="w")
+        self._pl_pa_card_buttons(card, "pa_pick", 6, with_reload=False)
+
+        # Card 4 -- PA Validate (action 7): 1050 nm re-image of the faded squares.
+        card, body = self._pl_pa_card(pa, "PA Validate  (1050 nm re-image of the faded squares)",
+                                      self._pl_pa_sel_validate)
+        r = tk.Frame(body, bg=BG2); r.pack(fill="x")
+        tk.Label(r, text="Viz OC:", bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
+        ttk.Combobox(r, textvariable=self._pl_pa_viz_oc, width=12, font=("Segoe UI", 9),
+                     values=["1050nm"]).pack(side="left", padx=(0, 8))
+        tk.Label(r, text="Count:", bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
+        tk.Entry(r, textvariable=self._pl_pa_count, width=4, bg=SURFACE, fg=TEXT, insertbackground=TEXT,
+                 relief="flat", font=("Segoe UI", 9)).pack(side="left")
+        r = tk.Frame(body, bg=BG2); r.pack(fill="x", pady=(2, 0))
+        for lbl, var, w in [("Zoom:", self._pl_pa_viz_zoom, 5), ("Z centre:", self._pl_pa_viz_z, 7),
+                            ("Z +/-:", self._pl_pa_viz_zhalf, 5), ("Z step:", self._pl_pa_viz_zstep, 5)]:
+            tk.Label(r, text=lbl, bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
+            tk.Entry(r, textvariable=var, width=w, bg=SURFACE, fg=TEXT, insertbackground=TEXT,
+                     relief="flat", font=("Segoe UI", 9)).pack(side="left", padx=(0, 8))
+        self._pl_pa_card_buttons(card, "pa_validate", 7)
+
+        # Bottom bar: run the checked cards in order.
+        bottom = tk.Frame(pa, bg=BG); bottom.pack(fill="x", padx=8, pady=(4, 4))
+        self._btn(bottom, "Run Pipeline (checked, in order)",
+                  self._pl_pa_run_pipeline_thread, MAUVE, "#1e1e2e")
+        self._pl_pa_status = tk.Label(pa, text="Photoactivation: idle", bg=BG, fg=SUBTEXT,
+                                      font=("Segoe UI", 9), anchor="w", justify="left", wraplength=520)
+        self._pl_pa_status.pack(fill="x", padx=8, pady=(0, 6))
 
         # ── Right panel: combined Spheroid State + Dashboard table ────────────
         # One table merging the interactive state view (the Use checkbox) with
@@ -2571,64 +2615,159 @@ class App(tk.Tk):
 
     # ── Step 4 handlers ───────────────────────────────────────────────────────
 
-    def _pl_pa_run(self):
-        """Write the photoactivation parameters to pa_trigger.ini in the session work
-        dir, ready for the NIS-E JOB step3_zstack_PA. PA output is pinned to the Step-1
-        Output dir (<base>/pa) -- NOT the NIS-E default save location."""
-        import configparser
+    def _pl_pa_card(self, parent, title, sel_var):
+        """One PA-macro card: a [select] checkbox header + a body frame for params.
+        Returns (card, body); the caller fills `body` then calls _pl_pa_card_buttons."""
+        card = tk.Frame(parent, bg=BG2, bd=1, relief="solid")
+        card.pack(fill="x", padx=4, pady=3)
+        hdr = tk.Frame(card, bg=BG2); hdr.pack(fill="x", padx=6, pady=(3, 0))
+        tk.Checkbutton(hdr, text=title, variable=sel_var, bg=BG2, fg=MAUVE,
+                       selectcolor=SURFACE, activebackground=BG2, activeforeground=TEXT,
+                       font=("Segoe UI", 9, "bold")).pack(side="left")
+        body = tk.Frame(card, bg=BG2); body.pack(fill="x", padx=24, pady=(0, 2))
+        return card, body
+
+    def _pl_pa_card_buttons(self, card, action, action_id, with_reload=True):
+        btns = tk.Frame(card, bg=BG2); btns.pack(fill="x", padx=24, pady=(2, 6))
+        if with_reload:
+            self._btn(btns, "Reload", lambda a=action: self._pl_pa_reload(a),
+                      SURFACE2, TEXT, side="left")
+        self._btn(btns, "Run", lambda a=action, i=action_id: self._pl_pa_run_macro(a, i),
+                  BLUE, "#1e1e2e", side="left")
+
+    def _pl_pa_write_trigger(self):
+        """Write pa_trigger.ini (all PA-macro params) into the session work dir and
+        refresh session.ini (work_dir + macro_dir for the dispatcher). Returns the
+        work_dir Path, or None on error (after showing a message)."""
+        import configparser, spheroid_pipeline as _pl
         base = self._pl_out_dir.get().strip()
-        if not base:
-            messagebox.showwarning("No output dir", "Set the Step-1 Output dir first."); return
-        save_dir = Path(base) / "pa"            # same dest family as autofocus/ nd2/ bins/
-        # Trigger file -> session work dir (session.ini work_dir, else the Trigger dir).
-        work = ""
+        save_dir = (Path(base) / "pa") if base else None
+        cp0 = configparser.ConfigParser()
         try:
-            sp = Path("C:/SpheroidPA/session.ini")
-            if sp.exists():
-                c0 = configparser.ConfigParser(); c0.read(sp)
-                work = (c0.get("paths", "work_dir", fallback="") or "").strip()
+            if _pl.SESSION_INI.exists():
+                cp0.read(_pl.SESSION_INI)
         except Exception:
-            work = ""
-        if not work:
-            work = self._pl_trigger_dir.get().strip()
+            pass
+        work = cp0.get("paths", "work_dir", fallback="").strip() or self._pl_trigger_dir.get().strip()
         if not work:
             messagebox.showwarning("No work dir",
-                                   "Run Step 3 (Trigger) first, or set the Trigger dir."); return
+                                   "Run Step 3 (Trigger) first, or set the Trigger dir."); return None
+        wd = Path(work)
         try:
-            save_dir.mkdir(parents=True, exist_ok=True)
-            wd = Path(work); wd.mkdir(parents=True, exist_ok=True)
+            wd.mkdir(parents=True, exist_ok=True)
+            if save_dir:
+                save_dir.mkdir(parents=True, exist_ok=True)
         except Exception as exc:
-            messagebox.showerror("Dir error", str(exc)); return
-        pa_path = wd / "pa_trigger.ini"
-        cp = configparser.ConfigParser()
-        cp["photoactivation"] = {
-            "job":            self._pl_pa_job.get().strip(),
-            "optical_config": self._pl_pa_oc.get().strip(),
-            "power_pct":      self._pl_pa_power.get().strip(),
-            "well":           self._pl_pa_well.get().strip(),
-            "loops":          self._pl_pa_loops.get().strip(),
-            "zoom":             self._pl_pa_zoom.get().strip(),
-            "dichroic_out":     "1" if self._pl_pa_dichroic.get() else "0",
-            "remove_interlock": "1" if self._pl_pa_interlock.get() else "0",
-            "save_dir":         save_dir.as_posix(),
-        }
+            messagebox.showerror("Dir error", str(exc)); return None
+        # Atomic CRLF write (NIS-E Int_GetKeyString needs Windows line endings, and
+        # the dispatcher may poll mid-write) -- same guarantee as cmd.ini/session.ini.
+        pa_lines = [
+            "[photoactivation]",
+            f"job={self._pl_pa_job.get().strip()}",
+            f"optical_config={self._pl_pa_oc.get().strip()}",
+            f"power_pct={self._pl_pa_power.get().strip()}",
+            f"well={self._pl_pa_well.get().strip()}",
+            f"loops={self._pl_pa_loops.get().strip()}",
+            f"zoom={self._pl_pa_zoom.get().strip()}",
+            f"dichroic_out={'1' if self._pl_pa_dichroic.get() else '0'}",
+            f"remove_interlock={'1' if self._pl_pa_interlock.get() else '0'}",
+            f"count={self._pl_pa_count.get().strip() or '9'}",
+            f"save_dir={save_dir.as_posix() if save_dir else ''}",
+            "",
+            "[validate]",
+            f"viz_oc={self._pl_pa_viz_oc.get().strip()}",
+            f"viz_zoom={self._pl_pa_viz_zoom.get().strip()}",
+            f"viz_z={self._pl_pa_viz_z.get().strip()}",
+            f"viz_zhalf={self._pl_pa_viz_zhalf.get().strip()}",
+            f"viz_zstep={self._pl_pa_viz_zstep.get().strip()}",
+        ]
         try:
-            with open(pa_path, "w") as f:
-                cp.write(f)
+            _pl._atomic_write_crlf(wd / "pa_trigger.ini", pa_lines)
         except Exception as exc:
-            messagebox.showerror("Write failed", str(exc)); return
-        self._pl_log(f"Photoactivation params -> {pa_path}")
-        self._pl_log(f"  job={self._pl_pa_job.get()}  OC='{self._pl_pa_oc.get()}'  "
-                     f"power={self._pl_pa_power.get()}%  well={self._pl_pa_well.get()}  "
-                     f"loops={self._pl_pa_loops.get()}  zoom={self._pl_pa_zoom.get()}  "
-                     f"dichroic={'OUT' if self._pl_pa_dichroic.get() else 'IN'}")
-        self._pl_log(f"  PA save dir (Step-1 dest) -> {save_dir}")
-        self._pl_log(f"  interlock={'remove' if self._pl_pa_interlock.get() else 'leave'}")
+            messagebox.showerror("Write failed", str(exc)); return None
+        try:
+            nd2 = cp0.get("paths", "nd2_dir", fallback="").strip()
+            lines = ["[paths]", f"work_dir={wd.as_posix()}"]
+            if nd2:
+                lines.append(f"nd2_dir={nd2}")
+            lines.append(f"macro_dir={_pl.MACRO_DIR.as_posix()}")
+            _pl.SESSION_INI.parent.mkdir(parents=True, exist_ok=True)
+            _pl._atomic_write_crlf(_pl.SESSION_INI, lines)
+        except Exception:
+            pass
+        return wd
+
+    def _pl_pa_reload(self, action):
+        wd = self._pl_pa_write_trigger()
+        if wd is None:
+            return
+        self._pl_log(f"PA: params written to {wd / 'pa_trigger.ini'} (for '{action}')")
         self._pl_pa_status.configure(
-            text=(f"PA params -> {pa_path.name}. Next: run nis_macro_pa_setup.mac in NIS-E "
-                  f"(clears interlock, sets OC + dichroic OUT + centred square), then run "
-                  f"step3_zstack_PA in JOBS Explorer.\n"
-                  f"PA save dir -> {save_dir}  (set as the job's Alternative Storage Location)."))
+            text=f"Params reloaded to pa_trigger.ini. '{action}' will use them on Run.", fg=YELLOW)
+
+    def _pl_pa_run_macro(self, action, action_id):
+        if getattr(self, "_pl_dispatch_busy", False):
+            messagebox.showinfo("Dispatcher busy",
+                                "A macro is already running via the dispatcher — wait for it to finish."); return
+        if self._pl_pa_write_trigger() is None:
+            return
+        self._pl_send_command(action, action_id)
+
+    def _pl_pa_run_pipeline_thread(self):
+        if getattr(self, "_pl_dispatch_busy", False):
+            messagebox.showinfo("Dispatcher busy",
+                                "A macro is already running via the dispatcher — wait for it to finish."); return
+        self._pl_dispatch_busy = True
+        threading.Thread(target=self._pl_pa_run_pipeline, daemon=True).start()
+
+    def _pl_pa_run_pipeline(self):
+        """Run the checked PA cards in order, each via the dispatcher, waiting for
+        cmd_done.ini between steps. Stops on the first non-ok result. Holds the
+        single-in-flight _pl_dispatch_busy lock for the whole sequence."""
+        import configparser, time, spheroid_pipeline as _pl
+        try:
+            seq = []
+            if self._pl_pa_sel_setup.get():    seq.append(("pa_setup", 4))
+            if self._pl_pa_sel_points.get():   seq.append(("pa_points", 5))
+            if self._pl_pa_sel_pick.get():     seq.append(("pa_pick", 6))
+            if self._pl_pa_sel_validate.get(): seq.append(("pa_validate", 7))
+            if not seq:
+                self.after(0, lambda: self._pl_pa_status.configure(
+                    text="Pipeline: no macros checked.", fg=RED)); return
+            wd = self._pl_pa_write_trigger()
+            if wd is None:
+                return
+            self._pl_log(f"PA pipeline: {[a for a, _ in seq]}")
+            for action, aid in seq:
+                done = wd / "cmd_done.ini"
+                try:
+                    done.unlink()
+                except FileNotFoundError:
+                    pass
+                _pl._atomic_write_crlf(wd / "cmd.ini",
+                                       ["[command]", f"action={action}", f"action_id={aid}"])
+                self.after(0, lambda a=action: self._pl_pa_status.configure(
+                    text=f"Pipeline: running '{a}'...", fg=YELLOW))
+                self._pl_log(f"PA pipeline: dispatched '{action}'")
+                status = None
+                for _ in range(1800):
+                    if done.exists():
+                        cp = configparser.ConfigParser()
+                        try:
+                            cp.read(done); status = cp.get("command", "status", fallback="?")
+                        except Exception:
+                            time.sleep(1.0); continue
+                        break
+                    time.sleep(1.0)
+                self._pl_log(f"PA pipeline: '{action}' -> {status or 'timeout'}")
+                if status != "ok":
+                    msg = (f"Pipeline stopped at '{action}' -> {status}" if status
+                           else f"Pipeline: '{action}' timed out (is nis_macro_dispatcher.mac running?)")
+                    self.after(0, lambda m=msg: self._pl_pa_status.configure(text=m, fg=RED)); return
+            self.after(0, lambda n=len(seq): self._pl_pa_status.configure(
+                text=f"Pipeline complete: {n} macro(s) ok.", fg=GREEN))
+        finally:
+            self._pl_dispatch_busy = False
 
     def _pl_toggle_beer_lambert(self):
         """P0 is the base power in both modes (the flat fixed power when off), so it
@@ -2778,6 +2917,9 @@ class App(tk.Tk):
         """Write a dispatcher command (cmd.ini) for the always-on nis_macro_dispatcher.mac
         to RunMacro the matching step macro in-process; poll cmd_done.ini for the result.
         Reuses session.ini's work_dir so the dispatcher and the step daemons agree."""
+        if getattr(self, "_pl_dispatch_busy", False):
+            messagebox.showinfo("Dispatcher busy",
+                                "A macro is already running via the dispatcher — wait for it to finish."); return
         import configparser, spheroid_pipeline as _pl
         cp = configparser.ConfigParser()
         try:
@@ -2815,28 +2957,32 @@ class App(tk.Tk):
         self._pl_dispatch_status.configure(
             text=f"Sent '{action}'. If nothing runs, start nis_macro_dispatcher.mac once in NIS-E.",
             fg=YELLOW)
+        self._pl_dispatch_busy = True
         threading.Thread(target=self._pl_poll_cmd_done, args=(wd, action), daemon=True).start()
 
     def _pl_poll_cmd_done(self, work_dir, action):
         import configparser, time
         done = Path(work_dir) / "cmd_done.ini"
-        for _ in range(1800):          # up to ~30 min (a step macro may loop internally)
-            if done.exists():
-                cp = configparser.ConfigParser()
-                try:
-                    cp.read(done)
-                    status = cp.get("command", "status", fallback="?")
-                except Exception:
-                    time.sleep(1.0); continue
-                fg = GREEN if status == "ok" else RED
-                self.after(0, lambda s=status, a=action: self._pl_dispatch_status.configure(
-                    text=f"Dispatcher: '{a}' -> {s}", fg=fg))
-                self._pl_log(f"Dispatcher: '{action}' completed -> {status}")
-                return
-            time.sleep(1.0)
-        self.after(0, lambda a=action: self._pl_dispatch_status.configure(
-            text=f"Dispatcher: '{a}' — no cmd_done.ini yet (is nis_macro_dispatcher.mac running?)",
-            fg=YELLOW))
+        try:
+            for _ in range(1800):      # up to ~30 min (a step macro may loop internally)
+                if done.exists():
+                    cp = configparser.ConfigParser()
+                    try:
+                        cp.read(done)
+                        status = cp.get("command", "status", fallback="?")
+                    except Exception:
+                        time.sleep(1.0); continue
+                    fg = GREEN if status == "ok" else RED
+                    self.after(0, lambda s=status, a=action: self._pl_dispatch_status.configure(
+                        text=f"Dispatcher: '{a}' -> {s}", fg=fg))
+                    self._pl_log(f"Dispatcher: '{action}' completed -> {status}")
+                    return
+                time.sleep(1.0)
+            self.after(0, lambda a=action: self._pl_dispatch_status.configure(
+                text=f"Dispatcher: '{a}' — no cmd_done.ini yet (is nis_macro_dispatcher.mac running?)",
+                fg=YELLOW))
+        finally:
+            self._pl_dispatch_busy = False
 
     def _btn(self, parent, text, command, bg, fg, bold=False, side="left", grid=None):
         b = tk.Button(parent, text=text, command=command,

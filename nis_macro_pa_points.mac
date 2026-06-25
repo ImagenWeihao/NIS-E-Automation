@@ -21,6 +21,7 @@ int main()
 {
     char cfg[256];
     char work_dir[256];
+    char pa_path[256];
     char tp[256];
     char nn[8];
     char id[128];
@@ -28,10 +29,6 @@ int main()
     char msg[256];
     double x, y, z;
     int count, i, added;
-
-    // ---- number of spheroids to photoactivate (first N saved triggers) ------
-    count = 9;
-    // -------------------------------------------------------------------------
 
     strcpy(cfg, "C:/SpheroidPA/session.ini");
     work_dir[0] = 0;
@@ -41,6 +38,16 @@ int main()
         WaitText(0, "session.ini has no work_dir.\nRun GUI Step 3 first.");
         return FALSE;
     }
+
+    // Number of spheroids to photoactivate (first N saved triggers) comes from the
+    // GUI PA Points card via work_dir/pa_trigger.ini [photoactivation] count; 9 default.
+    strcpy(pa_path, work_dir);
+    strcat(pa_path, "/pa_trigger.ini");
+    numbuf[0] = 0;
+    Int_GetKeyString(pa_path, "photoactivation", "count", numbuf, 64);
+    count = atof(numbuf);
+    if( count < 1 )
+        count = 9;
 
     ND_ResetMultipointExp();
     added = 0;

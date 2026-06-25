@@ -30,6 +30,7 @@ int main()
     char cfg[256];
     char work_dir[256];
     char nd2_dir[256];
+    char pa_path[256];
     char viz_oc[128];
     char tp[256];
     char nn[8];
@@ -62,6 +63,30 @@ int main()
     }
     if( nd2_dir[0] == 0 )
         strcpy(nd2_dir, work_dir);
+
+    // Override the EDIT defaults above from the GUI PA Validate card, if present
+    // (work_dir/pa_trigger.ini -- [validate] viz_* and [photoactivation] count).
+    strcpy(pa_path, work_dir);
+    strcat(pa_path, "/pa_trigger.ini");
+    numbuf[0] = 0;
+    Int_GetKeyString(pa_path, "validate", "viz_oc", numbuf, 64);
+    if( numbuf[0] != 0 )
+        strcpy(viz_oc, numbuf);
+    Int_GetKeyString(pa_path, "validate", "viz_zoom", numbuf, 64);
+    if( atof(numbuf) > 0.0 )
+        viz_zoom = atof(numbuf);
+    Int_GetKeyString(pa_path, "validate", "viz_z", numbuf, 64);
+    if( atof(numbuf) > 0.0 )
+        viz_z = atof(numbuf);
+    Int_GetKeyString(pa_path, "validate", "viz_zhalf", numbuf, 64);
+    if( atof(numbuf) > 0.0 )
+        viz_zhalf = atof(numbuf);
+    Int_GetKeyString(pa_path, "validate", "viz_zstep", numbuf, 64);
+    if( atof(numbuf) > 0.0 )
+        viz_zstep = atof(numbuf);
+    Int_GetKeyString(pa_path, "photoactivation", "count", numbuf, 64);
+    if( atof(numbuf) >= 1.0 )
+        count = atof(numbuf);
 
     // Imaging prep: clear interlock, select the 1050 nm OC, keep the PFS dichroic
     // OUT (1050 is an IR/multiphoton laser -- IR acquisition is NOT compatible with
