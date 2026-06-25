@@ -492,7 +492,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("SpheroidPA  v1.7.0 — NIS-E Spheroid PA Pipeline")
+        self.title("SpheroidPA  v1.7.2 — NIS-E Spheroid PA Pipeline")
         self.geometry("1680x880")
         self.minsize(1000, 660)
         self.configure(bg=BG)
@@ -546,14 +546,16 @@ class App(tk.Tk):
         self._nb = nb
 
         tabs = {
-            "pipe": ("  PA Workflow  ", tk.Frame(nb, bg=BG)),
-            "log":  ("  Log  ",         tk.Frame(nb, bg=BG)),
+            "pipe":    ("  PA Workflow  ",       tk.Frame(nb, bg=BG)),
+            "zviewer": ("  Captured Z-Stacks  ", tk.Frame(nb, bg=BG)),
+            "log":     ("  Log  ",               tk.Frame(nb, bg=BG)),
         }
         for key, (label, frame) in tabs.items():
             nb.add(frame, text=label)
             setattr(self, f"_tab_{key}", frame)
 
         self._build_pipeline_tab(self._tab_pipe)
+        self._pl_build_zviewer(self._tab_zviewer)
         self._build_log_tab(self._tab_log)
 
     def _build_status_strip(self):
@@ -1267,6 +1269,9 @@ class App(tk.Tk):
         self._pl_ch_field    = tk.StringVar(value="CH2LaserPower")
         self._pl_P0          = tk.StringVar(value="15.0")
         self._pl_L_um        = tk.StringVar(value="165.0")
+        # Beer-Lambert depth compensation: ON -> depth-adaptive .bin ramp (P0/L);
+        # OFF (default) -> flat .bin at the fixed Photoactivation Power %.
+        self._pl_beer_lambert = tk.BooleanVar(value=False)
         self._pl_ref_bin     = tk.StringVar()
         # Photoactivation (Step 4) -- parameters for the NIS-E JOB step3_zstack_PA.
         self._pl_pa_job      = tk.StringVar(value="step3_zstack_PA")
@@ -1278,11 +1283,12 @@ class App(tk.Tk):
         self._pl_pa_dichroic = tk.BooleanVar(value=True)   # True = dichroic OUT
         self._pl_pa_interlock = tk.BooleanVar(value=True)  # True = remove A1 interlock first
 
-        # ── Outer layout: sidebar | [ middle (steps+dashboard) | viewer | table ]
-        # A horizontal paned window holds three draggable panes that never
-        # overlap: the step content + live dashboard, the captured-spheroid
-        # Z-stack image viewer, and the Spheroid State table. Initial split is
-        # set in _pl_init_sash once the window has a width.
+        # ── Outer layout: sidebar | [ middle (steps+dashboard) | table ]
+        # A horizontal paned window holds two draggable panes that never overlap:
+        # the step content + live dashboard, and the merged Spheroid State &
+        # Dashboard table. The captured-spheroid Z-stack viewer is now its own
+        # "Captured Z-Stacks" tab. Initial split is set in _pl_init_sash once the
+        # window has a width.
         outer = tk.Frame(parent, bg=BG)
         outer.pack(fill="both", expand=True)
 
@@ -1297,13 +1303,10 @@ class App(tk.Tk):
 
         # Pane 1: step content (top) + live dashboard (fills the rest)
         middle = tk.Frame(paned, bg=BG)
-        # Pane 2: captured-spheroid Z-stack image viewer
-        viewer_pane = tk.Frame(paned, bg=BG)
-        # Pane 3: spheroid state table
+        # Pane 2: merged Spheroid State & Dashboard table
         side_panel = tk.Frame(paned, bg=BG2)
         paned.add(middle, weight=3)
-        paned.add(viewer_pane, weight=3)
-        paned.add(side_panel, weight=2)
+        paned.add(side_panel, weight=4)
 
         content_host = tk.Frame(middle, bg=BG)
         content_host.pack(side="top", fill="x")
@@ -1512,15 +1515,31 @@ class App(tk.Tk):
                           "so NIS-E accepts generated bins)",
                  bg=BG, fg=SUBTEXT, font=("Segoe UI", 8),
                  justify="left", wraplength=480).pack(anchor="w", padx=2)
+        # Beer-Lambert depth compensation toggle. ON -> generate the depth-adaptive
+        # P0*exp(depth/L) ramp below. OFF (default) -> flat bin at the fixed
+        # Photoactivation Power %, and the P0 / L fields are disabled.
+        bl_row = tk.Frame(s4, bg=BG); bl_row.pack(fill="x", pady=(4, 0))
+        tk.Checkbutton(bl_row, text="Beer-Lambert Intensity Compensation",
+                       variable=self._pl_beer_lambert,
+                       command=self._pl_toggle_beer_lambert,
+                       bg=BG, fg=TEXT, selectcolor=SURFACE, activebackground=BG,
+                       activeforeground=TEXT, font=("Segoe UI", 9)).pack(side="left")
+        tk.Label(s4, text="OFF: flat bin at P0 (%) (fixed, all planes).  "
+                          "ON: depth-adaptive P0*exp(depth/L) ramp (uses P0 and L below).",
+                 bg=BG, fg=SUBTEXT, font=("Segoe UI", 8),
+                 justify="left", wraplength=480).pack(anchor="w", padx=2)
         lp_row = tk.Frame(s4, bg=BG); lp_row.pack(fill="x", pady=2)
-        for lbl, var in [("Laser channel field:", self._pl_ch_field),
-                          ("P0 (%):", self._pl_P0),
-                          ("L (um):", self._pl_L_um)]:
+        self._pl_bl_fields = {}
+        for key, lbl, var in [("ch", "Laser channel field:", self._pl_ch_field),
+                              ("p0", "P0 (%):", self._pl_P0),
+                              ("l",  "L (um):", self._pl_L_um)]:
             tk.Label(lp_row, text=lbl, bg=BG, fg=TEXT2,
                      font=("Segoe UI", 9)).pack(side="left", padx=(0, 4))
-            tk.Entry(lp_row, textvariable=var, width=14, bg=SURFACE, fg=TEXT,
-                     insertbackground=TEXT, relief="flat",
-                     font=("Segoe UI", 9)).pack(side="left", padx=(0, 14))
+            e = tk.Entry(lp_row, textvariable=var, width=14, bg=SURFACE, fg=TEXT,
+                         insertbackground=TEXT, relief="flat", font=("Segoe UI", 9))
+            e.pack(side="left", padx=(0, 14))
+            self._pl_bl_fields[key] = e
+        self._pl_toggle_beer_lambert()   # apply initial enabled/disabled state
         btn4 = tk.Frame(f_s4, bg=BG); btn4.pack(fill="x", padx=12, pady=(6, 2))
         self._btn(btn4, "Generate All Bins",   self._pl_generate_bins_thread, GREEN, "#1e1e2e")
         self._btn(btn4, "Start Capture Queue", self._pl_capture_queue_thread, MAUVE, "#1e1e2e")
@@ -1575,30 +1594,56 @@ class App(tk.Tk):
                                       justify="left", wraplength=480)
         self._pl_pa_status.pack(fill="x", pady=(2, 0))
 
-        # ── Right panel: spheroid state table (fills the column height) ───────
-        tk.Label(side_panel, text="Spheroid State", bg=BG2, fg=MAUVE,
+        # ── Right panel: combined Spheroid State + Dashboard table ────────────
+        # One table merging the interactive state view (the Use checkbox) with
+        # the dashboard's columns, styled like the matplotlib dashboard (dark
+        # field, monospace, per-status row colors), expanded to full width.
+        tk.Label(side_panel, text="Spheroid State & Dashboard", bg=BG2, fg=MAUVE,
                  font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=8, pady=(6, 2))
         tk.Label(side_panel, text="Click the Use box to include/exclude a spheroid from the "
                               "Step 3 triggers (default: all checked).",
                  bg=BG2, fg=SUBTEXT, font=("Segoe UI", 8), justify="left",
-                 wraplength=340).pack(anchor="w", padx=8, pady=(0, 2))
+                 wraplength=520).pack(anchor="w", padx=8, pady=(0, 2))
 
         tbl_frame = tk.Frame(side_panel, bg=BG2)
         tbl_frame.pack(fill="both", expand=True, padx=4, pady=(0, 6))
 
+        # Dashboard-styled Treeview: dark field, lavender monospace headings.
+        dstyle = ttk.Style(self)
+        dstyle.configure("Dash.Treeview",
+                         background=BG2, foreground=TEXT, fieldbackground=BG2,
+                         rowheight=22, borderwidth=0, font=("Consolas", 9))
+        dstyle.configure("Dash.Treeview.Heading",
+                         background=SURFACE, foreground=LAVENDER, relief="flat",
+                         font=("Consolas", 9, "bold"))
+        dstyle.map("Dash.Treeview",
+                   background=[("selected", SURFACE2)], foreground=[("selected", TEXT)])
+        dstyle.map("Dash.Treeview.Heading", background=[("active", SURFACE2)])
+
         # Ranks the operator unchecked in the Use column -> excluded from Step 3.
         self._pl_excluded = set()
-        cols = ("use", "rank", "id", "status", "verified_xy", "z_centre", "bin")
-        self._pl_tree = ttk.Treeview(tbl_frame, columns=cols, show="headings", height=8)
-        # First column is a click-to-toggle "Use" checkbox ([x]/[ ]); the rest are
-        # sized so all columns are visible by default (horizontal scrollbar covers
-        # any overflow from long IDs / bin names).
-        hdrs = {"use": ("Use", 40), "rank": ("Rank", 46), "id": ("ID", 130),
-                "status": ("Status", 88), "verified_xy": ("Verified XY (um)", 172),
-                "z_centre": ("Z (um)", 60), "bin": ("Bin", 110)}
+        cols = ("use", "rank", "id", "status", "mosaic_xy", "verified_xy",
+                "z_centre", "diam", "score", "bin")
+        self._pl_tree = ttk.Treeview(tbl_frame, columns=cols, show="headings",
+                                     height=12, style="Dash.Treeview")
+        # Use = click-to-toggle checkbox ([x]/[ ]); the rest mirror the dashboard
+        # table. Widths sum to all-visible at the default table-pane width; the
+        # horizontal scrollbar covers overflow from long IDs / bin names.
+        hdrs = {"use": ("Use", 40), "rank": ("Rank", 44), "id": ("Spheroid ID", 108),
+                "status": ("Status", 84), "mosaic_xy": ("Mosaic XY (µm)", 96),
+                "verified_xy": ("Verified XY (µm)", 112), "z_centre": ("Z-centre (µm)", 80),
+                "diam": ("Diam (µm)", 60), "score": ("Score", 64), "bin": ("Bin file", 120)}
         for c, (h, w_) in hdrs.items():
             self._pl_tree.heading(c, text=h)
-            self._pl_tree.column(c, width=w_, minwidth=32, anchor="center")
+            self._pl_tree.column(c, width=w_, minwidth=32, anchor="center", stretch=False)
+        # Per-status row colors, reusing the dashboard's _ROW_BG / _STATUS_STYLE.
+        try:
+            import spheroid_pipeline as _pl
+            for st, sty in _pl._STATUS_STYLE.items():
+                self._pl_tree.tag_configure(
+                    str(st), background=_pl._ROW_BG.get(st, BG2), foreground=sty["fc"])
+        except Exception:
+            pass
         self._pl_tree.tag_configure("recentered", background="#3a2c52", foreground="#e6d8ff")
         self._pl_tree.bind("<Button-1>", self._pl_toggle_use)
         vsb_tree = ttk.Scrollbar(tbl_frame, orient="vertical", command=self._pl_tree.yview)
@@ -1621,9 +1666,6 @@ class App(tk.Tk):
                      text="Dashboard will appear after Step 1 completes.",
                      bg=BG2, fg=SUBTEXT, font=("Segoe UI", 9)).pack(pady=4)
 
-        # Captured-spheroid Z-stack image viewer (its own pane, always visible)
-        self._pl_build_zviewer(viewer_pane)
-
         # Select Step 1 by default
         self._pl_show_step("s1")
         # Set the initial dividers, then scan for any already-captured ND2s.
@@ -1631,9 +1673,9 @@ class App(tk.Tk):
         self.after(220, self._pl_zv_refresh)
 
     def _pl_init_sash(self):
-        """Place the paned-window divider so the table pane gets ~560 px (all
-        columns visible), while the step/dashboard pane keeps at least ~440 px.
-        Retries until the paned window has been laid out."""
+        """Place the paned-window divider so the merged table pane gets the bulk of
+        the width (all ten columns visible at full width) while the step/dashboard
+        pane keeps ~500 px. Retries until the paned window has been laid out."""
         try:
             total = self._pl_paned.winfo_width()
         except Exception:
@@ -1641,20 +1683,12 @@ class App(tk.Tk):
         if total <= 100:
             self.after(80, self._pl_init_sash)
             return
-        # Three panes: middle (steps+dashboard) | viewer | table.
-        middle_w = 560   # enough for Step 4's rows
-        table_w  = 440   # all six columns visible
-        viewer_w = total - middle_w - table_w
-        if viewer_w < 380:
-            # Not enough width: shrink the table to 320 first, then the middle.
-            deficit = 380 - viewer_w
-            take = min(deficit, table_w - 320); table_w -= take; deficit -= take
-            if deficit > 0:
-                middle_w = max(460, middle_w - deficit)
-            viewer_w = total - middle_w - table_w
+        # Two panes: middle (steps+dashboard) | table; the table gets the rest.
+        middle_w = 500   # enough for Step 4's rows
+        if total - middle_w < 560:
+            middle_w = max(460, total - 560)
         try:
             self._pl_paned.sashpos(0, middle_w)
-            self._pl_paned.sashpos(1, middle_w + viewer_w)
         except Exception:
             pass
 
@@ -2172,18 +2206,22 @@ class App(tk.Tk):
         rc   = getattr(self, "_pl_recentered", {})
         excl = getattr(self, "_pl_excluded", set())
         for r in self._pl_records:
+            mos = (f"({r.mosaic_x_um:.0f}, {r.mosaic_y_um:.0f})"
+                   if r.mosaic_x_um else "—")
             xy = (f"({r.verified_x_um:.1f}, {r.verified_y_um:.1f})"
                   if r.verified_x_um else "—")
-            tags = ()
+            tags = (str(r.status),)
             if r.rank in rc:
                 dx, dy = rc[r.rank]
                 xy = f"{xy}  Δ{dx:+.0f},{dy:+.0f}"
                 tags = ("recentered",)
-            zc = f"{r.z_centre_um:.2f}" if r.z_centre_um else "—"
+            zc = f"{r.z_centre_um:.1f}" if r.z_centre_um else "—"
+            dm = f"{r.mosaic_diam_um:.1f}" if r.mosaic_diam_um else "—"
+            sc = f"{r.mosaic_score:.4f}" if r.mosaic_score else "—"
             bn = Path(r.bin_path).name if r.bin_path else "—"
             use = "[ ]" if r.rank in excl else "[x]"
             self._pl_tree.insert("", "end", iid=f"r{r.rank}", tags=tags, values=(
-                use, r.rank, r.spheroid_id, r.status, xy, zc, bn))
+                use, r.rank, r.spheroid_id, r.status, mos, xy, zc, dm, sc, bn))
 
     def _pl_toggle_use(self, event):
         """Toggle a spheroid's Use checkbox when its Use cell ([x]/[ ]) is clicked."""
@@ -2563,6 +2601,15 @@ class App(tk.Tk):
                   f"step3_zstack_PA in JOBS Explorer.\n"
                   f"PA save dir -> {save_dir}  (set as the job's Alternative Storage Location)."))
 
+    def _pl_toggle_beer_lambert(self):
+        """P0 is the base power in both modes (the flat fixed power when off), so it
+        stays editable; only the depth-decay length L is Beer-Lambert-only."""
+        st = "normal" if self._pl_beer_lambert.get() else "disabled"
+        try:
+            self._pl_bl_fields["l"].configure(state=st)
+        except Exception:
+            pass
+
     def _pl_generate_bins_thread(self):
         threading.Thread(target=self._pl_generate_bins, daemon=True).start()
 
@@ -2577,12 +2624,24 @@ class App(tk.Tk):
         if not out:
             messagebox.showwarning("No output dir", "Set output directory."); return
         bin_dir = Path(out) / "bins"
-        try:
-            P0    = float(self._pl_P0.get())
-            L_um  = float(self._pl_L_um.get())
-        except ValueError:
-            messagebox.showerror("Bad value", "P0 and L must be numbers."); return
         ch_field = self._pl_ch_field.get().strip() or "CH2LaserPower"
+        if self._pl_beer_lambert.get():
+            try:
+                P0    = float(self._pl_P0.get())
+                L_um  = float(self._pl_L_um.get())
+            except ValueError:
+                messagebox.showerror("Bad value", "P0 and L must be numbers."); return
+            mode_txt = f"Beer-Lambert depth ramp (P0={P0:g}%, L={L_um:g}um)"
+        else:
+            # Fixed power: flat bin at P0 (%). L -> inf makes exp(depth/L)=1, so
+            # every plane gets the same power.
+            try:
+                P0 = float(self._pl_P0.get())
+            except ValueError:
+                messagebox.showerror("Bad value", "P0 (%) must be a number for fixed-power bins."); return
+            L_um = math.inf
+            mode_txt = f"fixed power {P0:g}% (flat, P0)"
+        self._pl_log(f"Generate bins: {mode_txt}")
         ref_s   = self._pl_ref_bin.get().strip()
         ref_bin = Path(ref_s) if ref_s else None
         if ref_bin and not ref_bin.exists():
@@ -2616,7 +2675,7 @@ class App(tk.Tk):
                 self._pl_log(f"Rank {r.rank}: bin error — {exc}")
         self.after(0, self._pl_update_table)
         self.after(0, self._pl_refresh_dashboard)
-        msg = f"Bins generated: {n_ok}/{len(self._pl_records)}"
+        msg = f"Bins generated: {n_ok}/{len(self._pl_records)} — {mode_txt}"
         self.after(0, lambda: self._pl_capture_lbl.configure(text=msg, fg=GREEN))
         self._pl_log(msg)
         self._pl_update_step_dots()

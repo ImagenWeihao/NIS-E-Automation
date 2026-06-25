@@ -342,6 +342,7 @@ Circles always use **mosaic XY** — verified XY is a different stage frame (sub
 | 5 | With only 2 anchor points, similarity transform has ~72 µm residual at ~900 µm from anchor | Known limitation |
 | 6 | GUI `_btn()` defined twice (lines ~720 and ~1646) — harmless (Python uses last definition), but should be merged | Open |
 | 7 | `nis_macro_auto_capture.mac` not yet tested against live NIS-E hardware | Open |
+| 8 | PA dose has no depth (Beer-Lambert) compensation — the `step3_zstack_PA` Job holds 405/488 at a fixed Power % across all planes, and the Beer-Lambert bin only drives the separate `capture_zcorrected` imaging path, so the spheroid core is under-dosed. To close: run the Job's Z-series with Z-intensity correction loading a bin (P0 = PA Power %, lp_field = 405/488) — **needs rig check** that `step3_zstack_PA` exposes a Z-correction / `.bin` option (Route A). **Decision: treat all PA as fixed power for now.** | Deferred (needs rig) |
 
 ---
 

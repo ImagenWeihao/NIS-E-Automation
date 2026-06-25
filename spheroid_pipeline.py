@@ -862,9 +862,10 @@ class PipelineDashboard:
     """
     Live SpheroidPA pipeline dashboard.
 
-    Top panel  — 10X mosaic with spheroid circles and rank-order zig-zag path.
-                 Circles start 25% opaque (DETECTED) and fill to 100% (IMAGED).
-    Bottom panel — status table: one row per spheroid, color-coded by status.
+    Single panel — 10X mosaic with spheroid circles and rank-order zig-zag path,
+                   filling the whole figure. Circles start 25% opaque (DETECTED)
+                   and fill to 100% (IMAGED). The per-spheroid status table now
+                   lives in the GUI's merged "Spheroid State & Dashboard" table.
 
     Usage (non-blocking updates during pipeline):
         dash = PipelineDashboard(mosaic_nd2=Path("..."), out_dir=Path("..."))
@@ -917,17 +918,16 @@ class PipelineDashboard:
                 matplotlib.use("Agg")
             self._fig = plt.figure(figsize=figsize, facecolor=_C["bg"])
 
+        # Single full-figure mosaic panel (the status table moved to the GUI's
+        # merged "Spheroid State & Dashboard" table, so the map gets all the space).
         gs = mgridspec.GridSpec(
-            2, 1, figure=self._fig,
-            height_ratios=[3, 1], hspace=0.06,
-            left=0.06, right=0.97, top=0.96, bottom=0.03,
+            1, 1, figure=self._fig,
+            left=0.05, right=0.98, top=0.95, bottom=0.04,
         )
         self._ax_mos = self._fig.add_subplot(gs[0])
-        self._ax_tbl = self._fig.add_subplot(gs[1])
-        for ax in (self._ax_mos, self._ax_tbl):
-            ax.set_facecolor(_C["bg2"])
-            for sp in ax.spines.values():
-                sp.set_edgecolor(_C["surf2"])
+        self._ax_mos.set_facecolor(_C["bg2"])
+        for sp in self._ax_mos.spines.values():
+            sp.set_edgecolor(_C["surf2"])
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -935,7 +935,6 @@ class PipelineDashboard:
                save_path: Path | None = None) -> None:
         """Redraw the dashboard with current record states."""
         self._draw_mosaic(records)
-        self._draw_table(records)
         self._fig.canvas.draw_idle()
         if self._interactive:
             plt.pause(0.05)
@@ -1088,68 +1087,6 @@ class PipelineDashboard:
                   fontsize=6, ncol=2, framealpha=0.85,
                   facecolor=_C["surf"], edgecolor=_C["surf2"],
                   labelcolor=_C["text2"])
-
-    # ── Status table panel ────────────────────────────────────────────────────
-
-    def _draw_table(self, records: list[SpheroidRecord]) -> None:
-        ax = self._ax_tbl
-        ax.cla()
-        ax.axis("off")
-        ax.set_facecolor(_C["bg2"])
-
-        if not records:
-            return
-
-        recs = sorted(records, key=lambda r: r.rank)
-
-        COLS = ["Rank", "Spheroid ID", "Status",
-                "Mosaic XY (µm)", "Verified XY (µm)", "Z-centre (µm)",
-                "Diam (µm)", "Score", "Bin file"]
-        COL_W = [0.04, 0.14, 0.08, 0.13, 0.13, 0.10, 0.07, 0.06, 0.25]
-
-        cell_text = []
-        for r in recs:
-            mos_xy = f"({r.mosaic_x_um:.0f}, {r.mosaic_y_um:.0f})"
-            ver_xy = (f"({r.verified_x_um:.0f}, {r.verified_y_um:.0f})"
-                      if r.verified_x_um else "—")
-            zc     = f"{r.z_centre_um:.1f}" if r.z_centre_um else "—"
-            bn     = Path(r.bin_path).name if r.bin_path else "—"
-            cell_text.append([
-                str(r.rank), r.spheroid_id, r.status,
-                mos_xy, ver_xy, zc,
-                f"{r.mosaic_diam_um:.1f}", f"{r.mosaic_score:.4f}", bn,
-            ])
-
-        tbl = ax.table(
-            cellText=cell_text,
-            colLabels=COLS,
-            colWidths=COL_W,
-            cellLoc="center",
-            loc="center",
-            bbox=[0, 0, 1, 1],
-        )
-        tbl.auto_set_font_size(False)
-        tbl.set_fontsize(6.5)
-
-        # Header row
-        for ci in range(len(COLS)):
-            cell = tbl[(0, ci)]
-            cell.set_facecolor(_C["surf"])
-            cell.set_edgecolor(_C["surf2"])
-            cell.set_text_props(color=_C["lavender"], fontweight="bold",
-                                fontfamily="monospace")
-
-        # Data rows — color by status
-        for ri, r in enumerate(recs):
-            row_bg   = _ROW_BG.get(r.status, _C["bg2"])
-            text_col = _STATUS_STYLE.get(
-                r.status, _STATUS_STYLE[Status.DETECTED])["fc"]
-            for ci in range(len(COLS)):
-                cell = tbl[(ri + 1, ci)]
-                cell.set_facecolor(row_bg)
-                cell.set_edgecolor(_C["surf"])
-                cell.set_text_props(color=text_col, fontfamily="monospace")
-
 
 # ── Standalone CLI ─────────────────────────────────────────────────────────────
 

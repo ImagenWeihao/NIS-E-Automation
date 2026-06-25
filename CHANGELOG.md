@@ -1,5 +1,29 @@
 # CHANGELOG
 
+## v1.7.2 — 2026-06-25
+
+- **Merged Spheroid State + Dashboard table** — the Step-3 side-panel table and the dashboard's
+  status table are now one Treeview ("Spheroid State & Dashboard"), placed where the state table
+  was, expanded to full width by default. Columns: **Use** (checkbox), Rank, Spheroid ID, Status,
+  Mosaic XY (µm), Verified XY (µm), Z-centre (µm), Diam (µm), Score, Bin file. Styled to match the
+  matplotlib dashboard (dark `bg2` field, lavender monospace headings, per-status row colors reused
+  from `_ROW_BG` / `_STATUS_STYLE`). The Use toggle and Step-3 trigger/recenter exclusions are
+  unchanged.
+- **Dashboard is now map-only** — `PipelineDashboard`'s redundant status-table panel was removed
+  (`_ax_tbl` / `_draw_table` deleted) and the 10× mosaic preview map expanded to fill the whole
+  figure. The per-spheroid data now lives solely in the merged table above. Affects the GUI live
+  dashboard and the standalone CLI dashboard figure alike.
+- **Captured Z-Stacks moved to its own tab** — the captured-spheroid Z-stack viewer is now a
+  dedicated notebook tab between **PA Workflow** and **Log**, instead of a pane inside the workflow.
+  The PA Workflow tab's paned window is now two panes (steps+dashboard | merged table), so the
+  table gets even more width by default.
+- **Beer-Lambert compensation is now opt-in** — Step 4 gains a **"Beer-Lambert Intensity
+  Compensation"** checkbox (default **OFF**). ON → `Generate All Bins` writes the depth-adaptive
+  `P0*exp(depth/L)` ramp (P0 and L active). OFF → flat bins at the fixed **P0 (%)** power (default
+  15%), implemented as `L → inf` so every plane gets the same power (only L is disabled; P0 stays
+  editable as the base power in both modes). Bins are still always generated so the Z-corrected
+  capture works in both modes; the status line / log report which mode was used.
+
 ## v1.7.1 — 2026-06-24
 
 - **Step 3 per-spheroid selection** — the Spheroid State table gains a leading **Use**
