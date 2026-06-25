@@ -26,6 +26,14 @@
   zhalf/zstep` + `count` from `pa_trigger.ini` (`[photoactivation]` / `[validate]`),
   falling back to their previous hardcoded defaults. The Log-tab dispatcher panel
   now hosts only the capture macros (autofocus / zstack / zcorrected).
+- **PA Validate OC fix (laser-safety)** — `pa_validate.mac` could silently image at
+  the 850 nm PA laser: `SelectOptConf` needs the exact OC name, but the default was
+  the placeholder `"1050nm"` which matches no config, so the switch no-opped and the
+  validation re-image ran with the PA laser still on (root cause of the June-23
+  `trail2` pacheck captured at 850 nm). Fixed: default/GUI Viz OC is now the exact
+  `1050nm_Galvo_561nm_NDD2_JL2` (from the nd2 metadata), and the macro now reads back
+  the active laser via `GetLaserParams` and **aborts** before imaging if it's still
+  ~850 nm. Applied to master too.
 - **Step 4 right-pane swap** — on Step 4 the right pane hides the Spheroid State &
   Dashboard table and shows the Photoactivation macro cards instead (steps 1-3 keep
   the table); `_pl_show_step` toggles `_pl_table_host` / `_pl_pa_host`. The PA cards

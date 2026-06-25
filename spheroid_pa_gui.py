@@ -1309,7 +1309,7 @@ class App(tk.Tk):
         self._pl_pa_interlock = tk.BooleanVar(value=True)  # True = remove A1 interlock first
         # pa_points / pa_validate params (read by those macros from pa_trigger.ini)
         self._pl_pa_count     = tk.StringVar(value="9")     # # spheroids (points + validate)
-        self._pl_pa_viz_oc    = tk.StringVar(value="1050nm")
+        self._pl_pa_viz_oc    = tk.StringVar(value="1050nm_Galvo_561nm_NDD2_JL2")
         self._pl_pa_viz_zoom  = tk.StringVar(value="2.5")
         self._pl_pa_viz_z     = tk.StringVar(value="7640.0")
         self._pl_pa_viz_zhalf = tk.StringVar(value="25.0")
@@ -1708,8 +1708,8 @@ class App(tk.Tk):
                                       self._pl_pa_sel_validate)
         r = tk.Frame(body, bg=BG2); r.pack(fill="x")
         tk.Label(r, text="Viz OC:", bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
-        ttk.Combobox(r, textvariable=self._pl_pa_viz_oc, width=12, font=("Segoe UI", 9),
-                     values=["1050nm"]).pack(side="left", padx=(0, 8))
+        ttk.Combobox(r, textvariable=self._pl_pa_viz_oc, width=28, font=("Segoe UI", 9),
+                     values=["1050nm_Galvo_561nm_NDD2_JL2"]).pack(side="left", padx=(0, 8))
         tk.Label(r, text="Count:", bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
         tk.Entry(r, textvariable=self._pl_pa_count, width=4, bg=SURFACE, fg=TEXT, insertbackground=TEXT,
                  relief="flat", font=("Segoe UI", 9)).pack(side="left")

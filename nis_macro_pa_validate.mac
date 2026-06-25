@@ -40,10 +40,11 @@ int main()
     char msg[256];
     double x, y;
     double viz_zoom, viz_z, viz_zhalf, viz_zstep, z_top, z_bottom;
+    double laser_wl, laser_pw, laser_hv;
     int count, i, done;
 
     // ---- EDIT for your rig --------------------------------------------------
-    strcpy(viz_oc, "1050nm");   // <-- your 1050 nm visualization OC name
+    strcpy(viz_oc, "1050nm_Galvo_561nm_NDD2_JL2");   // exact NIS-E 1050 nm OC name (from nd2 metadata)
     count     = 9;              // same count pa_points.mac used (first N triggers)
     viz_zoom  = 2.5;            // scan-area zoom: frames the ~250 um spheroid (~254 um FOV)
     viz_z     = 7640.0;         // Z centre of the validation stack = the PA/focus plane
@@ -95,6 +96,21 @@ int main()
     SelectOptConf(viz_oc);
     Stg_PFSInsertExtractDM(0);
     Confocal_SetScanArea(viz_zoom, 0.0, 0.0, 0.0, 1.0);
+
+    // Safety: confirm the OC actually switched OFF the 850 nm PA laser before
+    // imaging. A wrong viz_oc name makes SelectOptConf silently no-op, leaving the
+    // 850 nm PA laser active -- it disrupts the spheroid and gives no 1050 nm view
+    // (the June-23 trail2 failure: a pacheck captured at 850 nm). Abort loudly if
+    // the active laser still reads ~850 nm.
+    laser_wl = 0.0;
+    GetLaserParams(&laser_wl, &laser_pw, &laser_hv);
+    if( laser_wl > 700.0 && laser_wl < 950.0 )
+    {
+        sprintf(msg, "PA Validate ABORTED: active laser is %.0f nm (PA laser still on).\nOC '%s' did not switch -- set the exact 1050 nm config name and retry.", "laser_wl,viz_oc");
+        WaitText(0, msg);
+        SetCommandText(0);
+        return FALSE;
+    }
 
     z_top    = viz_z + viz_zhalf;
     z_bottom = viz_z - viz_zhalf;
