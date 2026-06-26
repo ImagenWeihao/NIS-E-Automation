@@ -2765,7 +2765,8 @@ class App(tk.Tk):
                     if done.exists():
                         cp = configparser.ConfigParser()
                         try:
-                            cp.read(done); status = cp.get("command", "status", fallback="?")
+                            cp.read(done); status = cp.get("command", "status",
+                                fallback=cp.get("spheroid", "status", fallback="?"))
                         except Exception:
                             time.sleep(1.0); continue
                         break

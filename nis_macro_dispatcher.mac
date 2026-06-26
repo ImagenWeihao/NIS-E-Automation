@@ -86,15 +86,15 @@ int main()
 
                 if( macro_name[0] == 0 )
                 {
-                    Int_SetKeyString(done_path, SEC, "action", action);
-                    Int_SetKeyString(done_path, SEC, "status", "unknown_action");
+                    Int_SetKeyString(done_path, "command", "action", action);
+                    Int_SetKeyString(done_path, "command", "status", "unknown_action");
                 }
                 else
                 {
                     if( macro_dir[0] == 0 )
                     {
-                        Int_SetKeyString(done_path, SEC, "action", action);
-                        Int_SetKeyString(done_path, SEC, "status", "no_macro_dir");
+                        Int_SetKeyString(done_path, "command", "action", action);
+                        Int_SetKeyString(done_path, "command", "status", "no_macro_dir");
                     }
                     else
                     {
@@ -107,9 +107,9 @@ int main()
 
                         RunMacro(macro_path);
 
-                        Int_SetKeyString(done_path, SEC, "action", action);
-                        Int_SetKeyString(done_path, SEC, "macro", macro_name);
-                        Int_SetKeyString(done_path, SEC, "status", "ok");
+                        Int_SetKeyString(done_path, "command", "action", action);
+                        Int_SetKeyString(done_path, "command", "macro", macro_name);
+                        Int_SetKeyString(done_path, "command", "status", "ok");
                     }
                 }
                 idle = 0.0;
