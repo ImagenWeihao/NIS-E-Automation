@@ -73,6 +73,9 @@ int main()
     // A1-present guard: the A1 confocal calls below (interlock / OC / Confocal_SetScanArea)
     // CRASH NIS-E's grabber manager (access violation in v6_gnr_grabbermanager01.dll) when
     // the A1 is powered OFF. Require an explicit "A1 on" confirmation before any A1 call.
+    // Clear numbuf first: Int_GetKeyString leaves it UNCHANGED when a1_on is missing, so
+    // without this it kept the prior power_pct value ("30") and silently passed the guard.
+    numbuf[0] = 0;
     Int_GetKeyString(trigger_path, "photoactivation", "a1_on", numbuf, 64);
     if( atof(numbuf) < 0.5 )
     {
