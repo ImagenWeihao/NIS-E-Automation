@@ -2980,7 +2980,10 @@ class App(tk.Tk):
                     cp = configparser.ConfigParser()
                     try:
                         cp.read(done)
-                        status = cp.get("command", "status", fallback="?")
+                        # status normally under [command]; tolerate an older dispatcher
+                        # build that wrote it under [spheroid] so the GUI still shows ok.
+                        status = cp.get("command", "status",
+                                        fallback=cp.get("spheroid", "status", fallback="?"))
                     except Exception:
                         time.sleep(1.0); continue
                     fg = GREEN if status == "ok" else RED
