@@ -42,3 +42,7 @@ work/
 nise*_figures/
 *.bin
 *.nd2
+
+# Secrets (never commit)
+ConfluenceAPI.txt
+*.token
