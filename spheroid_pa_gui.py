@@ -1,5 +1,5 @@
 """
-spheroid_pa_gui.py  v1.8.0
+spheroid_pa_gui.py  v1.8.1
 NIS-E Spheroid PA Pipeline — ND2-native I/O
 
 Pipeline:  Job A ND2 → [parse metadata + detect spheroids]
@@ -492,7 +492,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("SpheroidPA  v1.8.0 — NIS-E Spheroid PA Pipeline")
+        self.title("SpheroidPA  v1.8.1 — NIS-E Spheroid PA Pipeline")
         self.geometry("1680x880")
         self.minsize(1000, 660)
         self.configure(bg=BG)
@@ -524,7 +524,7 @@ class App(tk.Tk):
     def _build_ui(self):
         hdr = tk.Frame(self, bg=BG2)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="  SpheroidPA  v1.8.0",
+        tk.Label(hdr, text="  SpheroidPA  v1.8.1",
                  bg=BG2, fg=MAUVE, font=("Segoe UI", 13, "bold"), pady=8
                  ).pack(side="left")
         tk.Label(hdr, text="Screen → Anchor → Autofocus → Capture  ",
@@ -1307,6 +1307,7 @@ class App(tk.Tk):
         self._pl_pa_zoom     = tk.StringVar(value="8")
         self._pl_pa_dichroic = tk.BooleanVar(value=True)   # True = dichroic OUT
         self._pl_pa_interlock = tk.BooleanVar(value=True)  # True = remove A1 interlock first
+        self._pl_pa_a1on     = tk.BooleanVar(value=False)  # True = A1 confirmed powered ON; pa_setup/pa_validate guard aborts if unchecked
         # pa_points / pa_validate params (read by those macros from pa_trigger.ini)
         self._pl_pa_count     = tk.StringVar(value="9")     # # spheroids (points + validate)
         self._pl_pa_viz_oc    = tk.StringVar(value="1050nm_Galvo_561nm_NDD2_JL2")
@@ -1683,6 +1684,10 @@ class App(tk.Tk):
         tk.Checkbutton(r, text="Remove A1 interlock", variable=self._pl_pa_interlock, bg=BG2, fg=TEXT2,
                        selectcolor=SURFACE, activebackground=BG2, activeforeground=TEXT,
                        font=("Segoe UI", 9)).pack(side="left", padx=(10, 0))
+        # A1-present guard: pa_setup/pa_validate abort (no A1 calls) unless this is ticked.
+        tk.Checkbutton(r, text="A1 powered ON", variable=self._pl_pa_a1on, bg=BG2, fg="#f7768e",
+                       selectcolor=SURFACE, activebackground=BG2, activeforeground=TEXT,
+                       font=("Segoe UI", 9, "bold")).pack(side="left", padx=(10, 0))
         self._pl_pa_card_buttons(card, "pa_setup", 4)
 
         # Card 2 -- PA Points (action 5): build the ND multipoint from N triggers.
@@ -2682,6 +2687,7 @@ class App(tk.Tk):
             f"zoom={self._pl_pa_zoom.get().strip()}",
             f"dichroic_out={'1' if self._pl_pa_dichroic.get() else '0'}",
             f"remove_interlock={'1' if self._pl_pa_interlock.get() else '0'}",
+            f"a1_on={'1' if self._pl_pa_a1on.get() else '0'}",
             f"count={self._pl_pa_count.get().strip() or '9'}",
             f"save_dir={save_dir.as_posix() if save_dir else ''}",
             "",

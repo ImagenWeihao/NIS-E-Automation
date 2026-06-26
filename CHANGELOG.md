@@ -1,5 +1,19 @@
 # CHANGELOG
 
+## v1.8.1 — 2026-06-26
+
+- **A1-present guard fix (was crashing NIS-E).** `pa_setup` and `pa_validate` now
+  abort cleanly if the A1 confocal isn't confirmed powered on, instead of letting
+  `Confocal_SetScanArea` access-violate the A1 grabber (`v6_gnr_grabbermanager01.dll`,
+  `c0000005`) when the A1 is off.
+  - **Bug:** the guard read `a1_on` into `numbuf` without clearing it first; NIS-E's
+    `Int_GetKeyString` leaves the buffer unchanged when the key is missing, so it kept
+    the prior `power_pct`/`count` value and `atof()` returned 30/9 — silently passing
+    the guard. Fixed by `numbuf[0]=0` before the read in both macros.
+  - GUI: new **"A1 powered ON"** checkbox on the PA Setup card (default OFF) writes
+    `a1_on` to `pa_trigger.ini [photoactivation]`, so it survives the Run rewrite.
+    Leave it unchecked when the A1 is off — the macros abort harmlessly.
+
 ## v1.8.0 — 2026-06-25
 
 - **NIS-E macro dispatcher** — the GUI can now trigger macros without hand-loading
