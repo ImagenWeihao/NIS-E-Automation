@@ -2991,12 +2991,16 @@ class App(tk.Tk):
                         # build that wrote it under [spheroid] so the GUI still shows ok.
                         status = cp.get("command", "status",
                                         fallback=cp.get("spheroid", "status", fallback="?"))
+                        message = cp.get("command", "message",
+                                         fallback=cp.get("spheroid", "message", fallback=""))
                     except Exception:
                         time.sleep(1.0); continue
                     fg = GREEN if status == "ok" else RED
                     self.after(0, lambda s=status, a=action: self._pl_dispatch_status.configure(
                         text=f"Dispatcher: '{a}' -> {s}", fg=fg))
                     self._pl_log(f"Dispatcher: '{action}' completed -> {status}")
+                    if message:
+                        self._pl_log(f"   ⚠ {message}")
                     return
                 time.sleep(1.0)
             self.after(0, lambda a=action: self._pl_dispatch_status.configure(

@@ -98,6 +98,12 @@ int main()
     Int_GetKeyString(pa_path, "photoactivation", "a1_on", numbuf, 64);
     if( atof(numbuf) < 0.5 )
     {
+        // Report the abort via cmd_done.ini so the dispatcher/GUI log shows it
+        // (otherwise the dispatcher writes "ok" after RunMacro returns).
+        strcpy(msg, work_dir);
+        strcat(msg, "/cmd_done.ini");
+        Int_SetKeyString(msg, "command", "status", "aborted_no_a1");
+        Int_SetKeyString(msg, "command", "message", "A1 not confirmed powered ON (a1_on != 1) -- aborted before any A1 call.");
         WaitText(0, "A1 not confirmed powered ON (a1_on != 1).\nTick 'A1 powered on' in the GUI (or set a1_on=1 in pa_trigger.ini [photoactivation]) once the A1 is up.\nAborting to avoid an A1 grabber crash.");
         return FALSE;
     }

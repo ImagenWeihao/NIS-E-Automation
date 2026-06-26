@@ -13,6 +13,11 @@
   - GUI: new **"A1 powered ON"** checkbox on the PA Setup card (default OFF) writes
     `a1_on` to `pa_trigger.ini [photoactivation]`, so it survives the Run rewrite.
     Leave it unchecked when the A1 is off — the macros abort harmlessly.
+  - The abort now writes `status=aborted_no_a1` + a `message` into `cmd_done.ini`; the
+    dispatcher **preserves** a macro-set status (instead of always writing `ok`) and the
+    GUI Log surfaces the message (`⚠ A1 not confirmed powered ON …`) instead of a
+    misleading `pa_setup -> ok`. **Re-load `nis_macro_dispatcher.mac`** in NIS-E for the
+    dispatcher half; restart the GUI for the message line.
 
 ## v1.8.0 — 2026-06-25
 

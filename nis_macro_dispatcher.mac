@@ -107,9 +107,16 @@ int main()
 
                         RunMacro(macro_path);
 
+                        // If the step macro wrote its own cmd_done.ini status (e.g. an
+                        // abort guard set status=aborted_no_a1), preserve it; otherwise
+                        // it ran to completion -> ok. numbuf cleared first (missing-key
+                        // leaves the buffer unchanged on this build).
                         Int_SetKeyString(done_path, "command", "action", action);
                         Int_SetKeyString(done_path, "command", "macro", macro_name);
-                        Int_SetKeyString(done_path, "command", "status", "ok");
+                        numbuf[0] = 0;
+                        Int_GetKeyString(done_path, "command", "status", numbuf, 64);
+                        if( numbuf[0] == 0 )
+                            Int_SetKeyString(done_path, "command", "status", "ok");
                     }
                 }
                 idle = 0.0;
