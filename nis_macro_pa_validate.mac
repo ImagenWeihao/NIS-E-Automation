@@ -89,6 +89,16 @@ int main()
     if( atof(numbuf) >= 1.0 )
         count = atof(numbuf);
 
+    // A1-present guard: the A1 confocal calls below (interlock / OC / Confocal_SetScanArea)
+    // CRASH NIS-E's grabber manager (access violation in v6_gnr_grabbermanager01.dll) when
+    // the A1 is powered OFF. Require an explicit "A1 on" confirmation before any A1 call.
+    Int_GetKeyString(pa_path, "photoactivation", "a1_on", numbuf, 64);
+    if( atof(numbuf) < 0.5 )
+    {
+        WaitText(0, "A1 not confirmed powered ON (a1_on != 1).\nTick 'A1 powered on' in the GUI (or set a1_on=1 in pa_trigger.ini [photoactivation]) once the A1 is up.\nAborting to avoid an A1 grabber crash.");
+        return FALSE;
+    }
+
     // Imaging prep: clear interlock, select the 1050 nm OC, keep the PFS dichroic
     // OUT (1050 is an IR/multiphoton laser -- IR acquisition is NOT compatible with
     // the PFS dichroic in the optical path), and zoom to frame just the spheroid.
