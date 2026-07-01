@@ -172,14 +172,19 @@ def estimate_offset_from_nd2(
     records: list[SpheroidRecord],
     out_dir: Path,
     expected_rank: int | None = None,
-) -> tuple[float, float, float, int]:
+) -> tuple[float, float, float, int, int]:
     """
-    Run cross_zoom_v2.verify() on one sub-10X nd2.
-    Returns (dx_um, dy_um, ncc_score, matched_rank).
+    Run cross_zoom_v2.verify() on one sub-10X nd2 (one anchor cell).
+    Returns (dx_um, dy_um, ncc_score, used_rank, auto_rank).
 
-    If expected_rank is given, prefer the NCC match for that rank (the spheroid
-    the operator says they navigated to); otherwise use the highest-NCC match
-    across all ranks. Raises ValueError if no match above threshold.
+    expected_rank is the cell the operator says they navigated to:
+      * If given, it is FORCED -- the offset is computed against THAT rank's mosaic
+        coordinates and used_rank == expected_rank. The NCC best-match is returned
+        separately as auto_rank so the caller can WARN when it disagrees; it is
+        never substituted in.
+      * If None, the NCC best-match is used (used_rank == auto_rank).
+    Raises ValueError if no detection matches above threshold, or if a forced
+    expected_rank is not among the screener records.
     """
     compat_csv = out_dir / "_czv2_compat.csv"
     _write_czv2_csv(records, compat_csv)
@@ -190,21 +195,33 @@ def estimate_offset_from_nd2(
         screener_csv = compat_csv,
         out_dir      = out_dir,
     )
-    # Use only the best single match per anchor nd2.
-    # Operator aims at one specific spheroid; secondary detections (e.g. near-edge
-    # objects at pixel col < 120/1024) are noise and produce wrong offsets when averaged.
+    # Operator aims at one spheroid; keep only confident detections, strongest first.
+    # (Secondary near-edge objects are noise and would give wrong offsets if averaged.)
     good = sorted(matches, key=lambda m: m["ncc"], reverse=True)
     good = [m for m in good if m["ncc"] >= NCC_MIN_ACCEPT]
     if not good:
         raise ValueError(
             f"No NCC match >= {NCC_MIN_ACCEPT} in {sub10x_nd2.name}"
         )
-    best = None
+    primary   = good[0]                        # the anchor detection (strongest)
+    auto_rank = int(primary["matched_rank"])   # what NCC alone would have picked
+    auto_ncc  = float(primary["ncc"])
+
     if expected_rank is not None:
-        best = next((m for m in good if int(m["matched_rank"]) == expected_rank), None)
-    if best is None:
-        best = good[0]
-    return best["offset_x_um"], best["offset_y_um"], best["ncc"], int(best["matched_rank"])
+        # FORCE the operator's cell: offset = anchor detection stage - that rank's
+        # mosaic stage. Never substitute the NCC best-match, even if it disagrees --
+        # the caller compares auto_rank vs expected_rank and warns on a mismatch.
+        rec = next((r for r in records if r.rank == int(expected_rank)), None)
+        if rec is None:
+            raise ValueError(
+                f"Forced anchor rank {expected_rank} is not among the screener records"
+            )
+        dx = round(primary["sub_stage_x"] - rec.mosaic_x_um, 2)
+        dy = round(primary["sub_stage_y"] - rec.mosaic_y_um, 2)
+        return dx, dy, auto_ncc, int(expected_rank), auto_rank
+
+    return (primary["offset_x_um"], primary["offset_y_um"],
+            auto_ncc, auto_rank, auto_rank)
 
 
 def apply_offset(records: list[SpheroidRecord], dx: float, dy: float) -> None:

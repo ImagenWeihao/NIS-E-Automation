@@ -1433,7 +1433,7 @@ class App(tk.Tk):
 
         tk.Label(f_s2,
                  text="Navigate stage to a spheroid in NIS-E, capture an nd2 in the mosaic's channel (10X/wide field matches best); use 2 strong, well-separated spheroids. Type its rank, browse the nd2.\n"
-                      "Leave rank blank to auto-match by NCC. After Verify, the box shows the actually matched rank.",
+                      "Typing a rank FORCES that cell as the anchor (NCC is only a cross-check — a disagreement is shown as a warning, never overridden). Leave rank blank to auto-match by NCC.",
                  bg=BG, fg=SUBTEXT, font=("Segoe UI", 8), justify="left").pack(anchor="w", padx=12, pady=(8, 2))
 
         self._pl_anchor_frames = []
@@ -1600,6 +1600,10 @@ class App(tk.Tk):
                               "Step 3 triggers (default: all checked).",
                  bg=BG2, fg=SUBTEXT, font=("Segoe UI", 8), justify="left",
                  wraplength=520).pack(anchor="w", padx=8, pady=(0, 2))
+
+        selrow = tk.Frame(self._pl_table_host, bg=BG2)
+        selrow.pack(fill="x", padx=8, pady=(0, 2))
+        self._btn(selrow, "Select All / None", self._pl_toggle_all_use, SURFACE2, TEXT)
 
         tbl_frame = tk.Frame(self._pl_table_host, bg=BG2)
         tbl_frame.pack(fill="both", expand=True, padx=4, pady=(0, 6))
@@ -2332,6 +2336,17 @@ class App(tk.Tk):
             excl.add(rank)
         self._pl_tree.set(row, "use", "[ ]" if rank in excl else "[x]")
 
+    def _pl_toggle_all_use(self):
+        """Select-all / none for the Use column: include every spheroid, or -- if all
+        are already included -- exclude every one. Same effect as clicking each Use box."""
+        if not self._pl_records:
+            return
+        if getattr(self, "_pl_excluded", set()):    # some excluded -> include all
+            self._pl_excluded = set()
+        else:                                        # all included -> exclude all
+            self._pl_excluded = {r.rank for r in self._pl_records}
+        self._pl_update_table()
+
     def _pl_log(self, msg: str):
         self._log_line(f"[Pipeline] {msg}", "info")
 
@@ -2420,22 +2435,34 @@ class App(tk.Tk):
             self._pl_log(f"Verifying anchor {i+1}: {Path(nd2_path).name}"
                          + (f" (expected rank {exp_rank})" if exp_rank else " (auto-match)"))
             try:
-                dx, dy, ncc, matched_rank = _pl.estimate_offset_from_nd2(
+                dx, dy, ncc, matched_rank, auto_rank = _pl.estimate_offset_from_nd2(
                     Path(mosaic), Path(nd2_path), self._pl_records, Path(out), exp_rank)
+                # matched_rank == exp_rank when the operator typed one (forced);
+                # the correspondence uses THAT cell, not the NCC best-match.
                 rec_m = next((r for r in self._pl_records if r.rank == matched_rank), None)
                 if rec_m is not None:
                     mxy = (rec_m.mosaic_x_um, rec_m.mosaic_y_um)
                     corrs.append((mxy, (mxy[0] + dx, mxy[1] + dy)))
                 self.after(0, lambda v=matched_rank, var=rk_var: var.set(str(v)))
-                mism = (exp_rank is not None and matched_rank != exp_rank)
-                self.after(0, lambda l=lbl, dx_=dx, dy_=dy, n=ncc, mr=matched_rank, mm=mism:
-                           l.configure(
-                               text=(f"matched rank {mr}  NCC={n:.4f}  "
-                                     f"dx={dx_:+.1f} um  dy={dy_:+.1f} um"
-                                     + ("  (differs from typed rank!)" if mm else "")),
-                               fg=(YELLOW if mm else GREEN)))
-                self._pl_log(f"  Anchor {i+1}: matched rank {matched_rank} "
-                             f"NCC={ncc:.4f} dx={dx:+.1f} dy={dy:+.1f} um")
+                # NCC is only a cross-check when a rank is forced: warn on disagreement,
+                # never override.
+                mism = (exp_rank is not None and auto_rank != exp_rank)
+                if exp_rank is not None:
+                    txt = (f"forced rank {matched_rank}  dx={dx:+.1f} um  dy={dy:+.1f} um"
+                           + (f"   ⚠ NCC best-match is rank {auto_rank} "
+                              f"(NCC={ncc:.3f}) — check this anchor!"
+                              if mism else f"   (NCC agrees, {ncc:.3f})"))
+                else:
+                    txt = (f"auto-matched rank {matched_rank}  NCC={ncc:.4f}  "
+                           f"dx={dx:+.1f} um  dy={dy:+.1f} um")
+                self.after(0, lambda l=lbl, t=txt, mm=mism:
+                           l.configure(text=t, fg=(YELLOW if mm else GREEN)))
+                self._pl_log(f"  Anchor {i+1}: "
+                             + (f"FORCED rank {matched_rank}" if exp_rank is not None
+                                else f"auto rank {matched_rank}")
+                             + f"; NCC best-match rank {auto_rank} ({ncc:.4f}); "
+                             + f"dx={dx:+.1f} dy={dy:+.1f} um"
+                             + ("   *** MISMATCH ***" if mism else ""))
             except ValueError as exc:
                 self.after(0, lambda l=lbl, e=exc: l.configure(
                     text=f"FAILED: {e}", fg=RED))

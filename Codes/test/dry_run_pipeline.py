@@ -39,7 +39,7 @@ print(f"  Selected anchors: ranks {[a.rank for a in anchors]}")
 
 print(f"  Running NCC verification with sub-10X: {SUB10X.name}")
 try:
-    dx, dy, ncc = pl.estimate_offset_from_nd2(MOSAIC, SUB10X, records, OUT_DIR)
+    dx, dy, ncc, *_ = pl.estimate_offset_from_nd2(MOSAIC, SUB10X, records, OUT_DIR)
     print(f"  NCC={ncc:.4f}  dx={dx:+.1f} um  dy={dy:+.1f} um")
     pl.apply_offset(records, dx, dy)
     print(f"  Offset applied to all {len(records)} records.")

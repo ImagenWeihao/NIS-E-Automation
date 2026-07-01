@@ -30,7 +30,7 @@ print(f"  Saved dash_s0_detected.png  ({len(records)} DETECTED circles, 25% fill
 
 # ── Stage 1: offset applied, all VERIFIED ─────────────────────────────────────
 print("Estimating offset ...")
-dx, dy, ncc = pl.estimate_offset_from_nd2(MOSAIC, SUB10X, records, OUT_DIR)
+dx, dy, ncc, *_ = pl.estimate_offset_from_nd2(MOSAIC, SUB10X, records, OUT_DIR)
 pl.apply_offset(records, dx, dy)
 dash.update(records, OUT_DIR / "dash_s1_verified.png")
 print(f"  Saved dash_s1_verified.png  (all VERIFIED, 50% fill)")
