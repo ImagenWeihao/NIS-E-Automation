@@ -1,5 +1,18 @@
 # CHANGELOG
 
+## v1.8.2 — 2026-07-01
+
+- **Repo restructure** (no behavior change). Primary NIS-Elements macros moved to
+  `macro/` (with a new `macro/README.md` function table); Python moved into
+  `Codes/{GUI,test,validate}/`; docs into `MD/`; example dashboards into
+  `Dashboard_Demo/`; `requirements.txt` into `env/`.
+  - `spheroid_pipeline.py` `MACRO_DIR` now resolves the repo-root `macro/` from
+    `Codes/GUI/` (up two levels); `sam_nise_capture_test.py` likewise from `Codes/test/`.
+  - `verify_trigger_bridge.py`, `dry_run_pipeline.py`, `dry_run_dashboard.py` add a
+    `sys.path` shim to import `spheroid_pipeline` from `../GUI`.
+  - Verified: all 14 modules compile, the GUI import chain loads, `MACRO_DIR` finds
+    all 8 macros, and the harness shims resolve the pipeline.
+
 ## v1.8.1 — 2026-06-26
 
 - **A1-present guard fix (was crashing NIS-E).** `pa_setup` and `pa_validate` now

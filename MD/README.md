@@ -8,28 +8,61 @@ Automated pipeline for detecting, ranking, and imaging spheroids across 10X and 
 
 ```
 10X mosaic nd2
-    └─ spheroid_screener.py       → ranked CSV + SpheroidRecord list
-         └─ cross_zoom_v2.py      → NCC offset (sub-10X nd2 → mosaic frame)
+    └─ Codes/GUI/spheroid_screener.py   → ranked CSV + SpheroidRecord list
+         └─ Codes/GUI/cross_zoom_v2.py  → NCC offset (sub-10X nd2 → mosaic frame)
               └─ 20X autofocus nd2 → Z-centre per spheroid
-                   └─ csv_to_nis_bin.py → per-spheroid .bin
-                        └─ nis_macro_auto_capture.mac → NIS-E file-flag capture
+                   └─ Codes/GUI/csv_to_nis_bin.py → per-spheroid .bin
+                        └─ macro/nis_macro_capture_zcorrected.mac → NIS-E file-flag capture
 ```
 
 ---
 
+## Repo Layout
+
+```
+Codes/GUI/        operational pipeline modules + the Tkinter app
+Codes/test/       offline + hardware test harnesses
+Codes/validate/   post-hoc QC / overlay analysis
+macro/            primary NIS-Elements .mac files (see macro/README.md)
+macro_selftest/   per-function .mac validators
+MD/               docs: this README, CHANGELOG, CLAUDE, STATE, END_TO_END_TEST
+Dashboard_Demo/   example dashboard PNGs
+env/              requirements.txt + local config
+installer/        PyInstaller spec + Inno Setup script
+```
+
 ## File Index
+
+**`Codes/GUI/` — operational pipeline + app**
 
 | File | Role |
 |---|---|
 | `spheroid_screener.py` | Detect & rank spheroids in 10X mosaic nd2 (watershed, size filter) |
 | `cross_zoom_v2.py` | Sub-10X NCC matching → stage offset between mosaic and sub-10X frames |
-| `spheroid_pipeline.py` | **Main state machine**: orchestrates all steps, holds `SpheroidRecord`, `PipelineDashboard` |
-| `spheroid_pa_gui.py` | Tkinter GUI with 4-step Cross-Zoom Pipeline tab + existing tools |
+| `cross_zoom_register.py` | Cross-zoom registration across 4X/10X/20X frames |
+| `spheroid_pipeline.py` | **Main state machine**: orchestrates all steps, holds `SpheroidRecord`, `PipelineDashboard`; defines `MACRO_DIR` |
+| `spheroid_pa_gui.py` | Tkinter GUI: 4-step Cross-Zoom Pipeline + PA workflow + Z-stack viewer + macro dispatcher |
 | `csv_to_nis_bin.py` | Encode Beer-Lambert Z-intensity ramp → NIS-E `.bin` format |
 | `nis_bin_to_csv.py` | Decode `.bin` → CSV (round-trip validation) |
-| `nis_macro_auto_capture.mac` | NIS-E macro: polls file-flag, loads `.bin`, captures Z-stack per spheroid |
+
+**`Codes/test/` — test harnesses**
+
+| File | Role |
+|---|---|
 | `dry_run_pipeline.py` | Offline test: Steps 1-4 without NIS-E (uses local demo data) |
 | `dry_run_dashboard.py` | Saves dashboard PNGs across all pipeline stages for visual verification |
+| `verify_trigger_bridge.py` | Confirms the Python↔NIS-E file-flag bridge via the real Win32 profile API |
+| `sam_nise_capture_test.py` | First SAM-driven NIS-E move+capture test (NISE017) |
+
+**`Codes/validate/` — QC / analysis**
+
+| File | Role |
+|---|---|
+| `verify_xy_offset.py` | Validate the mosaic→sub-10X XY offset against captures |
+| `make_overlay.py` | Registration-overlay figure generation |
+| `make_sub10x_overlay.py` | Sub-10X overlay figure generation |
+
+**`macro/` — NIS-Elements macros** (dispatcher + 7 step macros) — see [`../macro/README.md`](../macro/README.md).
 
 ---
 
@@ -66,7 +99,7 @@ Dashboard circles fill from 25% alpha (DETECTED) to 100% (IMAGED/FAILED).
 Launch the GUI with:
 
 ```bash
-python spheroid_pa_gui.py
+python Codes/GUI/spheroid_pa_gui.py
 ```
 
 Select the **Cross-Zoom Pipeline** tab. The tab is divided into four sequential steps.
@@ -95,7 +128,7 @@ Detected 9 spheroids (205-222 um diameter)
 
 **Dashboard at this stage** — all 9 circles at 25% opacity over the mosaic:
 
-![Step 1: all DETECTED](assets/dash_s0_detected.png)
+![Step 1: all DETECTED](../Dashboard_Demo/dash_s0_detected.png)
 
 ---
 
@@ -120,7 +153,7 @@ Verify that dx/dy are plausible for your microscope (SLIM050 ground truth: ~−3
 
 **Dashboard at this stage** — circles shift to 50% opacity, all `VERIFIED`:
 
-![Step 2: all VERIFIED](assets/dash_s1_verified.png)
+![Step 2: all VERIFIED](../Dashboard_Demo/dash_s1_verified.png)
 
 ---
 
@@ -169,7 +202,7 @@ Repeat for all spheroids. The table updates live; circles brighten to 65% opacit
 
 **Dashboard during imaging** — circles fill in one by one as each spheroid completes:
 
-![Step 4: imaging in progress](assets/dash_s5_imaging_rank01.png)
+![Step 4: imaging in progress](../Dashboard_Demo/dash_s5_imaging_rank01.png)
 
 **Bin CSV preview (rank 9, P0=15%, L=165 µm):**
 
@@ -185,7 +218,7 @@ item,Z [um],LP1 (%)
 
 **Dashboard when complete** — all circles solid green, capture path drawn:
 
-![Step 4: all IMAGED](assets/dash_s6_all_done.png)
+![Step 4: all IMAGED](../Dashboard_Demo/dash_s6_all_done.png)
 
 ---
 
@@ -194,7 +227,7 @@ item,Z [um],LP1 (%)
 Run the full pipeline offline (no NIS-E) with:
 
 ```bash
-python dry_run_pipeline.py
+python Codes/test/dry_run_pipeline.py
 ```
 
 **Step 1 output — screener:**
@@ -271,7 +304,7 @@ STEP 4b: Write trigger.ini (offline -- no NIS-E)
 **To visualise all stages**, run:
 
 ```bash
-python dry_run_dashboard.py
+python Codes/test/dry_run_dashboard.py
 ```
 
 This saves 15 PNGs to `demo_data/pipeline_dryrun/dash_*.png` stepping through every status transition.
@@ -352,6 +385,7 @@ Circles always use **mosaic XY** — verified XY is a different stage frame (sub
 ```
 pip install nd2 numpy scipy scikit-image matplotlib
 pip install cellpose   # optional, for --backend cellpose
+# or: pip install -r env/requirements.txt
 ```
 
 NIS-Elements: macro engine required; Z Intensity Correction module required for `ZIntCorrect_LoadFile()`.

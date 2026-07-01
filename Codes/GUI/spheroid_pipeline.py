@@ -277,12 +277,13 @@ INI_SECTION = "spheroid"
 # folders (proven by macro_selftest/test_spacedir.mac). trigger_autofocus_all writes
 # it so the daemon follows the GUI's Step 1 save dir instead of a hardcoded path.
 SESSION_INI = Path("C:/SpheroidPA/session.ini")
-# Folder holding the nis_macro_*.mac files (same dir as this module and the GUI).
-# Written into session.ini so nis_macro_dispatcher.mac can RunMacro() them with
-# no hardcoded path. Use abspath (not resolve) so a mapped drive like S: stays
-# "S:/..." -- the drive NIS-E loads macros from -- instead of a //host/share UNC
-# path that RunMacro may not accept.
-MACRO_DIR = Path(os.path.abspath(__file__)).parent
+# Folder holding the nis_macro_*.mac files -- the repo-root macro/ folder (see
+# macro/README.md). This module lives in Codes/GUI/, so go up two levels to the
+# repo root, then into macro/. Written into session.ini so nis_macro_dispatcher.mac
+# can RunMacro() them with no hardcoded path. Use abspath (not resolve) so a mapped
+# drive like S: stays "S:/..." -- the drive NIS-E loads macros from -- instead of a
+# //host/share UNC path that RunMacro may not accept.
+MACRO_DIR = Path(os.path.abspath(__file__)).parent.parent.parent / "macro"
 
 
 def _atomic_write_crlf(path: Path, lines: list[str]) -> None:

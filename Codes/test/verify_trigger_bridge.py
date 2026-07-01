@@ -19,7 +19,9 @@ import sys
 import tempfile
 from ctypes import wintypes
 from pathlib import Path
+import os
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "GUI"))  # Codes/GUI has spheroid_pipeline
 import spheroid_pipeline as pl
 
 # ── Win32 profile API (exactly what Int_Get/SetKey* wrap inside NIS-E) ─────────

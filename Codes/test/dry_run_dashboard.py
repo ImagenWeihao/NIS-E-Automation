@@ -8,6 +8,8 @@ import sys
 sys.stdout.reconfigure(encoding="utf-8")
 import copy
 from pathlib import Path
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "GUI"))  # Codes/GUI has the pipeline modules
 import spheroid_pipeline as pl
 from spheroid_pipeline import PipelineDashboard, Status
 
