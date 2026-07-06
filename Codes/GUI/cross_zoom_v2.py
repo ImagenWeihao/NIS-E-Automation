@@ -253,6 +253,21 @@ def verify(nd2_mosaic: Path, nd2_sub10x: Path,
     print(f"  {Ws}x{Hs} px  pixel={px_sub:.5f} um  centre=({cx_sub:.1f},{cy_sub:.1f})")
     print(f"  Sub-10X nd2 stage centre: ({cx_sub:.2f}, {cy_sub:.2f}) um")
 
+    # If the anchor was captured at a DIFFERENT magnification than the mosaic (e.g. a
+    # 20X anchor vs a 10X mosaic), resample it to the mosaic pixel size so the NCC
+    # patch matching compares the spheroid at the SAME scale. Otherwise the same cell
+    # is ~2x larger in the anchor patch and NCC collapses to noise (a rank-1 20X
+    # anchor scored 0.25 raw vs 0.88 after resampling). Stage coords are unaffected:
+    # the physical frame centre + resampled pixel size give identical um positions,
+    # since (col*zf - W*zf/2)*px_mos == (col - W/2)*px_sub.
+    if _ndi is not None and abs(px_sub - px_mos) / px_mos > 0.02:
+        zf      = px_sub / px_mos
+        img_sub = _ndi.zoom(img_sub, zf, order=1)
+        Hs, Ws  = img_sub.shape
+        print(f"  Anchor magnification != mosaic: resampled {px_sub:.4f} -> "
+              f"{px_mos:.4f} um/px  ->  {Ws}x{Hs} px")
+        px_sub  = px_mos
+
     # ── detect spheroids in sub-10X ───────────────────────────────────────────
     print("\nDetecting spheroids in sub-10X image ...")
     dets = detect_centroids(img_sub, px_sub)

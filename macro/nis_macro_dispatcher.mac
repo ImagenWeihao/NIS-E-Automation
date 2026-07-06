@@ -25,9 +25,13 @@
 //
 // PREREQ: the GUI has written C:/SpheroidPA/session.ini (any Step 3/4 action, or
 // a Dispatcher button, writes work_dir + macro_dir). Press Esc to stop the loop.
+//
+// cmd.ini/cmd_done.ini section is the LITERAL string "command", not a #define --
+// a #define SEC here gets corrupted by RunMacro()-ing a worker macro whose own
+// #define SEC differs (NIS-E's #define appears to be a single global symbol, not
+// scoped per macro file). See the read/write sites below for the incidents this
+// caused (968374f write-side, 2026-07-06 read-side).
 // ============================================================================
-
-#define SEC "command"
 
 int main()
 {
@@ -65,8 +69,16 @@ int main()
             {
                 found = 1;
                 action[0] = 0;
-                Int_GetKeyString(cmd_path, SEC, "action", action, 64);
-                Int_GetKeyString(cmd_path, SEC, "action_id", numbuf, 64);
+                numbuf[0] = 0;
+                // Literal "command" (not SEC): SEC gets corrupted after RunMacro() calls a
+                // worker macro whose own #define SEC differs (e.g. nis_macro_capture_zstack.mac
+                // uses SEC "spheroid") -- observed 2026-07-06 running 2 z-stack dispatches back
+                // to back (Pre-PA multi-OC loop): the 2nd read found nothing under [command]
+                // (action stayed blank) and action_id fell back to a stale numbuf value ->
+                // unknown_action. Same bug class as the cmd_done write-side leak fixed in
+                // 968374f; this is the parallel fix for the cmd.ini read side.
+                Int_GetKeyString(cmd_path, "command", "action", action, 64);
+                Int_GetKeyString(cmd_path, "command", "action_id", numbuf, 64);
                 aid = atof(numbuf);
 
                 macro_name[0] = 0;

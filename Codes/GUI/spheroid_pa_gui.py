@@ -1,5 +1,5 @@
 """
-spheroid_pa_gui.py  v1.8.1
+spheroid_pa_gui.py  v1.8.7
 NIS-E Spheroid PA Pipeline — ND2-native I/O
 
 Pipeline:  Job A ND2 → [parse metadata + detect spheroids]
@@ -79,6 +79,63 @@ DEFAULT_MAX_LOOPS      = 60
 DEFAULT_DETECT_SIGMA   = 2.0    # Gaussian blur radius (pixels)
 DEFAULT_DETECT_K       = 1.5    # threshold = mean + K * std
 MAX_POWER_PCT          = 100.0
+
+# NIS-E "mGold" optical-config group. Exact names as configured on the rig (Optical
+# Configuration list) -- see NISE010/NISE011 for the activation-vs-visualization
+# wavelength rationale (IMPA004, SLIM025/026/031/043).
+#
+# Activation range (~750-850 nm): IMPA004's 10-nm wavelength sweep to find the best
+# 2P photoconversion wavelength per PA-protein/dye; "_PA"/"_PA1"/"_PA2" suffixed
+# configs are purpose-built for firing. 850 nm/30% (mGold/PAmKate) is the current
+# pipeline default; SLIM031 activated PA-JF646 at 800 nm instead -- the optimum is
+# protein/dye-specific, hence the full sweep is offered rather than one fixed value.
+PA_ACTIVATION_OC_LIST = [
+    "850 nm power loop full reso2",     # default: mGold/PAmKate 2P activation (IMPA004)
+    "750 nm power loop full reso",
+    "760 nm power loop full reso1",
+    "770 nm power loop full reso2",
+    "780 nm power loop full reso1",
+    "790 nm power loop full reso2",
+    "800 nm power loop full reso1",
+    "810 nm power loop full reso2",
+    "820 nm power loop full reso1",
+    "830 nm power loop full reso2",
+    "840 nm power loop full reso1",
+    "850 nm power loop full galvo_BT",
+    "750nm_Galvo_405nm_NDD2_PA1",
+    "750nm_Galvo_405nm_NDD2_PA_band",
+    "760nm_Galvo_405nm_NDD2_PA1",
+    "800nm_Galvo_405nm_NDD2_PA2",
+    "800nm_Galvo_488nm_NDD2_PA",
+    "800nm_Reso_405nm_NDD2_PA2",
+    "880nm_Galvo_405nm_NDD2_PA1",
+]
+
+# Visualization range (~890-1050 nm): sits above the activation band, so imaging here
+# does not trigger photoconversion. Each config targets a specific marker/channel --
+# 890 nm = mBeRFP (constitutive T-cell identity marker, SLIM025/026/043); 940 nm =
+# PAsfGFP (the photoactivatable T-cell readout, imaged before AND after PA to confirm
+# conversion); 1050 nm = spheroid-depth / faded-square re-imaging (SLIM031, pa_validate
+# default). 950/970/980/1000 nm are Galvo/Resonance alternates for the same channels.
+PA_VIZ_OC_LIST = [
+    "1050nm_Galvo_561nm_NDD2_JL2",       # default: spheroid depth / PA-validate re-image
+    "1050nm_Reso_561nm_NDD2_JL1",
+    "1000nm_Galvo_561nm_NDD2_JL1",
+    "1000nm_Reso_561nm_NDD2_JL2",
+    "940nm_Galvo_488nm_NDD2_JL2",        # PAsfGFP before/after (T-cell activation state)
+    "940nm_Galvo_488nm_NDD2_JL",
+    "940nm_Reso_488nm_NDD1_JL",
+    "940nm_Galvo_561nm_NDD2_BT",
+    "890nm_Galvo_600nm_NDD2_BT",         # mBeRFP (T-cell identity marker)
+    "950nm_Galvo_488nm_NDD2_JL1",
+    "950 nm power loop 32lines Resonance1",
+    "970nm_Galvo_488nm_NDD2_JL1",
+    "970 nm power loop 128lines Galvo",
+    "970nm_Resonance_400Hz",
+    "980nm_Galvo_488nm_NDD2_JL1",
+    "980nm_Galvo_488nm_NDD2_JL2_band",
+    "1040nm_Resonance_440Hz_488nm_NDD",
+]
 
 # Catppuccin Mocha
 BG       = "#1e1e2e"
@@ -492,7 +549,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("SpheroidPA  v1.8.1 — NIS-E Spheroid PA Pipeline")
+        self.title("SpheroidPA  v1.8.7 — NIS-E Spheroid PA Pipeline")
         self.geometry("1680x880")
         self.minsize(1000, 660)
         self.configure(bg=BG)
@@ -524,7 +581,7 @@ class App(tk.Tk):
     def _build_ui(self):
         hdr = tk.Frame(self, bg=BG2)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="  SpheroidPA  v1.8.1",
+        tk.Label(hdr, text="  SpheroidPA  v1.8.7",
                  bg=BG2, fg=MAUVE, font=("Segoe UI", 13, "bold"), pady=8
                  ).pack(side="left")
         tk.Label(hdr, text="Screen → Anchor → Autofocus → Capture  ",
@@ -1322,6 +1379,15 @@ class App(tk.Tk):
         self._pl_pa_sel_validate = tk.BooleanVar(value=True)
         self._pl_dispatch_busy   = False   # one dispatcher command in flight at a time
 
+        # Pre-PA card: baseline viz capture(s) before PA Setup, via the SAME
+        # dispatcher z-stack action (id 2) -- one pass per checked OC, each routed
+        # into its own nd2/prePA_<tag> subfolder. See SLIM025/026/031/043.
+        self._pl_pa_sel_prepa   = tk.BooleanVar(value=False)   # include in Run Pipeline
+        self._pl_prepa_oc_890   = tk.BooleanVar(value=False)   # mBeRFP (T-cell identity)
+        self._pl_prepa_oc_940   = tk.BooleanVar(value=True)    # PAsfGFP (before/after readout)
+        self._pl_prepa_oc_1050  = tk.BooleanVar(value=False)   # spheroid depth / faded-square
+        self._pl_prepa_locate_only = tk.BooleanVar(value=False)  # z_half=0 -> 1-plane (mirrors Step 3)
+
         # ── Outer layout: sidebar | [ middle (steps+dashboard) | table ]
         # A horizontal paned window holds two draggable panes that never overlap:
         # the step content + live dashboard, and the merged Spheroid State &
@@ -1432,7 +1498,7 @@ class App(tk.Tk):
         self._pl_step_frames["s2"] = f_s2
 
         tk.Label(f_s2,
-                 text="Navigate stage to a spheroid in NIS-E, capture an nd2 in the mosaic's channel (10X/wide field matches best); use 2 strong, well-separated spheroids. Type its rank, browse the nd2.\n"
+                 text="Navigate stage to a spheroid in NIS-E, capture an nd2 in the mosaic's channel (10X/wide field matches best); use 2-3 strong, well-separated spheroids (a 3rd anchor tightens the fit -- see NISE010). Type its rank, browse the nd2.\n"
                       "Typing a rank FORCES that cell as the anchor (NCC is only a cross-check — a disagreement is shown as a warning, never overridden). Leave rank blank to auto-match by NCC.",
                  bg=BG, fg=SUBTEXT, font=("Segoe UI", 8), justify="left").pack(anchor="w", padx=12, pady=(8, 2))
 
@@ -1441,8 +1507,8 @@ class App(tk.Tk):
         self._pl_anchor_ranks  = []
         anchor_outer = tk.Frame(f_s2, bg=BG)
         anchor_outer.pack(fill="x", padx=12, pady=2)
-        _anchor_labels = ["Anchor 1 (required):", "Anchor 2 (optional):"]
-        for i in range(2):
+        _anchor_labels = ["Anchor 1 (required):", "Anchor 2 (optional):", "Anchor 3 (optional):"]
+        for i in range(len(_anchor_labels)):
             af = tk.Frame(anchor_outer, bg=BG2, relief="flat", pady=4, padx=6)
             af.pack(fill="x", pady=2)
             tk.Label(af, text=_anchor_labels[i], bg=BG2, fg=LAVENDER,
@@ -1664,9 +1730,45 @@ class App(tk.Tk):
         pa.pack(fill="both", expand=True, padx=4, pady=(6, 6))
         tk.Label(pa, text="Start nis_macro_dispatcher.mac once in NIS-E. Per card: edit params, "
                           "Reload writes pa_trigger.ini, Run dispatches that macro. Tick a card to "
-                          "include it in Run Pipeline (checked macros run in order, waiting for each).",
+                          "include it in Run Pipeline (checked macros run in order, waiting for each).\n"
+                          "Run Pipeline covers Pre-PA -> Setup -> Points -> Validate; it does NOT fire "
+                          "the PA itself -- after Points, manually Run step3_zstack_PA in NIS-E JOBS "
+                          "Explorer, then Validate re-images the result. OC dropdowns/checkboxes list "
+                          "the full mGold profile set: Activation OC = 750-850nm (per-protein/dye 2P "
+                          "activation sweep, IMPA004); Viz OC = 890-1050nm (890=mBeRFP T-cell identity, "
+                          "940=PAsfGFP before/after, 1050=spheroid depth/faded-square re-image).",
                  bg=BG, fg=SUBTEXT, font=("Segoe UI", 8), justify="left",
                  wraplength=520).pack(anchor="w", padx=8, pady=(3, 4))
+
+        # Card 0 -- Pre-PA (dispatcher z-stack action, id 2): baseline viz capture(s)
+        # before PA Setup, one pass per checked OC, each routed into its own
+        # nd2/prePA_<tag> subfolder (SLIM025/026/031/043 before/after protocol).
+        card, body = self._pl_pa_card(pa, "Pre-PA Viz  (baseline capture(s) before activation)",
+                                      self._pl_pa_sel_prepa)
+        tk.Label(body, text="Channel selection only -- position/Z come from whatever "
+                            "af_trigger_NN.ini files already exist (generate them in Step 3, or "
+                            "write them by hand). Each checked OC injects oc= into every existing "
+                            "trigger and runs one full z-stack pass via the dispatcher "
+                            "(nis_macro_capture_zstack.mac, action 2) into its own "
+                            "nd2/prePA_<tag> subfolder.",
+                 bg=BG2, fg=SUBTEXT, font=("Segoe UI", 8), justify="left",
+                 wraplength=460).pack(anchor="w")
+        r = tk.Frame(body, bg=BG2); r.pack(fill="x", pady=(2, 0))
+        tk.Checkbutton(r, text="890nm (mBeRFP - T-cell identity)", variable=self._pl_prepa_oc_890,
+                       bg=BG2, fg=TEXT2, selectcolor=SURFACE, activebackground=BG2,
+                       activeforeground=TEXT, font=("Segoe UI", 9)).pack(anchor="w")
+        tk.Checkbutton(r, text="940nm (PAsfGFP - before/after readout)", variable=self._pl_prepa_oc_940,
+                       bg=BG2, fg=TEXT2, selectcolor=SURFACE, activebackground=BG2,
+                       activeforeground=TEXT, font=("Segoe UI", 9)).pack(anchor="w")
+        tk.Checkbutton(r, text="1050nm (spheroid depth / faded-square)", variable=self._pl_prepa_oc_1050,
+                       bg=BG2, fg=TEXT2, selectcolor=SURFACE, activebackground=BG2,
+                       activeforeground=TEXT, font=("Segoe UI", 9)).pack(anchor="w")
+        btn_prepa = tk.Frame(card, bg=BG2); btn_prepa.pack(fill="x", padx=24, pady=(2, 6))
+        self._btn(btn_prepa, "Run Pre-PA Captures", self._pl_prepa_run_thread, BLUE, "#1e1e2e",
+                  side="left")
+        tk.Checkbutton(btn_prepa, text="Locate only (1 plane)", variable=self._pl_prepa_locate_only,
+                       bg=BG2, fg=TEXT2, selectcolor=SURFACE, activebackground=BG2,
+                       activeforeground=TEXT, font=("Segoe UI", 8)).pack(side="left", padx=(8, 0))
 
         # Card 1 -- PA Setup (action 4): hardware prep + centred activation square.
         card, body = self._pl_pa_card(pa, "PA Setup  (interlock / OC / dichroic / centred square)",
@@ -1674,7 +1776,7 @@ class App(tk.Tk):
         r = tk.Frame(body, bg=BG2); r.pack(fill="x")
         tk.Label(r, text="Activation OC:", bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
         ttk.Combobox(r, textvariable=self._pl_pa_oc, width=26, font=("Segoe UI", 9),
-                     values=["850 nm power loop full reso2"]).pack(side="left")
+                     values=PA_ACTIVATION_OC_LIST).pack(side="left")
         r = tk.Frame(body, bg=BG2); r.pack(fill="x", pady=(2, 0))
         for lbl, var, w in [("Power %:", self._pl_pa_power, 5), ("Zoom:", self._pl_pa_zoom, 5),
                             ("Well:", self._pl_pa_well, 5), ("Loops:", self._pl_pa_loops, 5)]:
@@ -1718,7 +1820,7 @@ class App(tk.Tk):
         r = tk.Frame(body, bg=BG2); r.pack(fill="x")
         tk.Label(r, text="Viz OC:", bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
         ttk.Combobox(r, textvariable=self._pl_pa_viz_oc, width=28, font=("Segoe UI", 9),
-                     values=["1050nm_Galvo_561nm_NDD2_JL2"]).pack(side="left", padx=(0, 8))
+                     values=PA_VIZ_OC_LIST).pack(side="left", padx=(0, 8))
         tk.Label(r, text="Count:", bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
         tk.Entry(r, textvariable=self._pl_pa_count, width=4, bg=SURFACE, fg=TEXT, insertbackground=TEXT,
                  relief="flat", font=("Segoe UI", 9)).pack(side="left")
@@ -2635,26 +2737,35 @@ class App(tk.Tk):
             if n > 0:
                 targets = targets[:n]
         try:
-            res = _pl.recenter_from_captures(targets, Path(nd2_dir),
+            res, skipped = _pl.recenter_from_captures(targets, Path(nd2_dir),
                                              flip_x=self._pl_recenter_flipx.get(),
                                              flip_y=self._pl_recenter_flipy.get())
         except Exception as exc:
             self._pl_log(f"Re-center error: {exc}")
             self.after(0, lambda e=exc: self._pl_af_status_lbl.configure(
                 text=f"Re-center error: {e}", fg=RED)); return
-        if not res:
+        if not res and not skipped:
             self.after(0, lambda: self._pl_af_status_lbl.configure(
                 text="Re-center: no captures found in the ND2 dir (capture first).", fg=RED)); return
         self._pl_recentered = {rank: (dx, dy) for rank, dcol, drow, dx, dy in res}
         for rank, dcol, drow, dx, dy in res:
             self._pl_log(f"  rank {rank}: centroid ({dcol:+.0f},{drow:+.0f})px -> nudge ({dx:+.1f},{dy:+.1f}) um")
+        # Skipped ranks keep their PRE-recenter verified_x/y -- surface this loudly,
+        # since silently leaving them uncorrected is exactly what produced the
+        # "still off-center after 3 recenters" bug (7/10 spheroids were silently
+        # skipped every round by the old MAD-based threshold).
+        for rank, reason in skipped:
+            self._pl_log(f"  rank {rank}: SKIPPED (not corrected) -- {reason}")
         self.after(0, self._pl_update_table)
         self.after(0, self._pl_refresh_dashboard)
         deltas = "   ".join(f"#{rank} Δ({dx:+.0f},{dy:+.0f})" for rank, dcol, drow, dx, dy in res)
-        self.after(0, lambda n=len(res), d=deltas: self._pl_af_status_lbl.configure(
+        warn = f"   ⚠ {len(skipped)} SKIPPED (not corrected): {[r for r, _ in skipped]}" if skipped else ""
+        self.after(0, lambda n=len(res), d=deltas, w=warn: self._pl_af_status_lbl.configure(
             text=(f"Re-aligned {n} from captures (Δum):  {d}.   Re-Trigger + re-run the macro "
-                  "(toggle flip X/Y if more off-center)."), fg=GREEN))
-        self._pl_log(f"Re-center: adjusted {len(res)} spheroids from their captures.")
+                  f"(toggle flip X/Y if more off-center).{w}"),
+            fg=(YELLOW if warn else GREEN)))
+        self._pl_log(f"Re-center: adjusted {len(res)} spheroids from their captures"
+                     + (f"; {len(skipped)} SKIPPED (see above)." if skipped else "."))
 
     # ── Step 4 handlers ───────────────────────────────────────────────────────
 
@@ -2757,6 +2868,148 @@ class App(tk.Tk):
             return
         self._pl_send_command(action, action_id)
 
+    def _pl_prepa_checked_ocs(self):
+        """Return [(oc_name, tag), ...] for the currently-checked Pre-PA checkboxes,
+        in a fixed 890->940->1050 order."""
+        ocs = []
+        if self._pl_prepa_oc_890.get():
+            ocs.append(("890nm_Galvo_600nm_NDD2_BT", "890nm_mBeRFP"))
+        if self._pl_prepa_oc_940.get():
+            ocs.append(("940nm_Galvo_488nm_NDD2_JL2", "940nm_PAsfGFP"))
+        if self._pl_prepa_oc_1050.get():
+            ocs.append(("1050nm_Galvo_561nm_NDD2_JL2", "1050nm_depth"))
+        return ocs
+
+    def _pl_prepa_capture_ocs(self):
+        """Capture a full Z-stack at each checked Pre-PA OC, via the dispatcher's
+        z-stack action (id 2) -- same mechanism as every other dispatcher card,
+        just looped once per checked OC.
+
+        Uses whatever af_trigger_NN.ini files ALREADY exist in the autofocus work
+        dir (written by Step 3, or by hand) -- Step 4 is channel selection only,
+        not position management: it injects the oc= key into each existing
+        trigger (and optionally forces z_half=0 for a locate-only pass), and
+        never touches stage_x/stage_y or regenerates from self._pl_records.
+
+        Each pass is routed into its own nd2/prePA_<tag> subfolder (atomic session.ini
+        rewrite before each dispatch) so multiple OC passes don't overwrite each
+        other or the plain Step-3 capture. Must be called with _pl_dispatch_busy
+        already held by the caller (mirrors _pl_pa_run_pipeline's locking contract).
+        Returns True if every checked OC completed 'ok' (or none were checked --
+        a no-op is not an error); False on the first failure (status already shown).
+        """
+        import configparser, time, spheroid_pipeline as _pl
+        ocs = self._pl_prepa_checked_ocs()
+        if not ocs:
+            return True
+
+        # Resolve work_dir/nd2_dir the SAME way every other dispatcher action does
+        # (session.ini's [paths] first -- it reflects whatever Step 3/the dispatcher
+        # last set, e.g. .../work/0706/autofocus -- THEN _pl_trigger_dir, THEN
+        # _pl_out_dir/autofocus as a last resort). Using _pl_out_dir alone (Step 1's
+        # Output-dir field, which defaults to .../work with no run subfolder) looked
+        # in the wrong folder and always found zero triggers.
+        cp = configparser.ConfigParser()
+        try:
+            if _pl.SESSION_INI.exists():
+                cp.read(_pl.SESSION_INI)
+        except Exception:
+            pass
+        work = cp.get("paths", "work_dir", fallback="").strip() or self._pl_trigger_dir.get().strip()
+        if not work:
+            o = self._pl_out_dir.get().strip()
+            work = str(Path(o) / "autofocus") if o else ""
+        if not work:
+            self.after(0, lambda: self._pl_pa_status.configure(
+                text="Pre-PA: no work dir -- run Step 3 (Trigger) first, or set the Trigger dir.",
+                fg=RED)); return False
+        wd = Path(work)
+        nd2_dir_cfg = cp.get("paths", "nd2_dir", fallback="").strip()
+        base_nd2_dir = Path(nd2_dir_cfg) if nd2_dir_cfg else wd.parent / "nd2"
+        trig_files = sorted(wd.glob(f"{_pl.AF_TRIGGER_PREFIX}*.ini"))
+        triggers = []
+        for p in trig_files:
+            d = _pl.parse_ini(p.read_text(encoding="utf-8"))
+            if {"rank", "stage_x", "stage_y"} <= d.keys():
+                triggers.append(d)
+        if not triggers:
+            self.after(0, lambda: self._pl_pa_status.configure(
+                text="Pre-PA: no af_trigger_*.ini found -- generate them in Step 3 first.",
+                fg=RED)); return False
+        locate_only = self._pl_prepa_locate_only.get()
+
+        def _point_nd2_dir(d):
+            _pl._atomic_write_crlf(_pl.SESSION_INI, [
+                "[paths]", f"work_dir={wd.as_posix()}",
+                f"nd2_dir={d.as_posix()}", f"macro_dir={_pl.MACRO_DIR.as_posix()}"])
+
+        for oc_name, tag in ocs:
+            self._pl_log(f"Pre-PA: capturing {tag} ({oc_name}) for {len(triggers)} spheroid(s)...")
+            self.after(0, lambda t=tag: self._pl_pa_status.configure(
+                text=f"Pre-PA: running {t}...", fg=YELLOW))
+            for d in triggers:
+                lines = ["[spheroid]", f"rank={d['rank']}",
+                         f"spheroid_id={d.get('spheroid_id', '')}",
+                         f"stage_x={d['stage_x']}", f"stage_y={d['stage_y']}"]
+                if "z_centre" in d:
+                    lines.append(f"z_centre={d['z_centre']}")
+                lines.append(f"z_half={'0.0' if locate_only else d.get('z_half', '0.0')}")
+                if "z_step" in d:
+                    lines.append(f"z_step={d['z_step']}")
+                lines.append(f"oc={oc_name}")
+                _pl._atomic_write_crlf(wd / f"af_trigger_{int(d['rank']):02d}.ini", lines)
+            nd2_sub = base_nd2_dir / f"prePA_{tag}"
+            nd2_sub.mkdir(parents=True, exist_ok=True)
+            _point_nd2_dir(nd2_sub)
+
+            done = wd / "cmd_done.ini"
+            try:
+                done.unlink()
+            except FileNotFoundError:
+                pass
+            _pl._atomic_write_crlf(wd / "cmd.ini",
+                                   ["[command]", f"action=zstack_{tag}", "action_id=2"])
+            self._pl_log(f"Pre-PA: dispatched '{tag}' (id 2)")
+            status = None
+            for _ in range(1800):
+                if done.exists():
+                    cp = configparser.ConfigParser()
+                    try:
+                        cp.read(done)
+                        status = cp.get("command", "status",
+                                        fallback=cp.get("spheroid", "status", fallback="?"))
+                    except Exception:
+                        time.sleep(1.0); continue
+                    break
+                time.sleep(1.0)
+            self._pl_log(f"Pre-PA: '{tag}' -> {status or 'timeout'}")
+            if status != "ok":
+                msg = (f"Pre-PA stopped at '{tag}' -> {status}" if status
+                       else f"Pre-PA: '{tag}' timed out (is nis_macro_dispatcher.mac running?)")
+                self.after(0, lambda m=msg: self._pl_pa_status.configure(text=m, fg=RED))
+                _point_nd2_dir(base_nd2_dir)   # restore before bailing
+                return False
+
+        _point_nd2_dir(base_nd2_dir)   # restore the plain nd2/ dir for normal captures
+        self.after(0, lambda n=len(ocs): self._pl_pa_status.configure(
+            text=f"Pre-PA: {n} OC pass(es) complete.", fg=GREEN))
+        return True
+
+    def _pl_prepa_run_thread(self):
+        if getattr(self, "_pl_dispatch_busy", False):
+            messagebox.showinfo("Dispatcher busy",
+                                "A macro is already running via the dispatcher — wait for it to finish."); return
+        if not self._pl_prepa_checked_ocs():
+            messagebox.showwarning("No OC checked", "Tick at least one Pre-PA OC checkbox."); return
+        self._pl_dispatch_busy = True
+        threading.Thread(target=self._pl_prepa_run, daemon=True).start()
+
+    def _pl_prepa_run(self):
+        try:
+            self._pl_prepa_capture_ocs()
+        finally:
+            self._pl_dispatch_busy = False
+
     def _pl_pa_run_pipeline_thread(self):
         if getattr(self, "_pl_dispatch_busy", False):
             messagebox.showinfo("Dispatcher busy",
@@ -2770,14 +3023,22 @@ class App(tk.Tk):
         single-in-flight _pl_dispatch_busy lock for the whole sequence."""
         import configparser, time, spheroid_pipeline as _pl
         try:
+            do_prepa = self._pl_pa_sel_prepa.get() and bool(self._pl_prepa_checked_ocs())
             seq = []
             if self._pl_pa_sel_setup.get():    seq.append(("pa_setup", 4))
             if self._pl_pa_sel_points.get():   seq.append(("pa_points", 5))
             if self._pl_pa_sel_pick.get():     seq.append(("pa_pick", 6))
             if self._pl_pa_sel_validate.get(): seq.append(("pa_validate", 7))
-            if not seq:
+            if not seq and not do_prepa:
                 self.after(0, lambda: self._pl_pa_status.configure(
                     text="Pipeline: no macros checked.", fg=RED)); return
+            if do_prepa:
+                self._pl_log("PA pipeline: Pre-PA viz capture(s) first")
+                if not self._pl_prepa_capture_ocs():
+                    return   # status already shown by the helper
+            if not seq:
+                self.after(0, lambda: self._pl_pa_status.configure(
+                    text="Pipeline complete: Pre-PA only.", fg=GREEN)); return
             wd = self._pl_pa_write_trigger()
             if wd is None:
                 return

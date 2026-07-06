@@ -5,7 +5,9 @@
 // run a fixed Z-stack, save <id>_zstack.nd2, write af_done_NN.ini, delete trigger.
 // NO autofocus (the built-in AF fails on the weak fluorescence signal) and NO
 // Z-intensity correction (A1/confocal-only). Uses the current ND channels/exposure
-// -- no illumination change.
+// -- no illumination change -- UNLESS the trigger sets an optional "oc" key (GUI
+// Step 4 Pre-PA card), in which case that optical configuration is selected before
+// this spheroid's capture (e.g. 890/940/1050 nm Pre-PA baseline viz passes).
 //
 // Rig constraints baked in (verified): single main() only (no user functions);
 // work dir + nd2 dir read at RUNTIME from C:/SpheroidPA/session.ini -- the GUI
@@ -39,6 +41,7 @@ int main()
     char nn[8];
     char zbuf[32];
     char msg[256];
+    char oc[128];
     double stage_x, stage_y;
     double z_centre, z_half, z_step, z_top, z_bottom;
     double idle_elapsed;
@@ -85,6 +88,8 @@ int main()
                 stage_x = atof(numbuf);
                 Int_GetKeyString(trigger_path, SEC, "stage_y", numbuf, 64);
                 stage_y = atof(numbuf);
+                oc[0] = 0;
+                Int_GetKeyString(trigger_path, SEC, "oc", oc, 128);
 
                 // Z-stack geometry from the trigger (GUI Step 3); fall back to
                 // defaults if a key is absent (atof returns 0 for missing/blank).
@@ -129,6 +134,14 @@ int main()
                 }
                 else
                 {
+                    // Optional per-trigger optical config (GUI Step 4 Pre-PA card);
+                    // absent -> unchanged behaviour (current ND channels/exposure).
+                    if( oc[0] != 0 )
+                    {
+                        sprintf(msg, "Capture rank %s: selecting OC '%s'", "rank_buf,oc");
+                        SetCommandText(msg);
+                        SelectOptConf(oc);
+                    }
                     if( z_half < 0.5 )
                     {
                         // 1-plane LOCATE pass (z_half=0): just the centre plane, fast,
@@ -149,6 +162,8 @@ int main()
                     Int_SetKeyString(done_path, SEC, "spheroid_id", spheroid_id);
                     Int_SetKeyString(done_path, SEC, "z_centre", zbuf);
                     Int_SetKeyString(done_path, SEC, "nd2_path", nd2_path);
+                    if( oc[0] != 0 )
+                        Int_SetKeyString(done_path, SEC, "oc", oc);
                     Int_SetKeyString(done_path, SEC, "status", "ok");
                     DeleteFile(trigger_path);
                 }

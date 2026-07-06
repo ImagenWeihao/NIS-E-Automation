@@ -1,5 +1,96 @@
 # CHANGELOG
 
+## v1.8.7 — 2026-07-06
+
+- **Fix dispatcher: `SEC`-leak on the cmd.ini READ side (Pre-PA's 2nd+ OC pass
+  always failed with `unknown_action`).** Commit 968374f previously fixed this
+  bug class on the cmd_done WRITE side (writing the section as a literal
+  `"command"` string instead of the `#define SEC` symbol), but the cmd.ini READS
+  (`Int_GetKeyString(cmd_path, SEC, ...)`) were never converted. NIS-E's `#define`
+  appears to be a single global symbol, not scoped per macro file: after
+  `RunMacro()` runs a worker macro with a different `#define SEC` (e.g.
+  `nis_macro_capture_zstack.mac` uses `SEC "spheroid"`), the dispatcher's own
+  next read of `SEC` resolves to that leaked value instead of `"command"` --
+  `action` comes back blank and `action_id` falls back to a stale `numbuf` value,
+  landing on `unknown_action`. Reproduced 2026-07-06: Pre-PA's 890nm capture
+  succeeded, but the very next dispatch (940nm, same action_id=2) failed this
+  way. Fixed: both `Int_GetKeyString` calls at the top of the dispatch branch now
+  use the literal `"command"` string (matching the already-fixed write sites);
+  the now-unused `#define SEC` was removed.
+
+## v1.8.6 — 2026-07-06
+
+- **Fix Pre-PA Viz: wrong work-dir resolution ("no af_trigger_*.ini found" even
+  when one existed).** `_pl_prepa_capture_ocs` derived its work dir straight from
+  `self._pl_out_dir` (Step 1's Output-dir field, which defaults to `.../work`
+  with no run subfolder) instead of session.ini's `work_dir` (which every other
+  dispatcher action reads first, and which correctly reflected the active run,
+  e.g. `.../work/0706/autofocus`). Fixed to resolve the same way
+  `_pl_send_command`/`_pl_pa_write_trigger` already do: session.ini `[paths]`
+  first, then `_pl_trigger_dir`, then `_pl_out_dir/autofocus` as a last resort;
+  `nd2_dir` likewise now comes from session.ini instead of `_pl_out_dir/nd2`.
+
+## v1.8.5 — 2026-07-06
+
+- **Step 4: new Pre-PA Viz card.** Captures baseline image(s) before PA Setup, via
+  the SAME dispatcher mechanism as every other card -- no new macro. Checkboxes for
+  890nm (mBeRFP, T-cell identity), 940nm (PAsfGFP, before/after readout), and
+  1050nm (spheroid depth / faded-square), matching the SLIM025/026/031/043
+  before/after protocol. One full z-stack pass per checked OC (Step 3's Z fields +
+  current Use-column selection), each dispatched as the existing z-stack action
+  (id 2, `nis_macro_capture_zstack.mac`) and routed into its own
+  `nd2/prePA_<tag>/` subfolder so multiple OC passes don't collide.
+  - `nis_macro_capture_zstack.mac`: reads an optional per-trigger `oc` key and
+    calls `SelectOptConf(oc)` before that spheroid's capture; absent -> unchanged
+    behavior (captures on the current ND channels/exposure, as before).
+  - `trigger_autofocus_all()`: new optional `oc` parameter, written into each
+    trigger only when given.
+  - "Run Pre-PA Captures" runs standalone from its own card; ticking the card's
+    pipeline checkbox also runs it first inside "Run Pipeline" (Pre-PA -> Setup ->
+    Points -> Validate), still without firing step3_zstack_PA itself.
+  - "Locate only (1 plane)" checkbox (mirrors Step 3): forces z_half=0 for every
+    checked-OC pass, so Pre-PA can do a fast single-plane check instead of a full
+    Z-stack per wavelength.
+
+## v1.8.4 — 2026-07-06
+
+- **Fix `recenter_from_captures`: Gaussian pre-smooth before Otsu (raw-pixel Otsu was
+  not robust on noisy captures).** On low-SNR frames (observed: 1050 nm 2P viz,
+  much grainier than 555 nm widefield), raw-pixel Otsu fragmented the spheroid into
+  thousands of sub-pixel noise specks; even after the min-diameter filter, the
+  "qualifying" components were noise clumps (tens of um), not the true spheroid
+  (~250 um) -- producing a confidently-applied but WRONG correction. Observed
+  2026-07-06: recentering 10 spheroids from a 1050 nm capture, ranks 1 and 4 moved
+  2x further OFF-center while the other 8 converged correctly (some to <2 um).
+  Root-caused by inspecting the raw segmentation directly: rank 1's frame fragmented
+  into 9,513 components, the largest "qualifying" one only 67 um (vs true ~250 um).
+  Fix: threshold on a ~3 um-radius Gaussian-smoothed copy of the frame (robust
+  segmentation across magnification/SNR, verified: both ranks now collapse to a
+  single ~230-250 um component matching the true spheroid); the final centroid is
+  still computed from RAW (unblurred) intensity within that component for sub-pixel
+  accuracy. Re-validated against all 10 real captures: every corrected rank now
+  points in the same direction (previously rank 1's dx and rank 4's dy were sign-
+  flipped relative to the other 8); mean correction (+22.7,+51.9) now matches the
+  expected reverse of the measured mean offset.
+
+## v1.8.3 — 2026-07-06
+
+- **Step 4 OC dropdowns: full mGold profile list.** The Activation OC (PA Setup card)
+  and Viz OC (PA Validate card) dropdowns were each hardcoded to a single value;
+  they now list the full set of NIS-E "mGold" optical configs (`PA_ACTIVATION_OC_LIST`
+  / `PA_VIZ_OC_LIST`), so switching wavelength no longer needs hand-typing the exact
+  NIS-E OC name.
+  - Activation range (~750-850 nm): the IMPA004 per-10nm 2P activation sweep, plus
+    the `_PA`/`_PA1`/`_PA2`-suffixed configs. 850 nm/30% (mGold/PAmKate) stays default.
+  - Viz range (~890-1050 nm): 890 nm = mBeRFP (T-cell identity, SLIM025/026/043),
+    940 nm = PAsfGFP (T-cell activation readout, imaged before AND after PA),
+    1050 nm = spheroid depth / faded-square re-image (SLIM031, stays default).
+  - Both Comboboxes remain free-typable (not `readonly`), so an OC outside these
+    lists can still be entered by hand.
+  - Run Pipeline (Setup -> Points -> Validate) still stops for a **manual** Run of
+    `step3_zstack_PA` in NIS-E JOBS Explorer between Points and Validate -- it does
+    not fire the PA job itself (kept as an explicit human gate before the laser fires).
+
 ## v1.8.2 — 2026-07-01
 
 - **Repo restructure** (no behavior change). Primary NIS-Elements macros moved to

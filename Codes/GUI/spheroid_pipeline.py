@@ -320,12 +320,18 @@ def _atomic_write_crlf(path: Path, lines: list[str]) -> None:
 def trigger_autofocus_all(records: list[SpheroidRecord], work_dir: Path,
                           z_centre: float | None = None,
                           z_half: float | None = None,
-                          z_step: float | None = None) -> int:
+                          z_step: float | None = None,
+                          oc: str | None = None) -> int:
     """Write per-rank trigger files for the NIS-E capture daemon. Returns count written.
 
     z_centre/z_half/z_step (the Z-stack geometry from GUI Step 3) are written into
     every trigger so nis_macro_capture_zstack.mac reads them instead of hardcoding.
     They are omitted when None (the macro then falls back to its built-in defaults).
+
+    oc (optional): NIS-E optical configuration name. When given, the macro selects
+    it before this spheroid's capture (GUI Step 4 Pre-PA card -- a baseline viz
+    pass at a specific wavelength, e.g. 890/940/1050 nm, before firing PA). Omitted
+    -> the macro captures on the current ND channels/exposure, unchanged.
 
     Two safeguards (added after a capture run imaged duplicated coordinates — the
     daemon had consumed a folder holding a mix of fresh and stale triggers from
@@ -373,6 +379,8 @@ def trigger_autofocus_all(records: list[SpheroidRecord], work_dir: Path,
             lines.append(f"z_half={z_half}")
         if z_step is not None:
             lines.append(f"z_step={z_step}")
+        if oc:
+            lines.append(f"oc={oc}")
         _atomic_write_crlf(p, lines)
         n += 1
 
@@ -432,22 +440,63 @@ def apply_autofocus_results(
 
 def recenter_from_captures(records: list[SpheroidRecord], nd2_dir: Path,
                            flip_x: bool = False, flip_y: bool = False,
-                           suffix: str = "_zstack.nd2") -> list[tuple]:
+                           suffix: str = "_zstack.nd2") -> tuple[list[tuple], list[tuple]]:
     """Second-pass re-centering. For each record, read its capture
-    <spheroid_id><suffix> in nd2_dir, measure the spheroid's intensity-weighted
-    centroid offset from the frame centre, and nudge verified_x/y so the NEXT
-    capture lands centred -- exact per-spheroid, independent of anchor quality.
+    <spheroid_id><suffix> in nd2_dir, measure the TARGET spheroid's intensity-
+    weighted centroid offset from the frame centre, and nudge verified_x/y so
+    the NEXT capture lands centred -- exact per-spheroid, independent of anchor
+    quality.
+
+    Detection: Otsu threshold on a lightly Gaussian-smoothed copy of the frame (NOT
+    a fixed background+MAD cutoff, and NOT raw-pixel Otsu). Two failure modes drove
+    this:
+      1. A fixed background+MAD cutoff fails outright whenever a spheroid fills a
+         large fraction of the FOV (diameter close to the frame width, e.g. a
+         250-280 um spheroid in a ~330 um 20X FOV): the frame median then sits
+         INSIDE the spheroid rather than on background, inflating the MAD and
+         pushing the cutoff above the image's own maximum pixel -- an empty mask,
+         silently skipping that rank every round (7 of 10 spheroids on 2026-07-06,
+         all with diam >= 240 um).
+      2. Otsu on the RAW (unsmoothed) pixels is not robust on noisy/low-SNR
+         captures (e.g. 1050 nm 2P viz, much grainier than a 555 nm widefield
+         shot): it fragments the spheroid into thousands of sub-pixel specks, so
+         even after the min-diameter filter the "qualifying" components are noise
+         clumps (tens of um), not the true ~250 um spheroid -- producing a
+         confidently-applied but WRONG correction (observed 2026-07-06: ranks 1
+         and 4 moved 2x further off-center after a 1050 nm-based recenter pass,
+         while the other 8 ranks converged correctly). A ~3 um-radius Gaussian
+         blur before thresholding fixes this (verified: collapses both frames to
+         a single ~230-250 um component matching the true spheroid) while the
+         final centroid is still computed from the RAW (unblurred) intensity
+         within that component, for sub-pixel accuracy.
+    Small components (noise specks) are dropped by a minimum-diameter filter,
+    then the surviving component NEAREST the frame centre is used -- not the
+    whole-frame weighted centroid -- so a neighbor partly visible in the same
+    FOV (close-pair capture, e.g. ranks 154-250 um apart at 20X) doesn't pull
+    the centroid toward it.
 
     flip_x/flip_y set the camera-pixel -> stage-um axis sign (verify on one
     spheroid; toggle a flip if it nudges the wrong way). Pixel size is read from
-    each nd2 (so it works at any magnification). Returns
-    [(rank, dcol_px, drow_px, dx_um, dy_um), ...] for review.
+    each nd2 (so it works at any magnification).
+
+    Returns (applied, skipped):
+      applied: [(rank, dcol_px, drow_px, dx_um, dy_um), ...] -- correction applied.
+      skipped: [(rank, reason), ...] -- NOT corrected; verified_x/y left as-is.
     """
     import numpy as np
     import nd2 as _nd2
+    from scipy import ndimage as ndi
+    try:
+        from skimage.filters import threshold_otsu, gaussian
+    except ImportError:
+        threshold_otsu = None
+        gaussian = None
+    MIN_DIAM_UM   = 30.0   # noise specks are ~1-2 px; real spheroids are 150+ um
+    BLUR_RADIUS_UM = 3.0   # pre-threshold smoothing radius; robust across mag/SNR
     sx = -1.0 if flip_x else 1.0
     sy = -1.0 if flip_y else 1.0
-    out: list[tuple] = []
+    applied: list[tuple] = []
+    skipped: list[tuple] = []
     for r in records:
         p = Path(nd2_dir) / f"{r.spheroid_id}{suffix}"
         if not p.exists():
@@ -459,23 +508,41 @@ def recenter_from_captures(records: list[SpheroidRecord], nd2_dir: Path,
             except Exception:
                 px = 0.0
         if px <= 0.0:
-            continue
+            skipped.append((r.rank, "no pixel size in nd2 metadata")); continue
         while a.ndim > 3:
             a = a[a.shape[0] // 2]
         proj = a.max(0) if a.ndim == 3 else a          # max over Z
         h, w = proj.shape
-        bg = float(np.median(proj))
-        mad = float(np.median(np.abs(proj - bg))) * 1.4826 + 1e-6
-        mask = proj > bg + max(60.0, 6.0 * mad)        # bright spheroid pixels
-        if int(mask.sum()) < 100:
+
+        if threshold_otsu is None:
+            skipped.append((r.rank, "scikit-image not available")); continue
+        try:
+            smooth = gaussian(proj, sigma=BLUR_RADIUS_UM / px, preserve_range=True)
+            t = threshold_otsu(smooth)
+        except Exception:
+            skipped.append((r.rank, "Otsu threshold failed (flat/degenerate frame)")); continue
+        mask = smooth > t
+        frac = float(mask.sum()) / mask.size
+        if mask.sum() < 100 or frac > 0.95:
+            skipped.append((r.rank,
+                           f"no clear spheroid signal ({frac * 100:.0f}% of frame above threshold)"))
             continue
-        # TODO(re-center): two spheroids close together in one FOV -> this whole-frame
-        # intensity centroid lands BETWEEN them, so the nudge moves to the midpoint
-        # instead of the target (e.g. adjacent ranks #3/#4). Fix: label connected components
-        # in `mask` and use the component nearest the frame centre (the targeted
-        # spheroid), not the global centroid.
-        ys, xs = np.nonzero(mask)
-        wgt = proj[ys, xs] - bg
+
+        lbl, n = ndi.label(mask)
+        min_area_px = math.pi * (MIN_DIAM_UM / 2.0 / px) ** 2
+        sizes = ndi.sum(np.ones_like(lbl), lbl, range(1, n + 1))
+        coms  = ndi.center_of_mass(mask, lbl, range(1, n + 1))
+        cand  = [(k + 1, coms[k]) for k in range(n) if sizes[k] >= min_area_px]
+        if not cand:
+            skipped.append((r.rank, "no component above the noise-size cutoff")); continue
+
+        # Nearest candidate to frame centre = the targeted spheroid, even with a
+        # neighbor partly in frame.
+        best_k, _ = min(cand, key=lambda kc: math.hypot(kc[1][0] - h / 2.0, kc[1][1] - w / 2.0))
+        ys, xs = np.nonzero(lbl == best_k)
+        wgt = np.clip(proj[ys, xs] - t, 0, None)
+        if wgt.sum() <= 0:
+            skipped.append((r.rank, "degenerate component weights")); continue
         cx = float((xs * wgt).sum() / wgt.sum())
         cy = float((ys * wgt).sum() / wgt.sum())
         dcol = cx - w / 2.0
@@ -485,8 +552,8 @@ def recenter_from_captures(records: list[SpheroidRecord], nd2_dir: Path,
         dy = round(-drow * px * sy, 2)
         r.verified_x_um = round(r.verified_x_um + dx, 2)
         r.verified_y_um = round(r.verified_y_um + dy, 2)
-        out.append((r.rank, round(dcol, 1), round(drow, 1), dx, dy))
-    return out
+        applied.append((r.rank, round(dcol, 1), round(drow, 1), dx, dy))
+    return applied, skipped
 
 
 def focus_scores(stack, method: str = "variance") -> list:
