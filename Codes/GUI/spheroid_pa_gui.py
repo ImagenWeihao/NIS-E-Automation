@@ -1,5 +1,5 @@
 """
-spheroid_pa_gui.py  v1.8.7
+spheroid_pa_gui.py  v1.8.8
 NIS-E Spheroid PA Pipeline — ND2-native I/O
 
 Pipeline:  Job A ND2 → [parse metadata + detect spheroids]
@@ -79,6 +79,14 @@ DEFAULT_MAX_LOOPS      = 60
 DEFAULT_DETECT_SIGMA   = 2.0    # Gaussian blur radius (pixels)
 DEFAULT_DETECT_K       = 1.5    # threshold = mean + K * std
 MAX_POWER_PCT          = 100.0
+# PA activation power hard cap. 50% visibly damaged a spheroid (2026-07-07, well
+# A02 sph#9 -- a sharply saturated hot spot appeared in the identical location
+# across all 3 independent Pre/Post-PA viz channels, mean intensity fell while
+# saturated-pixel count rose 3-14x, consistent with localized burn damage).
+# NOTE: pa_trigger.ini's power_pct is NOT read by the step3_zstack_PA JOB itself
+# (it's set manually in NIS-E's own Job Wizard) -- this GUI-side cap is a strong
+# default/reminder, not a technical enforcement of the real laser power.
+MAX_PA_ACTIVATION_POWER_PCT = 30.0
 
 # NIS-E "mGold" optical-config group. Exact names as configured on the rig (Optical
 # Configuration list) -- see NISE010/NISE011 for the activation-vs-visualization
@@ -549,7 +557,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("SpheroidPA  v1.8.7 — NIS-E Spheroid PA Pipeline")
+        self.title("SpheroidPA  v1.8.8 — NIS-E Spheroid PA Pipeline")
         self.geometry("1680x880")
         self.minsize(1000, 660)
         self.configure(bg=BG)
@@ -581,7 +589,7 @@ class App(tk.Tk):
     def _build_ui(self):
         hdr = tk.Frame(self, bg=BG2)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="  SpheroidPA  v1.8.7",
+        tk.Label(hdr, text="  SpheroidPA  v1.8.8",
                  bg=BG2, fg=MAUVE, font=("Segoe UI", 13, "bold"), pady=8
                  ).pack(side="left")
         tk.Label(hdr, text="Screen → Anchor → Autofocus → Capture  ",
@@ -1359,24 +1367,19 @@ class App(tk.Tk):
         self._pl_pa_job      = tk.StringVar(value="step3_zstack_PA")
         self._pl_pa_oc       = tk.StringVar(value="850 nm power loop full reso2")
         self._pl_pa_power    = tk.StringVar(value="30")
-        self._pl_pa_well     = tk.StringVar(value="D6")
+        self._pl_pa_power.trace_add("write", self._pl_pa_power_clamp)
+        # No separate well var: PA Setup's and Job3's Well fields both bind to
+        # _pl_well_id (Step 1's "working well"), so setting it once syncs everywhere.
         self._pl_pa_loops    = tk.StringVar(value="70")
         self._pl_pa_zoom     = tk.StringVar(value="8")
         self._pl_pa_dichroic = tk.BooleanVar(value=True)   # True = dichroic OUT
         self._pl_pa_interlock = tk.BooleanVar(value=True)  # True = remove A1 interlock first
         self._pl_pa_a1on     = tk.BooleanVar(value=False)  # True = A1 confirmed powered ON; pa_setup/pa_validate guard aborts if unchecked
-        # pa_points / pa_validate params (read by those macros from pa_trigger.ini)
-        self._pl_pa_count     = tk.StringVar(value="9")     # # spheroids (points + validate)
-        self._pl_pa_viz_oc    = tk.StringVar(value="1050nm_Galvo_561nm_NDD2_JL2")
-        self._pl_pa_viz_zoom  = tk.StringVar(value="2.5")
-        self._pl_pa_viz_z     = tk.StringVar(value="7640.0")
-        self._pl_pa_viz_zhalf = tk.StringVar(value="25.0")
-        self._pl_pa_viz_zstep = tk.StringVar(value="5.0")
+        # pa_points param (read by that macro from pa_trigger.ini)
+        self._pl_pa_count     = tk.StringVar(value="9")     # # spheroids
         # Per-macro "include in Run Pipeline" selections.
         self._pl_pa_sel_setup    = tk.BooleanVar(value=True)
         self._pl_pa_sel_points   = tk.BooleanVar(value=True)
-        self._pl_pa_sel_pick     = tk.BooleanVar(value=False)
-        self._pl_pa_sel_validate = tk.BooleanVar(value=True)
         self._pl_dispatch_busy   = False   # one dispatcher command in flight at a time
 
         # Pre-PA card: baseline viz capture(s) before PA Setup, via the SAME
@@ -1459,13 +1462,23 @@ class App(tk.Tk):
         self._pl_step_frames["s1"] = f_s1
 
         f1 = tk.Frame(f_s1, bg=BG); f1.pack(fill="x", **p)
-        self._nd2_file_row(f1, "10X mosaic ND2:", self._pl_mosaic_path)
-        row_w = tk.Frame(f1, bg=BG); row_w.pack(fill="x", pady=2)
-        tk.Label(row_w, text="Well ID:", width=26, anchor="w",
+
+        # Job1 (Step1_Locate_via_scan, the 10X whole-well mosaic JOB) settings.
+        # Well ID here is the CANONICAL working well: PA Setup's and the Job3
+        # card's Well fields are bound to this SAME StringVar, so setting it once
+        # (e.g. "A02") automatically updates every other job's well field too.
+        job1 = tk.LabelFrame(f1, text=" Job1 (X10 Mosaic -- Step1_Locate_via_scan) ",
+                             bg=BG, fg=MAUVE, font=("Segoe UI", 9, "bold"),
+                             bd=1, relief="groove")
+        job1.pack(fill="x", pady=(0, 4))
+        self._nd2_file_row(job1, "10X mosaic ND2:", self._pl_mosaic_path)
+        row_w = tk.Frame(job1, bg=BG); row_w.pack(fill="x", pady=(2, 4), padx=4)
+        tk.Label(row_w, text="Well ID (working well -- shared by all jobs):", width=34, anchor="w",
                  bg=BG, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left")
         tk.Entry(row_w, textvariable=self._pl_well_id, width=14,
                  bg=SURFACE, fg=TEXT, insertbackground=TEXT, relief="flat",
                  font=("Segoe UI", 9)).pack(side="left")
+
         row_d = tk.Frame(f1, bg=BG); row_d.pack(fill="x", pady=2)
         tk.Label(row_d, text="Output directory:", width=26, anchor="w",
                  bg=BG, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left")
@@ -1731,26 +1744,31 @@ class App(tk.Tk):
         tk.Label(pa, text="Start nis_macro_dispatcher.mac once in NIS-E. Per card: edit params, "
                           "Reload writes pa_trigger.ini, Run dispatches that macro. Tick a card to "
                           "include it in Run Pipeline (checked macros run in order, waiting for each).\n"
-                          "Run Pipeline covers Pre-PA -> Setup -> Points -> Validate; it does NOT fire "
-                          "the PA itself -- after Points, manually Run step3_zstack_PA in NIS-E JOBS "
-                          "Explorer, then Validate re-images the result. OC dropdowns/checkboxes list "
-                          "the full mGold profile set: Activation OC = 750-850nm (per-protein/dye 2P "
-                          "activation sweep, IMPA004); Viz OC = 890-1050nm (890=mBeRFP T-cell identity, "
-                          "940=PAsfGFP before/after, 1050=spheroid depth/faded-square re-image).",
+                          "Run Pipeline covers Validation -> Setup -> Points; it does NOT fire the PA "
+                          "itself -- after Points, manually Run step3_zstack_PA in NIS-E JOBS Explorer, "
+                          "then run Validation again (same card) to capture the after-PA images. OC "
+                          "dropdowns/checkboxes list the full mGold profile set: Activation OC = "
+                          "750-850nm (per-protein/dye 2P activation sweep, IMPA004); Viz OC = "
+                          "890-1050nm (890=mBeRFP T-cell identity, 940=PAsfGFP before/after, "
+                          "1050=spheroid depth/faded-square re-image).",
                  bg=BG, fg=SUBTEXT, font=("Segoe UI", 8), justify="left",
                  wraplength=520).pack(anchor="w", padx=8, pady=(3, 4))
 
-        # Card 0 -- Pre-PA (dispatcher z-stack action, id 2): baseline viz capture(s)
-        # before PA Setup, one pass per checked OC, each routed into its own
-        # nd2/prePA_<tag> subfolder (SLIM025/026/031/043 before/after protocol).
-        card, body = self._pl_pa_card(pa, "Pre-PA Viz  (baseline capture(s) before activation)",
+        # Card 0 -- Validation (dispatcher z-stack action, id 2): before- AND after-PA
+        # multi-channel capture, one pass per checked OC, each routed into its own
+        # nd2/prePA_<tag> subfolder (SLIM025/026/031/043 before/after protocol). Run it
+        # once before PA Setup (baseline) and again after the JOB (post-PA) -- same
+        # card, same mechanism; replaces the old single-channel 1050nm-only PA Validate
+        # card (removed 2026-07-07). Internal names keep the "_pl_prepa_*" prefix.
+        card, body = self._pl_pa_card(pa, "Validation  (before/after-PA multi-channel capture)",
                                       self._pl_pa_sel_prepa)
         tk.Label(body, text="Channel selection only -- position/Z come from whatever "
                             "af_trigger_NN.ini files already exist (generate them in Step 3, or "
                             "write them by hand). Each checked OC injects oc= into every existing "
                             "trigger and runs one full z-stack pass via the dispatcher "
                             "(nis_macro_capture_zstack.mac, action 2) into its own "
-                            "nd2/prePA_<tag> subfolder.",
+                            "nd2/prePA_<tag> subfolder. Run before PA Setup for baseline, and again "
+                            "after the JOB for the after-PA result.",
                  bg=BG2, fg=SUBTEXT, font=("Segoe UI", 8), justify="left",
                  wraplength=460).pack(anchor="w")
         r = tk.Frame(body, bg=BG2); r.pack(fill="x", pady=(2, 0))
@@ -1764,7 +1782,7 @@ class App(tk.Tk):
                        bg=BG2, fg=TEXT2, selectcolor=SURFACE, activebackground=BG2,
                        activeforeground=TEXT, font=("Segoe UI", 9)).pack(anchor="w")
         btn_prepa = tk.Frame(card, bg=BG2); btn_prepa.pack(fill="x", padx=24, pady=(2, 6))
-        self._btn(btn_prepa, "Run Pre-PA Captures", self._pl_prepa_run_thread, BLUE, "#1e1e2e",
+        self._btn(btn_prepa, "Run Validation Captures", self._pl_prepa_run_thread, BLUE, "#1e1e2e",
                   side="left")
         tk.Checkbutton(btn_prepa, text="Locate only (1 plane)", variable=self._pl_prepa_locate_only,
                        bg=BG2, fg=TEXT2, selectcolor=SURFACE, activebackground=BG2,
@@ -1779,7 +1797,7 @@ class App(tk.Tk):
                      values=PA_ACTIVATION_OC_LIST).pack(side="left")
         r = tk.Frame(body, bg=BG2); r.pack(fill="x", pady=(2, 0))
         for lbl, var, w in [("Power %:", self._pl_pa_power, 5), ("Zoom:", self._pl_pa_zoom, 5),
-                            ("Well:", self._pl_pa_well, 5), ("Loops:", self._pl_pa_loops, 5)]:
+                            ("Well:", self._pl_well_id, 5), ("Loops:", self._pl_pa_loops, 5)]:
             tk.Label(r, text=lbl, bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
             tk.Entry(r, textvariable=var, width=w, bg=SURFACE, fg=TEXT, insertbackground=TEXT,
                      relief="flat", font=("Segoe UI", 9)).pack(side="left", padx=(0, 8))
@@ -1796,6 +1814,26 @@ class App(tk.Tk):
                        font=("Segoe UI", 9, "bold")).pack(side="left", padx=(10, 0))
         self._pl_pa_card_buttons(card, "pa_setup", 4)
 
+        # Job3 settings (step3_zstack_PA -- the manual JOB itself, not a dispatcher
+        # macro; no pipeline checkbox / Reload / Run here -- nothing to dispatch).
+        # Well is bound to the SAME _pl_well_id as Job1's settings, so it's always
+        # the current working well -- set it once in Step 1, syncs everywhere.
+        job3 = tk.Frame(pa, bg=BG2, bd=1, relief="solid")
+        job3.pack(fill="x", padx=4, pady=3)
+        hdr3 = tk.Frame(job3, bg=BG2); hdr3.pack(fill="x", padx=6, pady=(3, 0))
+        tk.Label(hdr3, text="Job3 (step3_zstack_PA -- manual JOB run)", bg=BG2, fg=MAUVE,
+                 font=("Segoe UI", 9, "bold")).pack(side="left")
+        body3 = tk.Frame(job3, bg=BG2); body3.pack(fill="x", padx=24, pady=(0, 6))
+        tk.Label(body3, text="Run this JOB manually in NIS-E JOBS Explorer after PA Points. "
+                             "Well below is the SAME working well as Job1 -- set it once in "
+                             "Step 1 and every job's well field updates together.",
+                 bg=BG2, fg=SUBTEXT, font=("Segoe UI", 8), justify="left",
+                 wraplength=460).pack(anchor="w")
+        r = tk.Frame(body3, bg=BG2); r.pack(fill="x", pady=(2, 0))
+        tk.Label(r, text="Well:", bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
+        tk.Entry(r, textvariable=self._pl_well_id, width=8, bg=SURFACE, fg=TEXT,
+                 insertbackground=TEXT, relief="flat", font=("Segoe UI", 9)).pack(side="left")
+
         # Card 2 -- PA Points (action 5): build the ND multipoint from N triggers.
         card, body = self._pl_pa_card(pa, "PA Points  (build ND multipoint from triggers)",
                                       self._pl_pa_sel_points)
@@ -1805,32 +1843,6 @@ class App(tk.Tk):
         tk.Entry(r, textvariable=self._pl_pa_count, width=5, bg=SURFACE, fg=TEXT, insertbackground=TEXT,
                  relief="flat", font=("Segoe UI", 9)).pack(side="left")
         self._pl_pa_card_buttons(card, "pa_points", 5)
-
-        # Card 3 -- PA Pick Current (action 6): grab the live-centred spheroid (no params).
-        card, body = self._pl_pa_card(pa, "PA Pick Current  (grab the live-centred spheroid)",
-                                      self._pl_pa_sel_pick)
-        tk.Label(body, text="Uses the current live stage X/Y/Z -- centre + focus a spheroid in NIS-E "
-                            "first. No params.", bg=BG2, fg=SUBTEXT, font=("Segoe UI", 8),
-                 justify="left", wraplength=460).pack(anchor="w")
-        self._pl_pa_card_buttons(card, "pa_pick", 6, with_reload=False)
-
-        # Card 4 -- PA Validate (action 7): 1050 nm re-image of the faded squares.
-        card, body = self._pl_pa_card(pa, "PA Validate  (1050 nm re-image of the faded squares)",
-                                      self._pl_pa_sel_validate)
-        r = tk.Frame(body, bg=BG2); r.pack(fill="x")
-        tk.Label(r, text="Viz OC:", bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
-        ttk.Combobox(r, textvariable=self._pl_pa_viz_oc, width=28, font=("Segoe UI", 9),
-                     values=PA_VIZ_OC_LIST).pack(side="left", padx=(0, 8))
-        tk.Label(r, text="Count:", bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
-        tk.Entry(r, textvariable=self._pl_pa_count, width=4, bg=SURFACE, fg=TEXT, insertbackground=TEXT,
-                 relief="flat", font=("Segoe UI", 9)).pack(side="left")
-        r = tk.Frame(body, bg=BG2); r.pack(fill="x", pady=(2, 0))
-        for lbl, var, w in [("Zoom:", self._pl_pa_viz_zoom, 5), ("Z centre:", self._pl_pa_viz_z, 7),
-                            ("Z +/-:", self._pl_pa_viz_zhalf, 5), ("Z step:", self._pl_pa_viz_zstep, 5)]:
-            tk.Label(r, text=lbl, bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
-            tk.Entry(r, textvariable=var, width=w, bg=SURFACE, fg=TEXT, insertbackground=TEXT,
-                     relief="flat", font=("Segoe UI", 9)).pack(side="left", padx=(0, 8))
-        self._pl_pa_card_buttons(card, "pa_validate", 7)
 
         # Bottom bar: run the checked cards in order.
         bottom = tk.Frame(pa, bg=BG); bottom.pack(fill="x", padx=8, pady=(4, 4))
@@ -2031,6 +2043,22 @@ class App(tk.Tk):
         self._pl_log(f"Auto Load: {len(names)} ND2 from {chosen} (newest first)")
         self._pl_zv_info.configure(text=f"Auto Load: reading {len(names)} stack(s) ...")
         items = [(n, files[n]) for n in names]
+        threading.Thread(target=self._pl_zv_load_all, args=(items,), daemon=True).start()
+
+    def _pl_zv_load_captured(self, items):
+        """Auto-load the ND2s a Validation run JUST captured into the "Captured
+        Z-Stacks" tab -- called from _pl_prepa_capture_ocs on success instead of
+        requiring a manual Auto Load/Refresh click. `items` is [(display_name,
+        path), ...], one entry per (checked OC, spheroid)."""
+        if not _PIL_OK or not hasattr(self, "_pl_zv_combo") or not items:
+            return
+        files = {n: p for n, p in items}
+        self._pl_zv_files = files
+        names = list(files.keys())
+        self._pl_zv_combo.configure(values=names)
+        self._pl_zv_sel.set(names[0])
+        self._pl_log(f"Validation: auto-loading {len(names)} captured stack(s) into Captured Z-Stacks")
+        self._pl_zv_info.configure(text=f"Validation: reading {len(names)} stack(s) ...")
         threading.Thread(target=self._pl_zv_load_all, args=(items,), daemon=True).start()
 
     def _pl_zv_add_file(self):
@@ -2789,6 +2817,21 @@ class App(tk.Tk):
         self._btn(btns, "Run", lambda a=action, i=action_id: self._pl_pa_run_macro(a, i),
                   BLUE, "#1e1e2e", side="left")
 
+    def _pl_pa_power_clamp(self, *_):
+        """Hard-cap PA Setup's Power % at MAX_PA_ACTIVATION_POWER_PCT (30%) -- 50%
+        visibly damaged a spheroid on 2026-07-07. This clamps the GUI field only;
+        it can't enforce the real laser power, since step3_zstack_PA is a manual
+        JOB run in NIS-E and doesn't read pa_trigger.ini's power_pct at all."""
+        s = self._pl_pa_power.get().strip()
+        if not s:
+            return
+        try:
+            v = float(s)
+        except ValueError:
+            return   # mid-edit (e.g. a lone "-" or "."); let them keep typing
+        if v > MAX_PA_ACTIVATION_POWER_PCT:
+            self._pl_pa_power.set(str(MAX_PA_ACTIVATION_POWER_PCT))
+
     def _pl_pa_write_trigger(self):
         """Write pa_trigger.ini (all PA-macro params) into the session work dir and
         refresh session.ini (work_dir + macro_dir for the dispatcher). Returns the
@@ -2820,7 +2863,7 @@ class App(tk.Tk):
             f"job={self._pl_pa_job.get().strip()}",
             f"optical_config={self._pl_pa_oc.get().strip()}",
             f"power_pct={self._pl_pa_power.get().strip()}",
-            f"well={self._pl_pa_well.get().strip()}",
+            f"well={self._pl_well_id.get().strip()}",
             f"loops={self._pl_pa_loops.get().strip()}",
             f"zoom={self._pl_pa_zoom.get().strip()}",
             f"dichroic_out={'1' if self._pl_pa_dichroic.get() else '0'}",
@@ -2828,13 +2871,6 @@ class App(tk.Tk):
             f"a1_on={'1' if self._pl_pa_a1on.get() else '0'}",
             f"count={self._pl_pa_count.get().strip() or '9'}",
             f"save_dir={save_dir.as_posix() if save_dir else ''}",
-            "",
-            "[validate]",
-            f"viz_oc={self._pl_pa_viz_oc.get().strip()}",
-            f"viz_zoom={self._pl_pa_viz_zoom.get().strip()}",
-            f"viz_z={self._pl_pa_viz_z.get().strip()}",
-            f"viz_zhalf={self._pl_pa_viz_zhalf.get().strip()}",
-            f"viz_zstep={self._pl_pa_viz_zstep.get().strip()}",
         ]
         try:
             _pl._atomic_write_crlf(wd / "pa_trigger.ini", pa_lines)
@@ -2937,6 +2973,7 @@ class App(tk.Tk):
                 text="Pre-PA: no af_trigger_*.ini found -- generate them in Step 3 first.",
                 fg=RED)); return False
         locate_only = self._pl_prepa_locate_only.get()
+        captured: list[tuple[str, str]] = []   # (display name, path) -> auto-loaded into "Captured Z-Stacks" on success
 
         def _point_nd2_dir(d):
             _pl._atomic_write_crlf(_pl.SESSION_INI, [
@@ -2989,10 +3026,15 @@ class App(tk.Tk):
                 self.after(0, lambda m=msg: self._pl_pa_status.configure(text=m, fg=RED))
                 _point_nd2_dir(base_nd2_dir)   # restore before bailing
                 return False
+            for d in triggers:
+                p = nd2_sub / f"{d.get('spheroid_id', '')}_zstack.nd2"
+                captured.append((f"{tag}/{d.get('spheroid_id', p.stem)}", str(p)))
 
         _point_nd2_dir(base_nd2_dir)   # restore the plain nd2/ dir for normal captures
         self.after(0, lambda n=len(ocs): self._pl_pa_status.configure(
             text=f"Pre-PA: {n} OC pass(es) complete.", fg=GREEN))
+        if captured:
+            self.after(0, lambda items=captured: self._pl_zv_load_captured(items))
         return True
 
     def _pl_prepa_run_thread(self):
@@ -3027,8 +3069,6 @@ class App(tk.Tk):
             seq = []
             if self._pl_pa_sel_setup.get():    seq.append(("pa_setup", 4))
             if self._pl_pa_sel_points.get():   seq.append(("pa_points", 5))
-            if self._pl_pa_sel_pick.get():     seq.append(("pa_pick", 6))
-            if self._pl_pa_sel_validate.get(): seq.append(("pa_validate", 7))
             if not seq and not do_prepa:
                 self.after(0, lambda: self._pl_pa_status.configure(
                     text="Pipeline: no macros checked.", fg=RED)); return

@@ -1,5 +1,35 @@
 # CHANGELOG
 
+## v1.8.8 — 2026-07-07
+
+- **Hard-cap PA activation power at 30%.** 50% visibly damaged a spheroid
+  (well A02 sph#9): a sharply saturated hot spot appeared in the identical
+  location across all 3 independent Pre/Post-PA viz channels (890/940/1050nm),
+  mean intensity fell while saturated-pixel count rose 3-14x -- consistent with
+  localized burn damage. PA Setup's Power % field now clamps to
+  `MAX_PA_ACTIVATION_POWER_PCT = 30.0` on every edit. Note: `pa_trigger.ini`'s
+  `power_pct` is NOT read by the `step3_zstack_PA` JOB itself (manually run in
+  NIS-E's own Job Wizard), so this is a strong default/reminder, not a
+  technical enforcement of the real laser power.
+- **Step 4 consolidation: removed PA Validate and PA Pick Current cards.**
+  - PA Validate (single-channel 1050nm-only) is superseded by the Pre-PA card,
+    renamed **Validation** -- it already covers 890/940/1050nm and is now used
+    for both the before-PA baseline AND the after-PA check (same card, run
+    twice: once before PA Setup, once after the JOB). `viz_oc`/`viz_zoom`/
+    `viz_z`/`viz_zhalf`/`viz_zstep` and their pa_trigger.ini `[validate]` writes
+    are removed; Run Pipeline no longer has a `pa_validate` step.
+  - PA Pick Current (grab the live-centred stage position as a 1-point
+    trigger) is superseded by Step 3's per-spheroid table pick, which now
+    covers the same "trigger a specific spheroid selectively" need. PA Points
+    (build the ND multipoint from existing triggers) is UNCHANGED and still
+    required -- it's a different step (triggers -> ND multipoint for
+    "Import Point Set from ND"), not redundant with either removed card.
+- **Auto-load Validation captures into "Captured Z-Stacks".** On a successful
+  Validation run, the just-captured ND2s (one per checked OC x spheroid) are
+  automatically populated into the viewer's combobox and loaded via the
+  existing `_pl_zv_load_all`, instead of requiring a manual Auto Load/Refresh
+  click.
+
 ## v1.8.7 — 2026-07-06
 
 - **Fix dispatcher: `SEC`-leak on the cmd.ini READ side (Pre-PA's 2nd+ OC pass

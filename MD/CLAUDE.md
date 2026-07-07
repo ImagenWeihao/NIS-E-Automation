@@ -57,3 +57,27 @@ pip install cellpose   # optional, for --backend cellpose
 - S2 near-edge detection (col≈110/1024) gives unreliable NCC patch — clip to max_half or skip
 - With only 2 anchor points, similarity transform has ~72 µm residual at Rank 6 (~900 µm from anchor)
 - `csv_to_nis_bin.py` footer hardcoded for exactly 19 items; generalise for N ≠ 19
+- Add a GUI button to auto-launch the `Step1_Locate_via_scan` JOB (10X whole-well mosaic) instead of
+  requiring a manual run in NIS-E JOBS Explorer -- unlike `step3_zstack_PA` this has no laser-safety
+  gate, so it's a reasonable auto-launch target (`_Jobs_RunJobOrWizardByName("IMAGEN",
+  "Step1_Locate_via_scan")` is a valid Protocol_Commands call, confirmed in the lxapp log)
+- Refactor `nis_macro_capture_zstack.mac` into a dedicated recenter macro that auto-selects 1050nm
+  (`SelectOptConf`) instead of relying on whatever OC is already active or an explicit per-trigger
+  `oc=`, matching the established anchor@555/recenter@1050 convention; add its own GUI launch button
+  separate from the general z-stack capture dispatch
+- DONE (2026-07-07): Validation captures now auto-load into "Captured Z-Stacks" on completion
+  (`_pl_zv_load_captured`, no manual Auto Load/Refresh click needed). STILL OPEN: default view is
+  one-at-a-time via the combobox, not the originally-envisioned one-row-per-channel (3 rows,
+  890/940/1050nm) side-by-side layout. Also still open: crop/rescale 890nm and 940nm to match
+  1050nm's FOV before display -- 890/940nm capture at ~636 um FOV vs 1050nm's ~318 um (that OC's
+  own saved zoom, see 2026-07-06 finding), so a like-for-like visual comparison needs the wider
+  channels center-cropped to 1050nm's physical extent (known px sizes: 890nm 1.243 um/px 512px,
+  940nm 0.622 um/px 1024px, 1050nm 0.622 um/px 512px)
+- Confocal scan resolution/format (512/1024/512x128/1024x256/256x256, shown as preset buttons in
+  NIS-E's "A1plus Scan Area" panel) is a DIFFERENT parameter from `Confocal_SetScanArea`'s Zoom/
+  Angle/XOffset/YOffset/Aspect (confirmed via the local NIS-E function reference -- that function
+  has no resolution/frame-size argument). `CameraFormatSet(int CameraPropMode, char
+  *CameraFormatParam)` is a candidate but UNCONFIRMED whether it applies to the A1plus confocal
+  scan format specifically vs a widefield camera -- needs verification on the rig (or in NIS-E's
+  macro test/command-line panel) before wiring into `nis_macro_capture_zstack.mac`. This is what
+  caused Pre-PA/Validation's 890/940nm-vs-1050nm scale mismatch (2026-07-06/07 finding above).
