@@ -1,5 +1,5 @@
 """
-spheroid_pa_gui.py  v1.8.8
+spheroid_pa_gui.py  v1.9.1
 NIS-E Spheroid PA Pipeline — ND2-native I/O
 
 Pipeline:  Job A ND2 → [parse metadata + detect spheroids]
@@ -79,7 +79,7 @@ DEFAULT_MAX_LOOPS      = 60
 DEFAULT_DETECT_SIGMA   = 2.0    # Gaussian blur radius (pixels)
 DEFAULT_DETECT_K       = 1.5    # threshold = mean + K * std
 MAX_POWER_PCT          = 100.0
-# PA activation power hard cap. 50% visibly damaged a spheroid (2026-07-07, well
+# PA activation power hard cap. 80% visibly damaged a spheroid (2026-07-07, well
 # A02 sph#9 -- a sharply saturated hot spot appeared in the identical location
 # across all 3 independent Pre/Post-PA viz channels, mean intensity fell while
 # saturated-pixel count rose 3-14x, consistent with localized burn damage).
@@ -130,8 +130,10 @@ PA_VIZ_OC_LIST = [
     "1050nm_Reso_561nm_NDD2_JL1",
     "1000nm_Galvo_561nm_NDD2_JL1",
     "1000nm_Reso_561nm_NDD2_JL2",
-    "940nm_Galvo_488nm_NDD2_JL2",        # PAsfGFP before/after (T-cell activation state)
-    "940nm_Galvo_488nm_NDD2_JL",
+    "940nm_Galvo_488nm_NDD2_JL",         # PAsfGFP before/after (T-cell activation state) --
+                                          # confirmed 2026-07-09: this (not the "..._JL2" sibling
+                                          # below) has 488 live w/ sane gain; JL2 leaves 640 active
+    "940nm_Galvo_488nm_NDD2_JL2",
     "940nm_Reso_488nm_NDD1_JL",
     "940nm_Galvo_561nm_NDD2_BT",
     "890nm_Galvo_600nm_NDD2_BT",         # mBeRFP (T-cell identity marker)
@@ -216,6 +218,49 @@ def extract_nd2_metadata(f) -> dict:
 
     meta["channels"] = channels
     return meta
+
+
+# Fluorescence channel display colors -- matches NIS-E's own per-channel LUT (the
+# A1plus Pad detector display), NOT a false-color heatmap. Applied to every nd2-
+# derived figure/thumbnail (Captured Z-Stacks viewer, comparison figures) instead
+# of plain grayscale, per explicit instruction.
+NM_CHANNEL_RGB = {
+    "405": (64, 115, 255),
+    "488": (26, 255, 26),
+    "561": (217, 217, 26),
+    "640": (255, 38, 38),
+}
+
+
+def _tint_channel(gray_u8, chan_name):
+    """gray_u8: 2D uint8 array already contrast-stretched to 0-255. Returns an RGB
+    uint8 array tinted with this channel's NIS-E LUT color (white if unknown)."""
+    import numpy as _np
+    color = NM_CHANNEL_RGB.get(chan_name, (255, 255, 255))
+    rgb = _np.empty(gray_u8.shape + (3,), dtype=_np.uint8)
+    g = gray_u8.astype(_np.float32)
+    for k, c in enumerate(color):
+        rgb[..., k] = (g * (c / 255.0)).astype(_np.uint8)
+    return rgb
+
+
+def _center_crop_to_fov(arr, pixel_um: float, target_fov_um: float):
+    """Center-crop a (..., Y, X) stack's last two dims so its physical extent
+    matches target_fov_um, given this stack's own pixel_um. No-op if the stack's
+    native FOV is already <= target (e.g. 1050nm's OC is natively ~2x more zoomed
+    than 890/940nm -- an intentional per-channel difference, not a bug -- so the
+    wider channels get cropped down to it for a like-for-like comparison, not the
+    other way around)."""
+    if not pixel_um or not target_fov_um:
+        return arr
+    h, w = arr.shape[-2], arr.shape[-1]
+    crop_px = int(round(target_fov_um / pixel_um))
+    crop_px = max(1, min(crop_px, h, w))
+    if crop_px >= h and crop_px >= w:
+        return arr
+    y0 = (h - crop_px) // 2
+    x0 = (w - crop_px) // 2
+    return arr[..., y0:y0 + crop_px, x0:x0 + crop_px]
 
 
 def _get_detection_image(f, pos_idx: int, ch_idx: int) -> "np.ndarray":
@@ -557,7 +602,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("SpheroidPA  v1.8.8 — NIS-E Spheroid PA Pipeline")
+        self.title("SpheroidPA  v1.9.1 — NIS-E Spheroid PA Pipeline")
         self.geometry("1680x880")
         self.minsize(1000, 660)
         self.configure(bg=BG)
@@ -589,7 +634,7 @@ class App(tk.Tk):
     def _build_ui(self):
         hdr = tk.Frame(self, bg=BG2)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="  SpheroidPA  v1.8.8",
+        tk.Label(hdr, text="  SpheroidPA  v1.9.1",
                  bg=BG2, fg=MAUVE, font=("Segoe UI", 13, "bold"), pady=8
                  ).pack(side="left")
         tk.Label(hdr, text="Screen → Anchor → Autofocus → Capture  ",
@@ -1319,9 +1364,10 @@ class App(tk.Tk):
         self.after(0, lambda: self._phase_lbls[key].configure(bg=bg, fg=fg))
 
     def _log_line(self, text: str, tag: str = "info"):
+        stamped = f"[{datetime.now().strftime('%H:%M:%S')}] {text}"
         def _ins():
             self._log.configure(state="normal")
-            self._log.insert("end", text + "\n", tag)
+            self._log.insert("end", stamped + "\n", tag)
             self._log.see("end")
             self._log.configure(state="disabled")
         self.after(0, _ins)
@@ -1375,8 +1421,6 @@ class App(tk.Tk):
         self._pl_pa_dichroic = tk.BooleanVar(value=True)   # True = dichroic OUT
         self._pl_pa_interlock = tk.BooleanVar(value=True)  # True = remove A1 interlock first
         self._pl_pa_a1on     = tk.BooleanVar(value=False)  # True = A1 confirmed powered ON; pa_setup/pa_validate guard aborts if unchecked
-        # pa_points param (read by that macro from pa_trigger.ini)
-        self._pl_pa_count     = tk.StringVar(value="9")     # # spheroids
         # Per-macro "include in Run Pipeline" selections.
         self._pl_pa_sel_setup    = tk.BooleanVar(value=True)
         self._pl_pa_sel_points   = tk.BooleanVar(value=True)
@@ -1834,14 +1878,16 @@ class App(tk.Tk):
         tk.Entry(r, textvariable=self._pl_well_id, width=8, bg=SURFACE, fg=TEXT,
                  insertbackground=TEXT, relief="flat", font=("Segoe UI", 9)).pack(side="left")
 
-        # Card 2 -- PA Points (action 5): build the ND multipoint from N triggers.
-        card, body = self._pl_pa_card(pa, "PA Points  (build ND multipoint from triggers)",
+        # Card 2 -- PA Points (action 5): build the ND multipoint from ALL active
+        # Step 3 triggers -- no count of its own; Step 3's checked-row table IS the
+        # selection (its "Trigger" click clears stale triggers and writes fresh ones
+        # for exactly the checked rows each time).
+        card, body = self._pl_pa_card(pa, "PA Points  (build ND multipoint from ALL active Step 3 triggers)",
                                       self._pl_pa_sel_points)
         r = tk.Frame(body, bg=BG2); r.pack(fill="x")
-        tk.Label(r, text="Count (first N spheroids):", bg=BG2, fg=TEXT2,
-                 font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
-        tk.Entry(r, textvariable=self._pl_pa_count, width=5, bg=SURFACE, fg=TEXT, insertbackground=TEXT,
-                 relief="flat", font=("Segoe UI", 9)).pack(side="left")
+        tk.Label(r, text="Uses whatever af_trigger_*.ini Step 3 last wrote for its checked rows "
+                         "-- check/uncheck spheroids and click Step 3 Trigger again to change the set.",
+                 bg=BG2, fg=TEXT2, font=("Segoe UI", 9), wraplength=520, justify="left").pack(side="left")
         self._pl_pa_card_buttons(card, "pa_points", 5)
 
         # Bottom bar: run the checked cards in order.
@@ -2094,6 +2140,11 @@ class App(tk.Tk):
             step = None; home = 0; b2t = True
             with _nd2.ND2File(path) as f:
                 sizes = dict(f.sizes)
+                chan_name = None
+                try:
+                    chan_name = _safe_attr(f.metadata.channels[0], "channel", "name", default=None)
+                except Exception:
+                    chan_name = None
                 arr = _np.asarray(f.asarray())
                 try:
                     for lp in f.experiment:
@@ -2175,6 +2226,7 @@ class App(tk.Tk):
         if zabs is not None and (max(zabs) - min(zabs)) <= 1e-6:
             zabs = None
         self._pl_zv_stack  = arr
+        self._pl_zv_chan   = chan_name
         self._pl_zv_vmin, self._pl_zv_vmax = vmin, vmax
         self._pl_zv_step   = step
         self._pl_zv_b2t    = b2t
@@ -2215,11 +2267,12 @@ class App(tk.Tk):
         center = self._pl_zv_center
         mid    = self._pl_zv_mid
         sign   = 1.0 if self._pl_zv_b2t else -1.0
+        chan   = getattr(self, "_pl_zv_chan", None)
         THUMB = 150
         for i in range(z):
             a = _np.clip((arr[i].astype(_np.float32) - vmin) / (vmax - vmin), 0.0, 1.0)
             a = (a * 255.0).astype("uint8")
-            im = _PILImage.fromarray(a, mode="L")
+            im = _PILImage.fromarray(_tint_channel(a, chan), mode="RGB")
             im.thumbnail((THUMB, THUMB))
             photo = _PILImageTk.PhotoImage(im)
             self._pl_zv_thumbs.append(photo)
@@ -2281,6 +2334,29 @@ class App(tk.Tk):
         except Exception: pass
         try: gui_step = float(self._pl_z_step.get())
         except Exception: pass
+
+        # Metadata-only first pass (voxel_size + frame size, no array read): different
+        # OCs can carry different native zoom (1050nm ~318 um FOV vs 890/940nm ~636 um --
+        # see MD/CLAUDE.md "940/1050nm scale difference" note), so wider-FOV channels
+        # get center-cropped down to the narrowest one before display, for a like-for-
+        # like comparison across rows of the same spheroid.
+        pix_um = {}
+        chan_of = {}
+        for name, path in items:
+            try:
+                with _nd2.ND2File(path) as f:
+                    vox = f.voxel_size()
+                    sz = dict(f.sizes)
+                    pix_um[name] = (float(vox.x), sz.get("X", 0))
+                    try:
+                        chan_of[name] = _safe_attr(f.metadata.channels[0], "channel", "name", default=None)
+                    except Exception:
+                        chan_of[name] = None
+            except Exception:
+                pix_um[name] = (None, 0)
+        fovs = [p * n for p, n in pix_um.values() if p and n]
+        target_fov_um = min(fovs) if fovs else None
+
         done = 0
         for name, path in items:
             try:
@@ -2301,6 +2377,15 @@ class App(tk.Tk):
                 kept = [ax for ax in order if ax in ("Z", "Y", "X")]
                 arr = _np.moveaxis(arr, kept.index("Z"), 0) if "Z" in kept else arr[None, ...]
                 arr = _np.ascontiguousarray(arr)
+
+                p_um, _ = pix_um.get(name, (None, 0))
+                cropped = False
+                if p_um and target_fov_um:
+                    arr2 = _center_crop_to_fov(arr, p_um, target_fov_um)
+                    if arr2.shape != arr.shape:
+                        arr = arr2
+                        cropped = True
+
                 vmin = float(_np.percentile(arr, 1)); vmax = float(_np.percentile(arr, 99.5))
                 if vmax <= vmin:
                     vmax = vmin + 1.0
@@ -2308,14 +2393,17 @@ class App(tk.Tk):
                 st = dict(arr=arr, vmin=vmin, vmax=vmax, n_planes=n,
                           center=int(round((n - 1) / 2.0)),
                           basez=(gui_centre if gui_centre is not None else 0.0),
-                          step=(gui_step or 0.0), b2t=b2t)
+                          step=(gui_step or 0.0), b2t=b2t, cropped=cropped,
+                          chan=chan_of.get(name))
                 self.after(0, lambda nm=name, s=st: self._pl_zv_append_row(nm, s))
                 done += 1
             except Exception:
                 continue
         self.after(0, lambda d=done: self._pl_zv_info.configure(
             text=(f"Auto Load: {d} stack(s) listed, newest first — one row per spheroid "
-                  "(focus-centre plane outlined). Wheel scrolls the list; pick one in the "
+                  "(focus-centre plane outlined). Rows marked (FOV-matched crop) are "
+                  "center-cropped to the narrowest channel's physical field of view for "
+                  "like-for-like comparison. Wheel scrolls the list; pick one in the "
                   "dropdown for the full-size filmstrip.")))
 
     def _pl_zv_append_row(self, name, st):
@@ -2323,14 +2411,17 @@ class App(tk.Tk):
         arr = st["arr"]; vmin = st["vmin"]; vmax = st["vmax"]; center = st["center"]
         row = tk.Frame(self._pl_zv_strip, bg=BG2)
         row.pack(side="top", fill="x", anchor="w", pady=(2, 8))
+        tag = "  (FOV-matched crop)" if st.get("cropped") else ""
         tk.Label(row,
-                 text=f"{name}     centre Z {st['basez']:.1f} um     {st['n_planes']} planes",
+                 text=f"{name}     centre Z {st['basez']:.1f} um     {st['n_planes']} planes{tag}",
                  bg=BG2, fg=MAUVE, font=("Segoe UI", 9, "bold"), anchor="w"
                  ).pack(side="top", anchor="w", padx=2)
         sub = tk.Frame(row, bg=BG2); sub.pack(side="top", anchor="w")
+        chan = st.get("chan")
         for i in range(arr.shape[0]):
             a = _np.clip((arr[i].astype(_np.float32) - vmin) / (vmax - vmin), 0.0, 1.0)
-            im = _PILImage.fromarray((a * 255.0).astype("uint8"), mode="L")
+            a = (a * 255.0).astype("uint8")
+            im = _PILImage.fromarray(_tint_channel(a, chan), mode="RGB")
             im.thumbnail((96, 96))
             photo = _PILImageTk.PhotoImage(im)
             self._pl_zv_thumbs.append(photo)
@@ -2818,7 +2909,7 @@ class App(tk.Tk):
                   BLUE, "#1e1e2e", side="left")
 
     def _pl_pa_power_clamp(self, *_):
-        """Hard-cap PA Setup's Power % at MAX_PA_ACTIVATION_POWER_PCT (30%) -- 50%
+        """Hard-cap PA Setup's Power % at MAX_PA_ACTIVATION_POWER_PCT (30%) -- 80%
         visibly damaged a spheroid on 2026-07-07. This clamps the GUI field only;
         it can't enforce the real laser power, since step3_zstack_PA is a manual
         JOB run in NIS-E and doesn't read pa_trigger.ini's power_pct at all."""
@@ -2869,7 +2960,6 @@ class App(tk.Tk):
             f"dichroic_out={'1' if self._pl_pa_dichroic.get() else '0'}",
             f"remove_interlock={'1' if self._pl_pa_interlock.get() else '0'}",
             f"a1_on={'1' if self._pl_pa_a1on.get() else '0'}",
-            f"count={self._pl_pa_count.get().strip() or '9'}",
             f"save_dir={save_dir.as_posix() if save_dir else ''}",
         ]
         try:
@@ -2902,6 +2992,14 @@ class App(tk.Tk):
                                 "A macro is already running via the dispatcher — wait for it to finish."); return
         if self._pl_pa_write_trigger() is None:
             return
+        hint = {
+            "pa_points": "PA Points: sent to NIS-E -- building ND multipoint from the active "
+                         "triggers. Watch NIS-E for the 'Built ND multipoint with N spheroid(s)' popup.",
+            "pa_setup":  "PA Setup: sent to NIS-E -- prepping the rig (interlock / OC / dichroic / "
+                         "zoom). Watch NIS-E for the 'PA setup done' popup.",
+        }.get(action, f"'{action}': sent to NIS-E via the dispatcher.")
+        self._pl_pa_status.configure(text=hint, fg=YELLOW)
+        self._pl_log(f"PA: dispatched '{action}' (id {action_id}) -- awaiting NIS-E")
         self._pl_send_command(action, action_id)
 
     def _pl_prepa_checked_ocs(self):
@@ -2911,7 +3009,7 @@ class App(tk.Tk):
         if self._pl_prepa_oc_890.get():
             ocs.append(("890nm_Galvo_600nm_NDD2_BT", "890nm_mBeRFP"))
         if self._pl_prepa_oc_940.get():
-            ocs.append(("940nm_Galvo_488nm_NDD2_JL2", "940nm_PAsfGFP"))
+            ocs.append(("940nm_Galvo_488nm_NDD2_JL", "940nm_PAsfGFP"))
         if self._pl_prepa_oc_1050.get():
             ocs.append(("1050nm_Galvo_561nm_NDD2_JL2", "1050nm_depth"))
         return ocs
@@ -3031,6 +3129,27 @@ class App(tk.Tk):
                 captured.append((f"{tag}/{d.get('spheroid_id', p.stem)}", str(p)))
 
         _point_nd2_dir(base_nd2_dir)   # restore the plain nd2/ dir for normal captures
+
+        # Restore the plain (oc-less) triggers PA Points depends on. Each OC pass
+        # above rewrote af_trigger_NN.ini with oc= set, and nis_macro_capture_zstack.mac
+        # DELETES it after every successful capture -- so by the time this loop ends,
+        # every trigger touched here is gone. Run Pipeline's next step is PA Points,
+        # which only ever reads whatever's currently in autofocus/: without this
+        # restore, PA Points always finds an EMPTY folder right after Validation runs
+        # first, and silently builds a 0-point multipoint. Re-persist using the SAME
+        # coordinates already used above -- no staleness introduced, just putting back
+        # what was already valid.
+        for d in triggers:
+            lines = ["[spheroid]", f"rank={d['rank']}",
+                     f"spheroid_id={d.get('spheroid_id', '')}",
+                     f"stage_x={d['stage_x']}", f"stage_y={d['stage_y']}"]
+            if "z_centre" in d:
+                lines.append(f"z_centre={d['z_centre']}")
+            lines.append(f"z_half={'0.0' if locate_only else d.get('z_half', '0.0')}")
+            if "z_step" in d:
+                lines.append(f"z_step={d['z_step']}")
+            _pl._atomic_write_crlf(wd / f"af_trigger_{int(d['rank']):02d}.ini", lines)
+
         self.after(0, lambda n=len(ocs): self._pl_pa_status.configure(
             text=f"Pre-PA: {n} OC pass(es) complete.", fg=GREEN))
         if captured:

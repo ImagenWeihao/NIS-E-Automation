@@ -1,8 +1,70 @@
 # CHANGELOG
 
+## v1.9.1 — 2026-07-09
+
+- **Fix: Pre-PA/Validation was eating the trigger PA Points needs.** Each Pre-PA OC
+  pass (890/940/1050nm) rewrites `af_trigger_NN.ini` with `oc=` set and dispatches it
+  through `nis_macro_capture_zstack.mac`, which DELETES the trigger after every
+  successful capture. Since "Run Pipeline" runs Validation -> Setup -> Points in that
+  order, by the time PA Points ran, Validation had already consumed the only trigger
+  it needed -- PA Points silently built an EMPTY (0-point) multipoint every time,
+  with no error (the dispatcher just reports generic `status=ok`, same as a real
+  N-point build). Caught via a live 0709_2 session: spheroid #2's Pre-PA ran clean,
+  but no `af_trigger_02.ini` remained by the time `pa_points` was dispatched.
+  `_pl_prepa_capture_ocs` now restores the plain (oc-less) trigger file(s) after its
+  OC loop finishes, using the same coordinates already used for the Pre-PA captures
+  -- no staleness introduced, just re-persisting what was already valid so PA Points
+  has something to read afterward.
+
+## v1.9.0 — 2026-07-09
+
+- **PA Points: drop the redundant Count field, use ALL active Step 3 triggers
+  instead.** Removes the whole class of bugs from the last two entries (rank-
+  ceiling mismatch, count-vs-staleness ambiguity) by eliminating the redundant
+  selection mechanism entirely -- Step 3's checked-row table + "Trigger" click IS
+  already the selection (it clears stale af_trigger_*/af_done_* and writes fresh
+  ones for exactly the checked rows), so PA Points no longer needs its own count.
+  `nis_macro_pa_points.mac` now scans the full 1..96 rank range and adds every
+  af_trigger_NN.ini it finds, with no cap. GUI's "Count (first N spheroids)" field
+  and `pa_trigger.ini`'s `count=` key are removed; card renamed "PA Points (build
+  ND multipoint from ALL active Step 3 triggers)". To PA a different subset:
+  check/uncheck rows in Step 3 and click Trigger again before running PA Points.
+
+## v1.8.9 — 2026-07-09 (2)
+
+- **Fix PA Points: Count did nothing when testing with a single selectively-triggered
+  spheroid.** `nis_macro_pa_points.mac` looped `i=1; while(i<=count) check
+  af_trigger_{i:02d}.ini` -- COUNT was being used as a rank-number ceiling, not "how
+  many triggers to include". A spheroid triggered via Step 3's per-spheroid table
+  pick keeps its ORIGINAL rank in the filename (e.g. `af_trigger_09.ini` for rank 9),
+  so Count=1 or 2 only ever checked af_trigger_01/02.ini and found nothing; only
+  Count=9 happened to reach the rank-9 file. Fixed: scan the full 1..96 rank range
+  (same convention as `nis_macro_capture_zstack.mac`) and stop once COUNT triggers
+  have actually been added, not once `i` reaches COUNT.
+- **PA Points now warns if it finds fewer triggers than requested.** Diagnosed from
+  the dispatcher log while testing the fix above: PA Points only reads whatever is
+  currently in `autofocus/`, so running it before (re-)clicking Step 3 "Trigger" for
+  the current checked selection reads a stale/empty folder and looks identical to
+  "count set too low" -- easy to conflate with the bug above. The macro now says
+  "N of M requested spheroid(s)" and asks whether Step 3 Trigger was (re-)clicked,
+  instead of silently building a smaller multipoint.
+
+## v1.8.9 — 2026-07-09
+
+- **Fix Validation's 940nm PAsfGFP capture: dispatcher was calling the wrong OC.**
+  Every 940nm Validation capture came back with only channel 640 (no PAsfGFP
+  green signal). Not a macro bug -- `nis_macro_capture_zstack.mac`'s only
+  OC-related code is a single `SelectOptConf(oc)` call, and no code anywhere
+  touches channel/detector selection directly. NIS-E's OC tree has two
+  distinct, separately-configured entries with confusingly similar names:
+  `940nm_Galvo_488nm_NDD2_JL2` (640 active, 488 off) vs
+  `940nm_Galvo_488nm_NDD2_JL` (no trailing "2" -- 488 live with sane gain,
+  confirmed on-rig to capture real PAsfGFP puncta). `_pl_prepa_checked_ocs()`
+  was pointing at the former; now points at the latter.
+
 ## v1.8.8 — 2026-07-07
 
-- **Hard-cap PA activation power at 30%.** 50% visibly damaged a spheroid
+- **Hard-cap PA activation power at 30%.** 80% visibly damaged a spheroid
   (well A02 sph#9): a sharply saturated hot spot appeared in the identical
   location across all 3 independent Pre/Post-PA viz channels (890/940/1050nm),
   mean intensity fell while saturated-pixel count rose 3-14x -- consistent with

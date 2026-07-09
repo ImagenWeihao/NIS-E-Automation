@@ -1,14 +1,27 @@
 // ============================================================================
 // nis_macro_pa_points.mac -- SpheroidPA: build the ND multipoint for PA
 //
-// Reads the first COUNT saved triggers (af_trigger_01..NN) from the session
-// work_dir and builds the ND multipoint experiment (ND_ResetMultipointExp +
-// ND_AppendMultipointPoint per spheroid). The step3_zstack_PA JOB can then
-// "Import Point Set from ND" and photoactivate every point in one run.
+// Reads EVERY af_trigger_01..96.ini currently present in the session work_dir
+// (i.e. whatever GUI Step 3 last wrote for its checked selection) and builds the
+// ND multipoint experiment (ND_ResetMultipointExp + ND_AppendMultipointPoint per
+// spheroid). The step3_zstack_PA JOB can then "Import Point Set from ND" and
+// photoactivate every point in one run.
 //
-// Use this to test multi-spheroid PA: set COUNT (e.g. 3), run this macro, then
-// in the job click Import Point Set from ND -> Run. Pair with nis_macro_pa_setup
-// (hardware prep) which is run once before the job.
+// No separate count/selection of its own -- Step 3's checkbox table + "Trigger"
+// button IS the selection (it clears all stale af_trigger_*/af_done_* first, so
+// autofocus/ always reflects exactly the current checked rows). This macro just
+// mirrors whatever is active there. To PA a different subset, check/uncheck rows
+// in Step 3 and click Trigger again before running this. Pair with
+// nis_macro_pa_setup (hardware prep), run once before the job.
+//
+// DIAGNOSTIC BUILD (2026-07-09): drops a breadcrumb into work_dir/
+// pa_points_progress.ini after every step. If a silent ND_ runtime error aborts
+// the macro before its confirmation popup (symptom: cmd_done.ini=ok written by
+// the dispatcher, but no NIS-E "N spheroid(s)" popup and the ND multipoint stays
+// empty), the LAST stage recorded there is the line it died on. Kept in a
+// separate file so it does NOT collide with the dispatcher/GUI cmd_done.ini
+// completion handshake (the GUI polls cmd_done.ini for existence; writing to it
+// mid-macro would trip a premature "completed" read).
 //
 // Rig dialect (verified): single main() only; CRLF + ASCII; Int_GetKeyString +
 // atof for INI values; sprintf args as one quoted comma-list of variable names.
@@ -21,14 +34,14 @@ int main()
 {
     char cfg[256];
     char work_dir[256];
-    char pa_path[256];
+    char prog[256];
     char tp[256];
     char nn[8];
     char id[128];
     char numbuf[64];
     char msg[256];
     double x, y, z;
-    int count, i, added;
+    int i, added;
 
     strcpy(cfg, "C:/SpheroidPA/session.ini");
     work_dir[0] = 0;
@@ -39,20 +52,22 @@ int main()
         return FALSE;
     }
 
-    // Number of spheroids to photoactivate (first N saved triggers) comes from the
-    // GUI PA Points card via work_dir/pa_trigger.ini [photoactivation] count; 9 default.
-    strcpy(pa_path, work_dir);
-    strcat(pa_path, "/pa_trigger.ini");
-    numbuf[0] = 0;
-    Int_GetKeyString(pa_path, "photoactivation", "count", numbuf, 64);
-    count = atof(numbuf);
-    if( count < 1 )
-        count = 9;
+    // Breadcrumb file -- last "stage" value written = last line reached before any
+    // silent abort. Read it back after the run to pinpoint the failing call.
+    strcpy(prog, work_dir);
+    strcat(prog, "/pa_points_progress.ini");
+    DeleteFile(prog);
+    Int_SetKeyString(prog, "progress", "stage", "1_entered");
 
+    Int_SetKeyString(prog, "progress", "stage", "2_before_reset");
     ND_ResetMultipointExp();
+    Int_SetKeyString(prog, "progress", "stage", "3_after_reset");
+
+    // Scan the full rank range (1..96) and add every trigger found -- no count cap,
+    // mirrors Step 3's active selection exactly, whatever ranks it contains.
     added = 0;
     i = 1;
-    while( i <= count )
+    while( i <= 96 )
     {
         sprintf(nn, "%02d", "i");
         strcpy(tp, work_dir);
@@ -69,13 +84,27 @@ int main()
             y = atof(numbuf);
             Int_GetKeyString(tp, SEC, "z_centre", numbuf, 64);
             z = atof(numbuf);
+            Int_SetKeyString(prog, "progress", "last_id", id);
+            Int_SetKeyString(prog, "progress", "stage", "4_before_append");
             ND_AppendMultipointPoint(x, y, z, id);
+            Int_SetKeyString(prog, "progress", "stage", "5_after_append");
             added = added + 1;
         }
         i = i + 1;
     }
 
-    sprintf(msg, "Built ND multipoint with %d spheroid(s).\nIn step3_zstack_PA: Import Point Set from ND, then Run.", "added");
-    WaitText(0, msg);
+    sprintf(numbuf, "%d", "added");
+    Int_SetKeyString(prog, "progress", "added", numbuf);
+    Int_SetKeyString(prog, "progress", "stage", "7_done");
+
+    if( added == 0 )
+    {
+        WaitText(0, "No active af_trigger_*.ini found in work_dir -- built an EMPTY ND multipoint.\nCheck rows in Step 3's table and click 'Trigger' first.");
+    }
+    else
+    {
+        sprintf(msg, "Built ND multipoint with %d spheroid(s) (all active Step 3 triggers).\nIn step3_zstack_PA: Import Point Set from ND, then Run.", "added");
+        WaitText(0, msg);
+    }
     return TRUE;
 }
