@@ -1,5 +1,107 @@
 # CHANGELOG
 
+## v1.10.0 — 2026-07-20
+
+### Features
+
+- **Step 4 Runs now regenerate triggers from Step 3's checked selection (TODO #1).**
+  New `_pl_regen_triggers()` (delegates to `trigger_autofocus_all`: clears stale
+  `af_trigger_*`/`af_done_*`, writes current/re-centered coords from `_pl_records`
+  minus `_pl_excluded`, re-syncs `session.ini`) runs at the top of `_pl_pa_run_macro`,
+  `_pl_prepa_capture_ocs` and `_pl_pa_run_pipeline`. Step 3's checkbox table is now the
+  single authoritative selection end-to-end, killing the stale-trigger class of bugs
+  (plate rescan, reused archived set, capture-consumed triggers, forgotten re-Trigger).
+  Also fixes the stale-`session.ini` work_dir bug (0706-vs-0715).
+- **After-PA Validation card (TODO #5).** `_pl_prepa_checked_ocs/_capture_ocs/_run_thread/_run`
+  are parameterized by `phase` (`"prePA"`/`"postPA"`); a new card under PA Points with its
+  own `_pl_postpa_oc_*` + locate checkboxes saves to `nd2/postPA_<tag>/` instead of
+  colliding with the before-PA `prePA_<tag>/`. Auto-produces the Before_pa/After_pa split
+  the comparison figures expect, removing the manual sorting step.
+- **"Abort All" button (TODO #7).** New button in the NIS-E Macro Dispatcher panel writes a
+  one-shot `abort.ini` into work_dir and releases the GUI dispatcher lock.
+  `nis_macro_capture_zstack.mac` polls it once per rank (between spheroids) and on the idle
+  path, stops cleanly, and reports `status=aborted` + a message through the dispatcher
+  handshake so the GUI log shows "aborted" rather than a misleading "ok". The GUI-side
+  Validation OC loop and Run Pipeline loop also poll it between passes/steps. The flag is
+  cleared when a new run starts so it can't kill the next one. NOTE: a macro already inside
+  a Z-series/Capture stops only at the next loop boundary — an immediate hard stop still
+  needs Esc in NIS-E (stated in the confirmation dialog).
+
+### Fixes
+
+- **Captured Z-Stacks no longer wiped by the After-PA run.** `_pl_zv_load_captured` now
+  MERGES (`.update()`) instead of rebinding `_pl_zv_files`, display keys are phase-qualified
+  (`<phase>/<tag>/<sid>`, previously identical across phases so postPA silently overwrote its
+  prePA twin), and non-existent paths are skipped with a log line. Before/after can now be
+  compared side by side — the entire point of the After-PA card.
+- **`session.ini nd2_dir` can no longer be left pointing at a phase subfolder.** The Validation
+  OC loop is wrapped in `try/finally: _point_nd2_dir(base_nd2_dir)`; previously any exception
+  mid-loop (share drop, `mkdir` PermissionError, bad rank) killed the daemon thread and left
+  every later capture writing into `nd2/<phase>_<tag>/` with no visible error.
+- **Trigger-write failures are no longer silent.** `_pl_regen_triggers` catches `Exception`
+  (was `ValueError` only) and `_pl_trigger_autofocus` (Step 3's button) gained a try/except it
+  never had. Both surface status + log + dialog. Previously an `OSError`/`PermissionError` died
+  in a daemon thread with no dialog *after* the stale-trigger unlink had already run, leaving a
+  partial trigger set the next dispatch would happily image.
+- **`_pl_regen_triggers` honors Step 3's "Locate only (1 plane)"** (`z_half=0`), matching
+  `_pl_trigger_autofocus`. Previously any Step 4 Run silently upgraded a 1-plane locate set into
+  a full Z-stack — the only defect that changed what the instrument physically does.
+- Empty `spheroid_id` no longer yields a `_zstack.nd2` path / `"tag/"` display name (falls back
+  to `rank<NN>`); blank Output dir now logs that regen was skipped instead of silently passing.
+
+### Additional features
+
+- **Checkbox: "Keep captured images open in NIS-E" (TODO #8).** New Step 4 checkbox, default OFF.
+  Every capture dispatched from Step 4 now writes `close_after=1` into its trigger, and
+  `nis_macro_capture_zstack.mac` calls `CloseCurrentDocument(2)` (QUERYSAVE_NO — the file is
+  already on disk via `ImageSaveAs`, and 0/ASK would pop a modal that wedges the synchronous
+  daemon) right after saving. A multi-spheroid x multi-OC x z-stack run previously left dozens of
+  image windows open, cluttering NIS-E and stalling acquisition. Absent key -> keep open, so
+  hand-written triggers behave as before. Tick the box only for live debugging.
+- **PA stacks now save to `work/<run>/pa/` (TODO #3).** `pa_trigger.ini`'s `save_dir` was written
+  by the GUI (and the folder created) but **never read by any macro** — so `pa/` was always empty
+  and, on 0715, the activation output went to a previous session's `D:\...\Brandon` folder,
+  leaving the delivered PA dose un-auditable. `nis_macro_pa_setup.mac` now reads `save_dir` and
+  re-points the ND Acquisition save target with `ND_DefineExperiment(...)` before the JOB runs
+  (T/XY/Z/L all kept TRUE so only the destination changes, not the experiment shape — the PA job
+  legitimately uses Time/XY-multipoint/Z).
+  **Needs one rig verification:** confirm Job Execution still reads Points(n/n) / ZStack(n/n) /
+  Time(n/n) after PA Setup runs, and that `pa/` actually fills.
+
+### Fixes found by the post-implementation verification pass (same release)
+
+- **Step 3's "Locate only" no longer pins Validation to 1 plane.** `_pl_regen_triggers` gained
+  `honor_locate` (default True); `_pl_prepa_capture_ocs` calls it with `honor_locate=False`.
+  Previously regen baked Step 3's `z_half=0` onto disk, and the Validation loop's
+  `z_half = 0.0 if locate_only else d.get('z_half')` fallthrough read that zero back — so the
+  per-phase checkbox could only force locate ON, never OFF, and the documented
+  locate→re-center→Validate workflow silently captured single planes.
+- **Trigger re-persist moved INSIDE the `try/finally`.** It previously sat after the block, so the
+  abort / non-ok / exception bails skipped it *after* `nis_macro_capture_zstack.mac` had already
+  deleted each trigger — stranding PA Points with a 0-point multipoint, i.e. exactly the failure
+  the restore exists to prevent.
+- **Abort hardening.** The macro now `DeleteFile`s the flag when it honors it (it is one-shot;
+  nothing else ever removed it, so it persisted in the run folder indefinitely and would kill the
+  next dispatch — or a run weeks later). The modal `WaitText` on the abort path was removed: it
+  wedged the dispatcher (synchronous `RunMacro`) while the GUI, having already read
+  `status=aborted`, showed itself idle. The `aborted` sentinel now takes precedence over the
+  `handled_any -> idle_elapsed = 0.0` reset instead of relying on a second pass to re-detect it.
+  The flag is probed **per rank (between spheroids)** — deliberately NOT hoisted to once per pass:
+  a pass sweeps all 96 ranks and normally consumes the whole batch, so a per-pass probe would let
+  every remaining spheroid capture before the flag was seen, i.e. abort would stop nothing on
+  exactly the long runs it exists for. The saved `ExistFile` calls are negligible next to a stage
+  move + Z-series per spheroid. GUI: `_pl_send_command` and `_pl_trigger_autofocus` clear a stale
+  flag, and `_pl_abort_all` refuses to plant one when nothing is running (clears instead of arming
+  a landmine).
+- **`_point_nd2_dir` in the `finally` is now guarded.** It writes `session.ini` — the very operation
+  that fails on a share drop. Unguarded as the first statement of the `finally`, a raise there would
+  skip the trigger re-persist below (reinstating the PA-Points-strands bug) *and* mask the in-flight
+  exception.
+- **Captured Z-Stacks: before/after now actually render together.** `_pl_zv_load_all` gained
+  `append`; `_pl_zv_load_captured` passes it when rows are already shown. The dict merge alone
+  wasn't enough — `_pl_zv_begin_list` destroys every child of the strip, so an After-PA run still
+  wiped the pre-PA rows off screen even though the dropdown remembered them.
+
 ## v1.9.1 — 2026-07-09
 
 - **Fix: Pre-PA/Validation was eating the trigger PA Points needs.** Each Pre-PA OC

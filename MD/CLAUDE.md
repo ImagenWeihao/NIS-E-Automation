@@ -63,6 +63,66 @@ pip install cellpose   # optional, for --backend cellpose
 - Figures saved to demo_data/register_out/ with matplotlib.use("Agg") — no display
 
 ## Known issues / TODOs
+- TODO (operator-requested 2026-07-15): default the `step3_zstack_PA` JOB's ND-acquisition Save-to-File
+  path to the run's `work/<run>/pa/` folder. The PA job's ND Save-to-File is currently set MANUALLY in
+  NIS-E and is NOT driven by `pa_trigger.ini` (whose `save_dir=work/<run>/pa` is only a reminder) -- so on
+  0715 the activation output landed in a prior session's `D:\...\Brandon` folder (stale path) and
+  `work/0715/pa/` stayed empty, leaving the delivered PA dose/power un-auditable after the fact. Fix: have
+  PA Setup (or the Initialization setup macro below) re-point the PA job's ND Save-to-File to
+  `pa_trigger.ini`'s `save_dir` before the job runs -- candidate `ND_DefineExperiment` re-points the save
+  path but also redefines T/XY/Z/L, so preserve the job's loop/z config (verify the exact save-path fn
+  against the docs index at `C:\Program Files\NIS-Elements\Docs\nis\eng_ar\`). Same root cause as the ND
+  "Save to File" item in the Initialization-tab TODO below.
+- DONE (2026-07-17, After-PA Validation card + `phase`-parameterized `_pl_prepa_capture_ocs`/`_pl_prepa_run_thread`;
+  new `_pl_postpa_oc_*` checkboxes, saves to `nd2/postPA_<tag>/`): the Validation card captures all 3 channels into `prePA_<tag>`
+  subfolders (prePA_890nm_mBeRFP / prePA_940nm_PAsfGFP / prePA_1050nm_depth), but Validation is run BOTH
+  before AND after PA -- so the after-PA run currently overwrites (or collides with) the before-PA data in
+  the same `prePA_` folders, losing the before/after distinction (this session had to be hand-sorted into
+  Before_pa/After_pa dirs for the comparison figures). Fix: add a SEPARATE "After-PA Validation" card under
+  PA Points with the SAME channel-selection interface, but whose captures save to phase-named folders
+  (e.g. `postPA_<tag>/` or `afterPA_<tag>/`) instead of `prePA_<tag>/`. So the flow reads: run the
+  before-PA Validation card (-> prePA_*), run PA Setup/Points/Job3, then run the after-PA card (-> postPA_*),
+  keeping the two phases in distinct, correctly-named folders. Implementation: the capture path is shared
+  (`_pl_prepa_capture_ocs` writes `nd2/prePA_<tag>` via `_point_nd2_dir`); parameterize the phase prefix
+  ("prePA"/"postPA") per card (or add a before/after toggle) so the same code serves both. This also
+  auto-produces the Before_pa/After_pa layout the comparison figures already expect, removing the manual
+  sorting step.
+- TODO (operator-requested 2026-07-15): add an "Initialization" tab/card in Step 4 that puts the rig into
+  a known-good default state before an experiment, via a dispatcher-run setup macro. Primary job: set the
+  confocal scan ZOOM to 2 for ALL OC profiles used by the pipeline (the OC-baked-zoom inconsistency keeps
+  biting -- e.g. 0715 the 890nm OC "890nm_Galvo_600nm_NDD2_BT" was baked at zoom 3.3 while 940/1050 were at
+  zoom 2, producing a wrong-scale 890 pass that had to be re-captured). Two possible implementations:
+  (a) persistently re-save each OC's scan area at zoom 2 (loop SelectOptConf -> Confocal_SetScanArea(2,..)
+  -> save-OC; need to find the OC-save macro fn), or (b) a runtime enforcement that the capture macro
+  applies Confocal_SetScanArea(2,..) after every SelectOptConf regardless of the OC's baked value (more
+  robust; already tracked as the zoom-normalization macro fix). The tab should ALSO surface + default the
+  other recurring global variables that have caused incidents this project, each editable but pre-set to
+  its safe default:
+    * confocal zoom = 2 (all OCs)
+    * PA activation power = 30% (MAX_PA_ACTIVATION_POWER_PCT; 80% burned A02 sph#9)
+    * ND "Save to File" = OFF / re-pointed to the pipeline nd2_dir (0715 dumped 940/890/1050 dupes into a
+      prior session's D:\...\Brandon folder because Save-to-File was left checked with a stale path; no
+      macro fn disables it -- ND_DefineExperiment only re-points, and redefines T/XY/Z/L, so use carefully)
+    * per-OC detector channel correct (940 must route 488 not 640 -- the "..._JL" vs "..._JL2" bug)
+    * detector gains sane (avoid ReflectNDDPMT overload)
+    * z-stack defaults (z_centre/z_half/z_step), dichroic/PFS state
+  Goal: one click at experiment start guarantees zoom/power/save/channel/gain are all at known-good values
+  instead of inheriting whatever a prior manual/other-user session left in NIS-E. Pairs with the ND-setup
+  macro and Save-to-File findings above.
+- TODO (operator-requested 2026-07-10): add an "Abort all running macros" button in the GUI (dispatcher
+  panel / Step 4) to stop the currently-running macro without alt-tabbing to NIS-E and pressing Esc.
+  Non-trivial because a worker macro launched via the dispatcher's `RunMacro()` BLOCKS the dispatcher
+  loop, so the dispatcher can't process a new cmd.ini "abort" while a macro is running. Design: (1) the
+  GUI Abort button writes an `abort.ini` flag into work_dir (and clears the GUI-side `_pl_dispatch_busy`
+  lock so the GUI unblocks immediately); (2) every long-running loop macro (`nis_macro_capture_zstack`,
+  `nis_macro_pa_points`, `nis_macro_z_autofocus`, `nis_macro_capture_zcorrected`) polls
+  `ExistFile(work_dir/abort.ini)` at the top of each loop iteration and returns cleanly (writing
+  status=aborted to cmd_done.ini + deleting the abort flag) if present; (3) for a macro NOT in a poll
+  loop (mid-capture / mid-ND-Z-series), the abort can only take effect at the next iteration boundary --
+  document that a true immediate hard-stop still needs NIS-E-side Esc (verify whether a
+  `StopAllMacros()`/equivalent NIS-E fn exists that could be triggered, but it would have to run from
+  within NIS-E, not the GUI). Keep the abort flag one-shot (delete after honoring) so it doesn't kill the
+  next dispatched macro.
 - TODO (Validation OC-switch overhead): the GUI Validation capture ALREADY dispatches wavelength-outer
   (`_pl_prepa_capture_ocs`, spheroid_pa_gui.py ~3081: outer loop over checked OCs, each dispatch captures
   ALL checked spheroids in one `nis_macro_capture_zstack.mac` pass) -- so with N spheroids it images all
@@ -85,7 +145,9 @@ pip install cellpose   # optional, for --backend cellpose
   where the operator reviews them anyway, so no need to also show them live in NIS-E); optionally expose a
   "keep captures open in NIS-E" checkbox for debugging. Don't close the ACTIVE/live window or anything the
   operator needs -- only the just-saved capture doc.
-- TODO (HIGH PRIORITY -- operator-requested 2026-07-09): EVERY Step 4 Run button (Validation captures,
+- DONE (2026-07-17, `_pl_regen_triggers` in spheroid_pa_gui.py, wired into `_pl_pa_run_macro` /
+  `_pl_prepa_capture_ocs` / `_pl_pa_run_pipeline`; also re-syncs the stale session.ini work_dir):
+  EVERY Step 4 Run button (Validation captures,
   PA Points, and Run Pipeline) should first REGENERATE the `af_trigger_*.ini` files from Step 3's
   currently-checked spheroid selection, instead of relying on whatever triggers happen to already be on
   disk. Today none of the Step 4 actions have a coordinate source of their own -- they all read the

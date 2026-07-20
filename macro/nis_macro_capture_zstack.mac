@@ -42,10 +42,11 @@ int main()
     char zbuf[32];
     char msg[256];
     char oc[128];
+    char abort_path[256];
     double stage_x, stage_y;
     double z_centre, z_half, z_step, z_top, z_bottom;
-    double idle_elapsed;
-    int rank, move_rc, handled_any, handled_total;
+    double idle_elapsed, close_after;
+    int rank, move_rc, handled_any, handled_total, aborted;
 
     // Trigger + output dirs are NOT hardcoded: read them from the fixed pointer
     // file the GUI writes at Step 3, so this daemon follows the Step 1 save dir.
@@ -62,6 +63,14 @@ int main()
 
     idle_elapsed = 0.0;
     handled_total = 0;
+    aborted = FALSE;
+
+    // Global abort flag written by the GUI's "Abort All" button. Polled once per rank
+    // (i.e. between spheroids) so a long multi-spheroid run can be stopped without Esc.
+    // A capture already in flight still finishes -- this is a clean boundary stop, not
+    // a mid-Z-series kill. The GUI clears the flag when it starts the next run.
+    strcpy(abort_path, work_dir);
+    strcat(abort_path, "/abort.ini");
 
     while( idle_elapsed < 300.0 )
     {
@@ -69,6 +78,17 @@ int main()
         rank = 1;
         while( rank <= 96 )
         {
+            // Probe per RANK, i.e. BETWEEN SPHEROIDS. Do not "optimise" this up to once
+            // per pass: a single pass sweeps all 96 ranks and normally consumes the whole
+            // batch, so a per-pass probe lets every remaining spheroid capture before the
+            // flag is ever seen -- the abort would stop nothing on exactly the long
+            // multi-spheroid runs it exists for. The extra ExistFile calls are negligible
+            // next to a stage move + Z-series per spheroid.
+            if( ExistFile(abort_path) == TRUE )
+            {
+                aborted = TRUE;
+                rank = 97;              // leave the sweep (body below no-ops: no af_trigger_97)
+            }
             sprintf(nn, "%02d", "rank");
             strcpy(trigger_path, work_dir);
             strcat(trigger_path, "/af_trigger_");
@@ -90,6 +110,13 @@ int main()
                 stage_y = atof(numbuf);
                 oc[0] = 0;
                 Int_GetKeyString(trigger_path, SEC, "oc", oc, 128);
+                // close_after=1 -> close the captured ND2 right after saving it. A
+                // multi-spheroid x multi-OC x z-stack run otherwise leaves dozens of
+                // image windows open, which clutters NIS-E and can stall acquisition.
+                // Absent key -> 0 (keep open) so hand-written triggers behave as before.
+                numbuf[0] = 0;
+                Int_GetKeyString(trigger_path, SEC, "close_after", numbuf, 64);
+                close_after = atof(numbuf);
 
                 // Z-stack geometry from the trigger (GUI Step 3); fall back to
                 // defaults if a key is absent (atof returns 0 for missing/blank).
@@ -156,6 +183,12 @@ int main()
                     }
                     DeleteFile(nd2_path);
                     ImageSaveAs(nd2_path, 14, 0);
+                    // Close the just-saved capture so NIS-E does not accumulate one
+                    // window per spheroid x OC x pass. Save arg 2 = QUERYSAVE_NO: the
+                    // file is already on disk via ImageSaveAs above, and 0/ASK would pop
+                    // a modal that wedges this daemon (RunMacro is synchronous).
+                    if( close_after > 0.5 )
+                        CloseCurrentDocument(2);
 
                     DeleteFile(done_path);
                     Int_SetKeyString(done_path, SEC, "rank", rank_buf);
@@ -171,26 +204,56 @@ int main()
             rank = rank + 1;
         }
 
-        if( handled_any == TRUE )
+        if( aborted == TRUE )
         {
-            idle_elapsed = 0.0;
+            idle_elapsed = 9999.0;      // set LAST so nothing below can clobber it
         }
         else
         {
-            if( handled_total > 0 )
+            if( handled_any == TRUE )
             {
-                // Batch done and the queue is empty -> STOP. Do not linger and grab
-                // the next pass's triggers (e.g. the full Z-stack written after
-                // re-center); re-run this macro once per Trigger click.
-                idle_elapsed = 9999.0;
+                idle_elapsed = 0.0;
             }
             else
             {
-                SetCommandText("Capture daemon: waiting for triggers (click GUI Step 3 Trigger)");
-                Wait(1.0);
-                idle_elapsed = idle_elapsed + 1.0;
+                if( handled_total > 0 )
+                {
+                    // Batch done and the queue is empty -> STOP. Do not linger and grab
+                    // the next pass's triggers (e.g. the full Z-stack written after
+                    // re-center); re-run this macro once per Trigger click.
+                    idle_elapsed = 9999.0;
+                }
+                else
+                {
+                    SetCommandText("Capture daemon: waiting for triggers (click GUI Step 3 Trigger)");
+                    Wait(1.0);
+                    idle_elapsed = idle_elapsed + 1.0;
+                }
             }
         }
+    }
+
+    // Report an operator abort back through the dispatcher handshake so the GUI log
+    // shows "aborted" instead of a misleading "ok". The dispatcher preserves a status
+    // the worker macro already wrote (it only defaults to "ok" when status is blank).
+    if( aborted == TRUE )
+    {
+        // Consume the flag HERE. It is one-shot: if it survived, the operator's next
+        // Z-Stack dispatch (or a manual Macro > Run) would abort at rank 1 having
+        // captured nothing, and nothing else in the codebase ever deletes it -- it
+        // would sit in the run folder indefinitely.
+        DeleteFile(abort_path);
+        strcpy(done_path, work_dir);
+        strcat(done_path, "/cmd_done.ini");
+        Int_SetKeyString(done_path, "command", "status", "aborted");
+        Int_SetKeyString(done_path, "command", "message", "Capture daemon stopped by operator Abort All.");
+        sprintf(msg, "Capture daemon: ABORTED by operator after %d capture(s).", "handled_total");
+        // NO WaitText here: it is modal and RunMacro() is synchronous/in-process, so a
+        // dialog nobody clicks wedges the dispatcher -- it would never consume another
+        // cmd.ini while the GUI (which already read status=aborted from the file) shows
+        // itself as idle and ready. SetCommandText + the cmd_done message key is enough.
+        SetCommandText(msg);
+        return TRUE;
     }
 
     SetCommandText(0);

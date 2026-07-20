@@ -1,5 +1,5 @@
 """
-spheroid_pa_gui.py  v1.9.1
+spheroid_pa_gui.py  v1.10.0
 NIS-E Spheroid PA Pipeline — ND2-native I/O
 
 Pipeline:  Job A ND2 → [parse metadata + detect spheroids]
@@ -602,7 +602,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("SpheroidPA  v1.9.1 — NIS-E Spheroid PA Pipeline")
+        self.title("SpheroidPA  v1.10.0 — NIS-E Spheroid PA Pipeline")
         self.geometry("1680x880")
         self.minsize(1000, 660)
         self.configure(bg=BG)
@@ -634,7 +634,7 @@ class App(tk.Tk):
     def _build_ui(self):
         hdr = tk.Frame(self, bg=BG2)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="  SpheroidPA  v1.9.1",
+        tk.Label(hdr, text="  SpheroidPA  v1.10.0",
                  bg=BG2, fg=MAUVE, font=("Segoe UI", 13, "bold"), pady=8
                  ).pack(side="left")
         tk.Label(hdr, text="Screen → Anchor → Autofocus → Capture  ",
@@ -973,6 +973,10 @@ class App(tk.Tk):
         ]:
             self._btn(row, label, lambda a=action, i=aid: self._pl_send_command(a, i),
                       color, "#1e1e2e", side="left")
+        # Global abort: drops a one-shot abort.ini every long-running macro polls, and
+        # releases the GUI dispatcher lock. Macros stop at their next loop boundary --
+        # an in-flight Z-series/Capture still needs Esc in NIS-E for a hard stop.
+        self._btn(row, "Abort All", self._pl_abort_all, RED, "#1e1e2e", side="right")
         self._pl_dispatch_status = tk.Label(disp, text="Dispatcher: idle.", bg=BG, fg=SUBTEXT,
                                             font=("Segoe UI", 9), anchor="w", justify="left",
                                             wraplength=920)
@@ -1434,6 +1438,17 @@ class App(tk.Tk):
         self._pl_prepa_oc_940   = tk.BooleanVar(value=True)    # PAsfGFP (before/after readout)
         self._pl_prepa_oc_1050  = tk.BooleanVar(value=False)   # spheroid depth / faded-square
         self._pl_prepa_locate_only = tk.BooleanVar(value=False)  # z_half=0 -> 1-plane (mirrors Step 3)
+        # After-PA Validation: independent channel selection, saves to postPA_<tag>/
+        self._pl_postpa_oc_890  = tk.BooleanVar(value=False)
+        self._pl_postpa_oc_940  = tk.BooleanVar(value=True)
+        self._pl_postpa_oc_1050 = tk.BooleanVar(value=False)
+        self._pl_postpa_locate_only = tk.BooleanVar(value=False)
+        # Keep each captured ND2 open in NIS-E after it is saved. OFF by default: a
+        # multi-spheroid x multi-OC x z-stack run opens dozens of image windows, which
+        # clutters NIS-E and can stall the acquisition itself. The GUI's "Captured
+        # Z-Stacks" tab is where captures get reviewed, so there is no need to also
+        # hold them all open on the rig. Tick only for live debugging.
+        self._pl_keep_open_in_nise = tk.BooleanVar(value=False)
 
         # ── Outer layout: sidebar | [ middle (steps+dashboard) | table ]
         # A horizontal paned window holds two draggable panes that never overlap:
@@ -1831,6 +1846,13 @@ class App(tk.Tk):
         tk.Checkbutton(btn_prepa, text="Locate only (1 plane)", variable=self._pl_prepa_locate_only,
                        bg=BG2, fg=TEXT2, selectcolor=SURFACE, activebackground=BG2,
                        activeforeground=TEXT, font=("Segoe UI", 8)).pack(side="left", padx=(8, 0))
+        # Applies to EVERY capture dispatched from Step 4 (both Validation phases), not
+        # just this card -- the macro closes each ND2 right after ImageSaveAs unless this
+        # is ticked. Left unticked, NIS-E stays clean during long multi-channel runs.
+        tk.Checkbutton(btn_prepa, text="Keep captured images open in NIS-E (debug; may stall acquisition)",
+                       variable=self._pl_keep_open_in_nise,
+                       bg=BG2, fg=TEXT2, selectcolor=SURFACE, activebackground=BG2,
+                       activeforeground=TEXT, font=("Segoe UI", 8)).pack(side="left", padx=(12, 0))
 
         # Card 1 -- PA Setup (action 4): hardware prep + centred activation square.
         card, body = self._pl_pa_card(pa, "PA Setup  (interlock / OC / dichroic / centred square)",
@@ -1889,6 +1911,39 @@ class App(tk.Tk):
                          "-- check/uncheck spheroids and click Step 3 Trigger again to change the set.",
                  bg=BG2, fg=TEXT2, font=("Segoe UI", 9), wraplength=520, justify="left").pack(side="left")
         self._pl_pa_card_buttons(card, "pa_points", 5)
+
+        # Card 3 -- After-PA Validation (dispatcher z-stack action, id 2): the SAME
+        # multi-channel capture as the before-PA Validation card, but its passes save
+        # to nd2/postPA_<tag> (not prePA_<tag>) so the after-PA images no longer collide
+        # with the baseline -- auto-produces the Before_pa/After_pa layout the comparison
+        # figures expect. Run this AFTER the step3_zstack_PA JOB. Manual card (not in the
+        # Run Pipeline sequence, which stops before the laser fires).
+        apa = tk.Frame(pa, bg=BG2, bd=1, relief="solid"); apa.pack(fill="x", padx=4, pady=3)
+        hdra = tk.Frame(apa, bg=BG2); hdra.pack(fill="x", padx=6, pady=(3, 0))
+        tk.Label(hdra, text="After-PA Validation  (post-Job capture -> nd2/postPA_<tag>)",
+                 bg=BG2, fg=MAUVE, font=("Segoe UI", 9, "bold")).pack(side="left")
+        bodya = tk.Frame(apa, bg=BG2); bodya.pack(fill="x", padx=24, pady=(0, 4))
+        tk.Label(bodya, text="Run AFTER the step3_zstack_PA JOB. Same positions/Z as the before-PA "
+                             "Validation (from Step 3's checked rows), saved to nd2/postPA_<tag> so "
+                             "the before/after sets stay separate.",
+                 bg=BG2, fg=SUBTEXT, font=("Segoe UI", 8), justify="left",
+                 wraplength=460).pack(anchor="w")
+        ra = tk.Frame(bodya, bg=BG2); ra.pack(fill="x", pady=(2, 0))
+        tk.Checkbutton(ra, text="890nm (mBeRFP - T-cell identity)", variable=self._pl_postpa_oc_890,
+                       bg=BG2, fg=TEXT2, selectcolor=SURFACE, activebackground=BG2,
+                       activeforeground=TEXT, font=("Segoe UI", 9)).pack(anchor="w")
+        tk.Checkbutton(ra, text="940nm (PAsfGFP - before/after readout)", variable=self._pl_postpa_oc_940,
+                       bg=BG2, fg=TEXT2, selectcolor=SURFACE, activebackground=BG2,
+                       activeforeground=TEXT, font=("Segoe UI", 9)).pack(anchor="w")
+        tk.Checkbutton(ra, text="1050nm (spheroid depth / faded-square)", variable=self._pl_postpa_oc_1050,
+                       bg=BG2, fg=TEXT2, selectcolor=SURFACE, activebackground=BG2,
+                       activeforeground=TEXT, font=("Segoe UI", 9)).pack(anchor="w")
+        btn_apa = tk.Frame(apa, bg=BG2); btn_apa.pack(fill="x", padx=24, pady=(2, 6))
+        self._btn(btn_apa, "Run After-PA Captures", lambda: self._pl_prepa_run_thread("postPA"),
+                  "#f9e2af", "#1e1e2e", side="left")
+        tk.Checkbutton(btn_apa, text="Locate only (1 plane)", variable=self._pl_postpa_locate_only,
+                       bg=BG2, fg=TEXT2, selectcolor=SURFACE, activebackground=BG2,
+                       activeforeground=TEXT, font=("Segoe UI", 8)).pack(side="left", padx=(8, 0))
 
         # Bottom bar: run the checked cards in order.
         bottom = tk.Frame(pa, bg=BG); bottom.pack(fill="x", padx=8, pady=(4, 4))
@@ -2091,21 +2146,39 @@ class App(tk.Tk):
         items = [(n, files[n]) for n in names]
         threading.Thread(target=self._pl_zv_load_all, args=(items,), daemon=True).start()
 
-    def _pl_zv_load_captured(self, items):
+    def _pl_zv_load_captured(self, items, plabel="Validation"):
         """Auto-load the ND2s a Validation run JUST captured into the "Captured
         Z-Stacks" tab -- called from _pl_prepa_capture_ocs on success instead of
         requiring a manual Auto Load/Refresh click. `items` is [(display_name,
-        path), ...], one entry per (checked OC, spheroid)."""
+        path), ...], one entry per (checked OC, spheroid).
+
+        MERGES into the existing list (never rebinds): the After-PA card would
+        otherwise wipe every prePA entry, since the display names are phase-
+        qualified but the dict was replaced wholesale -- defeating the whole point
+        of the before/after split. Also skips paths the capture didn't actually
+        produce, so a partial run can't leave dead entries in the dropdown."""
         if not _PIL_OK or not hasattr(self, "_pl_zv_combo") or not items:
             return
-        files = {n: p for n, p in items}
-        self._pl_zv_files = files
-        names = list(files.keys())
+        live = [(n, p) for n, p in items if Path(p).exists()]
+        missing = len(items) - len(live)
+        if missing:
+            self._pl_log(f"{plabel}: {missing} captured stack(s) not found on disk -- skipped")
+        if not live:
+            return
+        if not isinstance(getattr(self, "_pl_zv_files", None), dict):
+            self._pl_zv_files = {}
+        had_rows = bool(self._pl_zv_files) and getattr(self, "_pl_zv_list_mode", False)
+        self._pl_zv_files.update({n: p for n, p in live})
+        names = list(self._pl_zv_files.keys())
         self._pl_zv_combo.configure(values=names)
-        self._pl_zv_sel.set(names[0])
-        self._pl_log(f"Validation: auto-loading {len(names)} captured stack(s) into Captured Z-Stacks")
-        self._pl_zv_info.configure(text=f"Validation: reading {len(names)} stack(s) ...")
-        threading.Thread(target=self._pl_zv_load_all, args=(items,), daemon=True).start()
+        self._pl_zv_sel.set(live[0][0])
+        self._pl_log(f"{plabel}: auto-loading {len(live)} captured stack(s) into Captured Z-Stacks "
+                     f"({len(names)} total listed)")
+        self._pl_zv_info.configure(text=f"{plabel}: reading {len(live)} stack(s) ...")
+        # append when rows are already rendered (e.g. After-PA following Pre-PA), so the
+        # before/after rows sit side by side instead of the new run clearing the strip.
+        threading.Thread(target=self._pl_zv_load_all, args=(live,),
+                         kwargs={"append": had_rows}, daemon=True).start()
 
     def _pl_zv_add_file(self):
         if not _PIL_OK or not hasattr(self, "_pl_zv_combo"):
@@ -2323,12 +2396,19 @@ class App(tk.Tk):
         self._pl_zv_strip_canvas.xview_moveto(0.0)
         self._pl_zv_strip_canvas.yview_moveto(0.0)
 
-    def _pl_zv_load_all(self, items):
+    def _pl_zv_load_all(self, items, append=False):
         """List mode: render every (name, path) as its own filmstrip row, newest first.
-        Lighter than the single-stack view (smaller thumbs, no per-plane caption)."""
+        Lighter than the single-stack view (smaller thumbs, no per-plane caption).
+
+        append=True keeps the rows already on screen and adds these below them --
+        used by the After-PA card so its rows join the pre-PA ones instead of
+        replacing them (_pl_zv_begin_list destroys every child of the strip, which
+        would otherwise wipe the before/after comparison at the render layer even
+        though _pl_zv_files was correctly merged)."""
         import nd2 as _nd2
         import numpy as _np
-        self.after(0, self._pl_zv_begin_list)
+        if not append:
+            self.after(0, self._pl_zv_begin_list)
         gui_centre = gui_step = None
         try: gui_centre = float(self._pl_z_centre.get())
         except Exception: pass
@@ -2754,6 +2834,9 @@ class App(tk.Tk):
         out = self._pl_out_dir.get().strip()
         if not out:
             messagebox.showwarning("No output dir", "Set output directory in Step 1."); return
+        # Writing a fresh trigger set means the operator is starting new work -- drop any
+        # leftover abort flag so the macro they run next isn't killed at rank 1.
+        self._pl_abort_clear()
         try:
             z_centre = float(self._pl_z_centre.get())
             z_half   = float(self._pl_z_half.get())
@@ -2770,8 +2853,20 @@ class App(tk.Tk):
             messagebox.showwarning(
                 "None selected",
                 "Every spheroid is unchecked in the Use column — nothing to trigger."); return
-        n = _pl.trigger_autofocus_all(recs, Path(out) / "autofocus",
-                                      z_centre=z_centre, z_half=z_half, z_step=z_step)
+        try:
+            n = _pl.trigger_autofocus_all(recs, Path(out) / "autofocus",
+                                          z_centre=z_centre, z_half=z_half, z_step=z_step)
+        except Exception as e:
+            # Same defect class as _pl_regen_triggers: this mkdirs, writes N trigger
+            # files and session.ini. An OSError (share drop / read-only run folder) or
+            # the duplicate-coordinate ValueError previously escaped uncaught, and the
+            # stale-trigger unlink has ALREADY run -- leaving a partial set on disk.
+            messagebox.showerror("Trigger write failed",
+                                 f"Could not write triggers:\n\n{type(e).__name__}: {e}")
+            self.after(0, lambda m=str(e): self._pl_af_status_lbl.configure(
+                text=f"Trigger write FAILED — {m}", fg=RED))
+            self._pl_log(f"Step 3: trigger write FAILED ({type(e).__name__}): {e}")
+            return
         mode = "1-plane LOCATE" if locate else f"Z-stack +/-{z_half:g}/{z_step:g} um"
         skipped = len(self._pl_records) - len(recs)
         extra = f" ({skipped} unchecked skipped)" if skipped else ""
@@ -2986,10 +3081,159 @@ class App(tk.Tk):
         self._pl_pa_status.configure(
             text=f"Params reloaded to pa_trigger.ini. '{action}' will use them on Run.", fg=YELLOW)
 
+    def _pl_regen_triggers(self, honor_locate=True):
+        """Rewrite af_trigger_*.ini from Step 3's currently-checked selection before a
+        Step 4 Run, so every action uses the current coords (incl. re-centered) and a
+        fresh, de-staled trigger set -- never whatever happened to be left on disk from
+        a prior rescan / archived set / capture-consumed cycle. Delegates to
+        trigger_autofocus_all, which also clears stale af_trigger/af_done and re-syncs
+        session.ini's work_dir/nd2_dir to this run. Returns True to proceed, False to
+        abort (status shown). No records (hand-placed triggers, Steps 1-3 skipped) ->
+        True: leave the on-disk triggers untouched.
+        """
+        import spheroid_pipeline as _pl
+        if not self._pl_records:
+            return True
+        out = self._pl_out_dir.get().strip()
+        if not out:
+            # No output dir -> nothing to regenerate into; the action falls back to
+            # whatever triggers are already on disk. Say so rather than pretending
+            # the regen happened (this is the exact staleness this helper exists to kill).
+            self._pl_log("Step 4: no Output dir set -- skipped trigger regen, "
+                         "using existing on-disk af_trigger_*.ini")
+            return True
+        try:
+            z_centre = float(self._pl_z_centre.get())
+            z_half   = float(self._pl_z_half.get())
+            z_step   = float(self._pl_z_step.get())
+        except ValueError:
+            self.after(0, lambda: self._pl_pa_status.configure(
+                text="Step 4: Step 3's Z centre/half/step must be numbers.", fg=RED))
+            return False
+        # Honor Step 3's "Locate only (1 plane)" exactly as _pl_trigger_autofocus does --
+        # otherwise a Step 4 Run silently upgrades a 1-plane locate set into a full
+        # Z-stack, i.e. the instrument does something the operator didn't ask for.
+        #
+        # EXCEPT for the Validation path (honor_locate=False): it has its OWN per-phase
+        # "Locate only" checkbox and decides per pass via
+        #   z_half = 0.0 if locate_only else d.get('z_half')
+        # If we baked Step 3's zero onto disk here, that d.get() fallthrough would read
+        # 0.0 back and the per-phase box could only ever force locate ON, never OFF --
+        # so ticking Step 3's box would silently pin every Validation pass to 1 plane.
+        # Write the full z_half instead and let the per-phase flag be authoritative.
+        if (honor_locate
+                and getattr(self, "_pl_locate_only", None) is not None
+                and self._pl_locate_only.get()):
+            z_half = 0.0
+        excl = getattr(self, "_pl_excluded", set())
+        recs = [r for r in self._pl_records if r.rank not in excl]
+        if not recs:
+            self.after(0, lambda: self._pl_pa_status.configure(
+                text="Step 4: every spheroid is unchecked in Step 3's Use column — nothing to run.",
+                fg=RED))
+            return False
+        try:
+            n = _pl.trigger_autofocus_all(recs, Path(out) / "autofocus",
+                                          z_centre=z_centre, z_half=z_half, z_step=z_step)
+        except Exception as e:
+            # MUST be broad: trigger_autofocus_all mkdirs, writes N trigger files and
+            # session.ini. An OSError/PermissionError (S: share drop, read-only run
+            # folder, C:/SpheroidPA ACL) previously escaped -- and on the worker-thread
+            # call sites it died silently in the daemon thread with no dialog, after the
+            # stale-trigger unlink had ALREADY run, leaving a partial trigger set the
+            # next dispatch would happily image.
+            self.after(0, lambda m=str(e): self._pl_pa_status.configure(
+                text=f"Step 4: trigger regen FAILED — {m}", fg=RED))
+            self._pl_log(f"Step 4: trigger regen FAILED ({type(e).__name__}): {e}")
+            return False
+        skipped = len(self._pl_records) - len(recs)
+        self._pl_log(f"Step 4: regenerated {n} af_trigger from Step 3 selection"
+                     + (" [locate-only, z_half=0]" if z_half == 0.0 else "")
+                     + (f" ({skipped} unchecked skipped)" if skipped else ""))
+        return True
+
+    # ── Global macro abort ────────────────────────────────────────────────────
+    def _pl_abort_path(self, work_dir=None):
+        """Path of the one-shot abort flag the running macros poll."""
+        import spheroid_pipeline as _pl
+        if work_dir is None:
+            import configparser
+            cp = configparser.ConfigParser()
+            try:
+                if _pl.SESSION_INI.exists():
+                    cp.read(_pl.SESSION_INI)
+            except Exception:
+                pass
+            w = cp.get("paths", "work_dir", fallback="").strip() or self._pl_trigger_dir.get().strip()
+            if not w:
+                o = self._pl_out_dir.get().strip()
+                w = str(Path(o) / "autofocus") if o else ""
+            if not w:
+                return None
+            work_dir = Path(w)
+        return Path(work_dir) / "abort.ini"
+
+    def _pl_abort_requested(self, work_dir=None):
+        """True if an abort flag is present (checked by the GUI-side capture loops)."""
+        p = self._pl_abort_path(work_dir)
+        try:
+            return bool(p and p.exists())
+        except Exception:
+            return False
+
+    def _pl_abort_clear(self, work_dir=None):
+        p = self._pl_abort_path(work_dir)
+        try:
+            if p and p.exists():
+                p.unlink()
+        except Exception:
+            pass
+
+    def _pl_abort_all(self):
+        """Abort All: drop a one-shot abort.ini that every long-running macro polls,
+        and release the GUI-side dispatcher lock so the UI isn't stuck behind a macro
+        that may never report back.
+
+        Note: a macro already inside a blocking NIS-E call (mid ND Z-series, mid
+        Capture) can only honor this at its NEXT loop iteration -- a true immediate
+        hard-stop still requires Esc in NIS-E. Say so plainly rather than implying
+        the button kills the scanner mid-frame."""
+        import spheroid_pipeline as _pl
+        if not getattr(self, "_pl_dispatch_busy", False):
+            # Nothing is running -- planting the flag now would just be a landmine the
+            # NEXT dispatch trips over. Clear any leftover instead.
+            self._pl_abort_clear()
+            self._pl_dispatch_status.configure(text="Dispatcher: idle — nothing to abort "
+                                                    "(cleared any stale abort flag).", fg=SUBTEXT)
+            messagebox.showinfo("Abort", "No macro is currently running via the dispatcher.\n\n"
+                                         "Any stale abort flag has been cleared.")
+            return
+        p = self._pl_abort_path()
+        if p is None:
+            messagebox.showwarning("Abort", "No work dir known yet — run Step 3 (Trigger) first.")
+            return
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            _pl._atomic_write_crlf(p, ["[abort]", "requested=1"])
+        except Exception as e:
+            messagebox.showerror("Abort", f"Could not write the abort flag:\n{e}")
+            return
+        self._pl_dispatch_busy = False
+        self._pl_log(f"ABORT requested -- wrote {p}; GUI dispatcher lock released")
+        self._pl_dispatch_status.configure(text="ABORT requested — macros stop at their next loop step.",
+                                           fg=RED)
+        messagebox.showinfo(
+            "Abort requested",
+            "Abort flag written.\n\nRunning macros stop at their next loop step (per-spheroid / "
+            "per-pass boundary).\n\nA macro already inside a Z-series or Capture cannot be "
+            "interrupted from here — press Esc in NIS-E for an immediate hard stop.")
+
     def _pl_pa_run_macro(self, action, action_id):
         if getattr(self, "_pl_dispatch_busy", False):
             messagebox.showinfo("Dispatcher busy",
                                 "A macro is already running via the dispatcher — wait for it to finish."); return
+        if not self._pl_regen_triggers():
+            return
         if self._pl_pa_write_trigger() is None:
             return
         hint = {
@@ -3002,28 +3246,33 @@ class App(tk.Tk):
         self._pl_log(f"PA: dispatched '{action}' (id {action_id}) -- awaiting NIS-E")
         self._pl_send_command(action, action_id)
 
-    def _pl_prepa_checked_ocs(self):
-        """Return [(oc_name, tag), ...] for the currently-checked Pre-PA checkboxes,
-        in a fixed 890->940->1050 order."""
+    def _pl_prepa_checked_ocs(self, phase="prePA"):
+        """Return [(oc_name, tag), ...] for the checked Validation checkboxes of the
+        given phase ('prePA' before PA / 'postPA' after), in a fixed 890->940->1050 order."""
+        v890, v940, v1050 = (
+            (self._pl_prepa_oc_890, self._pl_prepa_oc_940, self._pl_prepa_oc_1050)
+            if phase == "prePA" else
+            (self._pl_postpa_oc_890, self._pl_postpa_oc_940, self._pl_postpa_oc_1050))
         ocs = []
-        if self._pl_prepa_oc_890.get():
+        if v890.get():
             ocs.append(("890nm_Galvo_600nm_NDD2_BT", "890nm_mBeRFP"))
-        if self._pl_prepa_oc_940.get():
+        if v940.get():
             ocs.append(("940nm_Galvo_488nm_NDD2_JL", "940nm_PAsfGFP"))
-        if self._pl_prepa_oc_1050.get():
+        if v1050.get():
             ocs.append(("1050nm_Galvo_561nm_NDD2_JL2", "1050nm_depth"))
         return ocs
 
-    def _pl_prepa_capture_ocs(self):
+    def _pl_prepa_capture_ocs(self, phase="prePA"):
         """Capture a full Z-stack at each checked Pre-PA OC, via the dispatcher's
         z-stack action (id 2) -- same mechanism as every other dispatcher card,
         just looped once per checked OC.
 
-        Uses whatever af_trigger_NN.ini files ALREADY exist in the autofocus work
-        dir (written by Step 3, or by hand) -- Step 4 is channel selection only,
-        not position management: it injects the oc= key into each existing
-        trigger (and optionally forces z_half=0 for a locate-only pass), and
-        never touches stage_x/stage_y or regenerates from self._pl_records.
+        First regenerates af_trigger_NN.ini from Step 3's currently-checked selection
+        (via _pl_regen_triggers -> trigger_autofocus_all: clears stale triggers, writes
+        current/re-centered coords, re-syncs session.ini) so this pass never images a
+        stale position. Then injects the oc= key into each trigger (and optionally
+        forces z_half=0 for a locate-only pass). With no records (hand-placed triggers,
+        Steps 1-3 skipped) it leaves whatever is on disk untouched.
 
         Each pass is routed into its own nd2/prePA_<tag> subfolder (atomic session.ini
         rewrite before each dispatch) so multiple OC passes don't overwrite each
@@ -3033,9 +3282,14 @@ class App(tk.Tk):
         a no-op is not an error); False on the first failure (status already shown).
         """
         import configparser, time, spheroid_pipeline as _pl
-        ocs = self._pl_prepa_checked_ocs()
+        plabel = "Pre-PA" if phase == "prePA" else "After-PA"
+        ocs = self._pl_prepa_checked_ocs(phase)
         if not ocs:
             return True
+        # honor_locate=False: this path has its own per-phase "Locate only" checkbox and
+        # applies it per pass below -- see the note in _pl_regen_triggers.
+        if not self._pl_regen_triggers(honor_locate=False):
+            return False
 
         # Resolve work_dir/nd2_dir the SAME way every other dispatcher action does
         # (session.ini's [paths] first -- it reflects whatever Step 3/the dispatcher
@@ -3055,7 +3309,7 @@ class App(tk.Tk):
             work = str(Path(o) / "autofocus") if o else ""
         if not work:
             self.after(0, lambda: self._pl_pa_status.configure(
-                text="Pre-PA: no work dir -- run Step 3 (Trigger) first, or set the Trigger dir.",
+                text=f"{plabel}: no work dir -- run Step 3 (Trigger) first, or set the Trigger dir.",
                 fg=RED)); return False
         wd = Path(work)
         nd2_dir_cfg = cp.get("paths", "nd2_dir", fallback="").strip()
@@ -3068,9 +3322,14 @@ class App(tk.Tk):
                 triggers.append(d)
         if not triggers:
             self.after(0, lambda: self._pl_pa_status.configure(
-                text="Pre-PA: no af_trigger_*.ini found -- generate them in Step 3 first.",
+                text=f"{plabel}: no af_trigger_*.ini found -- generate them in Step 3 first.",
                 fg=RED)); return False
-        locate_only = self._pl_prepa_locate_only.get()
+        locate_only = (self._pl_prepa_locate_only if phase == "prePA"
+                       else self._pl_postpa_locate_only).get()
+        # close_after=1 -> the capture macro closes each ND2 right after ImageSaveAs, so a
+        # long multi-spheroid x multi-OC run doesn't leave dozens of windows open in NIS-E
+        # (which clutters it and can stall the acquisition).
+        close_after = "0" if self._pl_keep_open_in_nise.get() else "1"
         captured: list[tuple[str, str]] = []   # (display name, path) -> auto-loaded into "Captured Z-Stacks" on success
 
         def _point_nd2_dir(d):
@@ -3078,96 +3337,126 @@ class App(tk.Tk):
                 "[paths]", f"work_dir={wd.as_posix()}",
                 f"nd2_dir={d.as_posix()}", f"macro_dir={_pl.MACRO_DIR.as_posix()}"])
 
-        for oc_name, tag in ocs:
-            self._pl_log(f"Pre-PA: capturing {tag} ({oc_name}) for {len(triggers)} spheroid(s)...")
-            self.after(0, lambda t=tag: self._pl_pa_status.configure(
-                text=f"Pre-PA: running {t}...", fg=YELLOW))
-            for d in triggers:
-                lines = ["[spheroid]", f"rank={d['rank']}",
-                         f"spheroid_id={d.get('spheroid_id', '')}",
-                         f"stage_x={d['stage_x']}", f"stage_y={d['stage_y']}"]
-                if "z_centre" in d:
-                    lines.append(f"z_centre={d['z_centre']}")
-                lines.append(f"z_half={'0.0' if locate_only else d.get('z_half', '0.0')}")
-                if "z_step" in d:
-                    lines.append(f"z_step={d['z_step']}")
-                lines.append(f"oc={oc_name}")
-                _pl._atomic_write_crlf(wd / f"af_trigger_{int(d['rank']):02d}.ini", lines)
-            nd2_sub = base_nd2_dir / f"prePA_{tag}"
-            nd2_sub.mkdir(parents=True, exist_ok=True)
-            _point_nd2_dir(nd2_sub)
+        # try/finally: session.ini's nd2_dir is redirected into the per-phase subfolder
+        # for each pass. If ANYTHING throws mid-loop (share drop, mkdir PermissionError,
+        # bad rank) the daemon thread dies and nd2_dir would stay pointed at
+        # nd2/<phase>_<tag>/ -- silently poisoning every later capture. Always restore.
+        try:
+            for oc_name, tag in ocs:
+                if self._pl_abort_requested(wd):
+                    self._pl_log(f"{plabel}: ABORT requested -- stopping before '{tag}'")
+                    self.after(0, lambda: self._pl_pa_status.configure(
+                        text=f"{plabel}: aborted by operator.", fg=RED))
+                    return False
+                self._pl_log(f"{plabel}: capturing {tag} ({oc_name}) for {len(triggers)} spheroid(s)...")
+                self.after(0, lambda t=tag: self._pl_pa_status.configure(
+                    text=f"{plabel}: running {t}...", fg=YELLOW))
+                for d in triggers:
+                    lines = ["[spheroid]", f"rank={d['rank']}",
+                             f"spheroid_id={d.get('spheroid_id', '')}",
+                             f"stage_x={d['stage_x']}", f"stage_y={d['stage_y']}"]
+                    if "z_centre" in d:
+                        lines.append(f"z_centre={d['z_centre']}")
+                    lines.append(f"z_half={'0.0' if locate_only else d.get('z_half', '0.0')}")
+                    if "z_step" in d:
+                        lines.append(f"z_step={d['z_step']}")
+                    lines.append(f"oc={oc_name}")
+                    lines.append(f"close_after={close_after}")
+                    _pl._atomic_write_crlf(wd / f"af_trigger_{int(d['rank']):02d}.ini", lines)
+                nd2_sub = base_nd2_dir / f"{phase}_{tag}"
+                nd2_sub.mkdir(parents=True, exist_ok=True)
+                _point_nd2_dir(nd2_sub)
 
-            done = wd / "cmd_done.ini"
+                done = wd / "cmd_done.ini"
+                try:
+                    done.unlink()
+                except FileNotFoundError:
+                    pass
+                _pl._atomic_write_crlf(wd / "cmd.ini",
+                                       ["[command]", f"action=zstack_{tag}", "action_id=2"])
+                self._pl_log(f"{plabel}: dispatched '{tag}' (id 2)")
+                status = None
+                for _ in range(1800):
+                    if done.exists():
+                        cp = configparser.ConfigParser()
+                        try:
+                            cp.read(done)
+                            status = cp.get("command", "status",
+                                            fallback=cp.get("spheroid", "status", fallback="?"))
+                        except Exception:
+                            time.sleep(1.0); continue
+                        break
+                    if self._pl_abort_requested(wd):
+                        status = "aborted"
+                        break
+                    time.sleep(1.0)
+                self._pl_log(f"{plabel}: '{tag}' -> {status or 'timeout'}")
+                if status != "ok":
+                    msg = (f"{plabel} stopped at '{tag}' -> {status}" if status
+                           else f"{plabel}: '{tag}' timed out (is nis_macro_dispatcher.mac running?)")
+                    self.after(0, lambda m=msg: self._pl_pa_status.configure(text=m, fg=RED))
+                    return False
+                for d in triggers:
+                    sid = (d.get("spheroid_id") or "").strip() or f"rank{int(d['rank']):02d}"
+                    p = nd2_sub / f"{sid}_zstack.nd2"
+                    # phase-qualify the display key: tags are identical across phases, so
+                    # without the prefix a postPA entry silently overwrites its prePA twin.
+                    captured.append((f"{phase}/{tag}/{sid}", str(p)))
+        finally:
+            # Guarded: this writes session.ini, the very operation that can fail on a
+            # share drop. Unguarded it would (a) skip the trigger restore below --
+            # reinstating the PA-Points-strands-on-empty-folder bug -- and (b) replace
+            # any in-flight exception with its own, hiding the real cause.
             try:
-                done.unlink()
-            except FileNotFoundError:
-                pass
-            _pl._atomic_write_crlf(wd / "cmd.ini",
-                                   ["[command]", f"action=zstack_{tag}", "action_id=2"])
-            self._pl_log(f"Pre-PA: dispatched '{tag}' (id 2)")
-            status = None
-            for _ in range(1800):
-                if done.exists():
-                    cp = configparser.ConfigParser()
-                    try:
-                        cp.read(done)
-                        status = cp.get("command", "status",
-                                        fallback=cp.get("spheroid", "status", fallback="?"))
-                    except Exception:
-                        time.sleep(1.0); continue
-                    break
-                time.sleep(1.0)
-            self._pl_log(f"Pre-PA: '{tag}' -> {status or 'timeout'}")
-            if status != "ok":
-                msg = (f"Pre-PA stopped at '{tag}' -> {status}" if status
-                       else f"Pre-PA: '{tag}' timed out (is nis_macro_dispatcher.mac running?)")
-                self.after(0, lambda m=msg: self._pl_pa_status.configure(text=m, fg=RED))
-                _point_nd2_dir(base_nd2_dir)   # restore before bailing
-                return False
-            for d in triggers:
-                p = nd2_sub / f"{d.get('spheroid_id', '')}_zstack.nd2"
-                captured.append((f"{tag}/{d.get('spheroid_id', p.stem)}", str(p)))
-
-        _point_nd2_dir(base_nd2_dir)   # restore the plain nd2/ dir for normal captures
-
-        # Restore the plain (oc-less) triggers PA Points depends on. Each OC pass
-        # above rewrote af_trigger_NN.ini with oc= set, and nis_macro_capture_zstack.mac
-        # DELETES it after every successful capture -- so by the time this loop ends,
-        # every trigger touched here is gone. Run Pipeline's next step is PA Points,
-        # which only ever reads whatever's currently in autofocus/: without this
-        # restore, PA Points always finds an EMPTY folder right after Validation runs
-        # first, and silently builds a 0-point multipoint. Re-persist using the SAME
-        # coordinates already used above -- no staleness introduced, just putting back
-        # what was already valid.
-        for d in triggers:
-            lines = ["[spheroid]", f"rank={d['rank']}",
-                     f"spheroid_id={d.get('spheroid_id', '')}",
-                     f"stage_x={d['stage_x']}", f"stage_y={d['stage_y']}"]
-            if "z_centre" in d:
-                lines.append(f"z_centre={d['z_centre']}")
-            lines.append(f"z_half={'0.0' if locate_only else d.get('z_half', '0.0')}")
-            if "z_step" in d:
-                lines.append(f"z_step={d['z_step']}")
-            _pl._atomic_write_crlf(wd / f"af_trigger_{int(d['rank']):02d}.ini", lines)
+                _point_nd2_dir(base_nd2_dir)   # restore the plain nd2/ dir for normal captures
+            except Exception as e:
+                self._pl_log(f"{plabel}: WARNING - could not restore session.ini nd2_dir: {e}")
+            # Restore the plain (oc-less) triggers PA Points depends on. Each OC pass
+            # above rewrote af_trigger_NN.ini with oc= set, and nis_macro_capture_zstack.mac
+            # DELETES it after every successful capture -- so by the time we leave this
+            # function, every trigger touched here is gone. Run Pipeline's next step is
+            # PA Points, which only ever reads whatever's currently in autofocus/: without
+            # this restore it finds an EMPTY folder and silently builds a 0-point
+            # multipoint. Re-persist using the SAME coordinates already used above -- no
+            # staleness introduced, just putting back what was already valid.
+            #
+            # MUST be in the finally, not after it: a mid-run bail (abort, non-ok status,
+            # or any exception) leaves triggers already consumed by the macro, so the
+            # non-restoring paths were exactly the ones that stranded PA Points.
+            try:
+                for d in triggers:
+                    lines = ["[spheroid]", f"rank={d['rank']}",
+                             f"spheroid_id={d.get('spheroid_id', '')}",
+                             f"stage_x={d['stage_x']}", f"stage_y={d['stage_y']}"]
+                    if "z_centre" in d:
+                        lines.append(f"z_centre={d['z_centre']}")
+                    lines.append(f"z_half={'0.0' if locate_only else d.get('z_half', '0.0')}")
+                    if "z_step" in d:
+                        lines.append(f"z_step={d['z_step']}")
+                    _pl._atomic_write_crlf(wd / f"af_trigger_{int(d['rank']):02d}.ini", lines)
+            except Exception as e:
+                self._pl_log(f"{plabel}: WARNING - could not restore triggers for PA Points: {e}")
 
         self.after(0, lambda n=len(ocs): self._pl_pa_status.configure(
-            text=f"Pre-PA: {n} OC pass(es) complete.", fg=GREEN))
+            text=f"{plabel}: {n} OC pass(es) complete.", fg=GREEN))
         if captured:
-            self.after(0, lambda items=captured: self._pl_zv_load_captured(items))
+            self.after(0, lambda items=captured, lb=plabel: self._pl_zv_load_captured(items, lb))
         return True
 
-    def _pl_prepa_run_thread(self):
+    def _pl_prepa_run_thread(self, phase="prePA"):
         if getattr(self, "_pl_dispatch_busy", False):
             messagebox.showinfo("Dispatcher busy",
                                 "A macro is already running via the dispatcher — wait for it to finish."); return
-        if not self._pl_prepa_checked_ocs():
-            messagebox.showwarning("No OC checked", "Tick at least one Pre-PA OC checkbox."); return
+        if not self._pl_prepa_checked_ocs(phase):
+            lbl = "Pre-PA" if phase == "prePA" else "After-PA"
+            messagebox.showwarning("No OC checked", f"Tick at least one {lbl} OC checkbox."); return
+        self._pl_abort_clear()       # a stale flag must not kill the run we're starting
         self._pl_dispatch_busy = True
-        threading.Thread(target=self._pl_prepa_run, daemon=True).start()
+        threading.Thread(target=lambda: self._pl_prepa_run(phase), daemon=True).start()
 
-    def _pl_prepa_run(self):
+    def _pl_prepa_run(self, phase="prePA"):
         try:
-            self._pl_prepa_capture_ocs()
+            self._pl_prepa_capture_ocs(phase)
         finally:
             self._pl_dispatch_busy = False
 
@@ -3175,6 +3464,7 @@ class App(tk.Tk):
         if getattr(self, "_pl_dispatch_busy", False):
             messagebox.showinfo("Dispatcher busy",
                                 "A macro is already running via the dispatcher — wait for it to finish."); return
+        self._pl_abort_clear()       # a stale flag must not kill the run we're starting
         self._pl_dispatch_busy = True
         threading.Thread(target=self._pl_pa_run_pipeline, daemon=True).start()
 
@@ -3184,6 +3474,8 @@ class App(tk.Tk):
         single-in-flight _pl_dispatch_busy lock for the whole sequence."""
         import configparser, time, spheroid_pipeline as _pl
         try:
+            if not self._pl_regen_triggers():
+                return
             do_prepa = self._pl_pa_sel_prepa.get() and bool(self._pl_prepa_checked_ocs())
             seq = []
             if self._pl_pa_sel_setup.get():    seq.append(("pa_setup", 4))
@@ -3203,6 +3495,10 @@ class App(tk.Tk):
                 return
             self._pl_log(f"PA pipeline: {[a for a, _ in seq]}")
             for action, aid in seq:
+                if self._pl_abort_requested(wd):
+                    self._pl_log(f"PA pipeline: ABORT requested -- stopping before '{action}'")
+                    self.after(0, lambda: self._pl_pa_status.configure(
+                        text="Pipeline: aborted by operator.", fg=RED)); return
                 done = wd / "cmd_done.ini"
                 try:
                     done.unlink()
@@ -3222,6 +3518,9 @@ class App(tk.Tk):
                                 fallback=cp.get("spheroid", "status", fallback="?"))
                         except Exception:
                             time.sleep(1.0); continue
+                        break
+                    if self._pl_abort_requested(wd):
+                        status = "aborted"
                         break
                     time.sleep(1.0)
                 self._pl_log(f"PA pipeline: '{action}' -> {status or 'timeout'}")
@@ -3385,6 +3684,10 @@ class App(tk.Tk):
         if getattr(self, "_pl_dispatch_busy", False):
             messagebox.showinfo("Dispatcher busy",
                                 "A macro is already running via the dispatcher — wait for it to finish."); return
+        # A leftover abort.ini would make the macro we are about to dispatch bail at
+        # rank 1 having captured nothing. Nothing else clears it on this path, and it
+        # otherwise persists in the run folder indefinitely.
+        self._pl_abort_clear()
         import configparser, spheroid_pipeline as _pl
         cp = configparser.ConfigParser()
         try:

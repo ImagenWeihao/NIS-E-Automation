@@ -35,6 +35,7 @@ int main()
     char numbuf[64];
     char laser_name[64];
     char msg[256];
+    char save_dir[256];
     double zoom, power;
     int laser_line;
 
@@ -117,8 +118,29 @@ int main()
     // 5) Centred zoom-N square: XOffset=YOffset=0 -> field centre = spheroid centre.
     Confocal_SetScanArea(zoom, 0.0, 0.0, 0.0, 1.0);
 
-    // 6) Report; operator then runs step3_zstack_PA in JOBS Explorer.
-    sprintf(msg, "PA setup done: OC '%s', zoom %.0f centred, dichroic OUT, interlock cleared.\nNow run step3_zstack_PA in JOBS Explorer.", "oc,zoom");
+    // 6) Point the ND Acquisition "Save to File" target at this run's pa/ folder, so
+    //    step3_zstack_PA's activation stacks land in work/<run>/pa/ instead of wherever
+    //    a previous session left the path (0715: they went to a prior user's D:\ folder
+    //    and work/0715/pa/ stayed EMPTY -- the delivered PA dose was un-auditable).
+    //    The JOB saves through the ND experiment, so this is the lever that redirects it.
+    //    ND_DefineExperiment's first 5 args are the T/XY/Z/L dimension flags: the PA job
+    //    uses Time (loops), XY (imported multipoint) and Z (stack) -- keep all TRUE so we
+    //    only change the destination, not the experiment shape. Filename = destination
+    //    path, Prefix = per-file name stem.
+    //    NOTE: verify once on the rig that the job's Points/ZStack/Time dimensions are
+    //    unchanged after this runs (Job Execution should still read Points(n/n),
+    //    ZStack(n/n), Time(n/n)) -- and that pa/ actually fills.
+    save_dir[0] = 0;
+    Int_GetKeyString(trigger_path, SEC, "save_dir", save_dir, 256);
+    if( save_dir[0] != 0 )
+    {
+        ND_DefineExperiment(TRUE, TRUE, TRUE, TRUE, TRUE, save_dir, "PA", 0, FALSE, FALSE, FALSE);
+        sprintf(msg, "PA setup: ND save target -> %s", "save_dir");
+        SetCommandText(msg);
+    }
+
+    // 7) Report; operator then runs step3_zstack_PA in JOBS Explorer.
+    sprintf(msg, "PA setup done: OC '%s', zoom %.0f centred, dichroic OUT, interlock cleared.\nND save -> pa/ folder.\nNow run step3_zstack_PA in JOBS Explorer.", "oc,zoom");
     WaitText(0, msg);
     SetCommandText(0);
     return TRUE;
