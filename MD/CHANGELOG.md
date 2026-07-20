@@ -1,5 +1,37 @@
 # CHANGELOG
 
+## v1.13.0 — 2026-07-20
+
+### Features
+
+- **Rank 7 — Initialization card (rig known-good defaults).** New first card in the Step 4
+  panel (above Validation). Editable fields pre-set to safe defaults — confocal zoom (2.0),
+  PA power % (30, clamped to `MAX_PA_ACTIVATION_POWER_PCT`), z_centre/z_half/z_step (reused
+  from Step 3), Dichroic OUT (unchecked = IN), PFS ON, and "Re-point Save-to-File to pipeline
+  nd2_dir" — plus the shared "A1 powered ON" guard. "Initialize Rig" (`_pl_init_rig`) resolves
+  the work_dir the same way `_pl_send_command` does, writes `<work_dir>/init_trigger.ini`
+  (`[init]` section: zoom, power_pct, z_centre, z_half, z_step, dichroic_out, pfs_on, a1_on,
+  save_repoint — booleans as 0/1) via `_atomic_write_crlf`, then dispatches
+  `nis_macro_init_rig.mac` (action 8). Normalizes confocal zoom=2 / dichroic / PFS + the GUI
+  defaults to a known-good baseline before an experiment; detector gains and per-OC re-save
+  are handled rig-side in the macro. New vars `_pl_init_zoom/_power/_dichroic_out/_pfs/
+  _save_repoint`; z-defaults and the A1 guard reuse the existing Step 3 / PA Setup vars.
+- **Rank 9 — "PA done" notification.** The `step3_zstack_PA` JOB is still run manually; a
+  companion macro (`nis_macro_pa_done.mac`, action 9 / the JOB's post-capture hook) writes
+  `<work_dir>/pa_done.ini` when it finishes. New "Watch for PA done" button on the Job3 card
+  (`_pl_watch_pa_done_thread` -> daemon `_pl_watch_pa_done`) polls that flag (~1 h max, 2 s
+  sleep) using the same work_dir resolution. When it appears: a timestamped
+  "PA JOB complete - run After-PA Validation" line is written to the log, a status label turns
+  GREEN, and the flag file is deleted so the next run starts clean.
+- **External JOB launch from the GUI.** Step 1 gains a "Run Job1 (10X mosaic)" button and Step 4
+  gains a "Run Photoactivation (Job3, laser-gated)" card, each with a job-name dropdown
+  enumerated from a configurable NIS-E jobs dir (`_pl_list_jobs`: subdirectory names + file
+  stems, defaults to the two pipeline job names) so the operator can't mistype a JOB name. Both
+  dispatch through `_pl_run_job`, which writes `<work_dir>/job_trigger.ini` (`[job]` project +
+  name) and sends action 10 -> `nis_macro_run_job.mac` (`Jobs_RunJobByName`). Job1 fires
+  immediately; Job3 fires the 850 nm PA laser so it is gated on the "A1 powered ON" confirmation
+  AND an explicit confirm dialog. New vars `_pl_jobs_dir/_job_project/_job1_name/_job3_name`.
+
 ## v1.10.0 — 2026-07-20
 
 ### Features

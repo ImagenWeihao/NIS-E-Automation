@@ -34,7 +34,8 @@ The capture macro never sets zoom — it inherits each OC's baked scan-area zoom
 **Implemented:** `_pl_prepa_checked_ocs` / `_pl_prepa_capture_ocs` / `_pl_prepa_run_thread` / `_pl_prepa_run` now take a `phase` arg (`"prePA"`/`"postPA"`) — the folder prefix, OC checkboxes, locate var, and status labels all key off it. A new **After-PA Validation** card (own `_pl_postpa_oc_890/940/1050` + locate checkboxes) sits under PA Points and runs `_pl_prepa_run_thread("postPA")`, saving each pass to `nd2/postPA_<tag>/`. Positions/Z come from Step 3's checked rows (via item #1's regen). Auto-produces the Before_pa/After_pa split the comparison figures expect.
 Original problem: before AND after both wrote to `prePA_<tag>/`, so this session had to be hand-sorted.
 
-### 6. "Initialization" tab — set rig to known-good defaults  *(2026-07-15)*
+### 6. "Initialization" tab — set rig to known-good defaults — DONE 2026-07-20 (v1.13.0)  *(2026-07-15)*
+**Implemented:** Step-4 "Initialization" card + `_pl_init_rig()` → `init_trigger.ini` → `nis_macro_init_rig.mac` (action 8): sets confocal zoom=2 (`Confocal_SetScanArea`), dichroic (`Stg_PFSInsertExtractDM`, a1_on-gated), PFS (`Stg_SetPFSStatus`), and normalizes GUI defaults (power cap 30, z-defaults, save re-point). Per-OC re-save + detector gains remain rig-side TODO. Original spec below.
 One click at experiment start that sets a dispatcher-run setup macro to normalize the rig, so it never inherits a prior session's state. Surface + default each recurring global (editable):
 - confocal **zoom = 2** for all OC profiles (persistently re-save each OC, or runtime-enforce via item 4)
 - **PA activation power = 30%** (80% burned A02 sph#9)
@@ -61,7 +62,8 @@ One click at experiment start that sets a dispatcher-run setup macro to normaliz
 The Job3 card is note-only. Launch the JOB via `_Jobs_RunJobOrWizardByName("IMAGEN", "step3_zstack_PA")` through the cmd.ini bridge.
 **CRITICAL SAFETY:** step3_zstack_PA fires the 850 nm PA laser — must stay behind an explicit laser-safety gate ("A1 powered ON" + deliberate confirm click, never auto-fire) and confirm the ND multipoint import happened first. Verify the wizard call can *start* a laser-firing job (vs only open the wizard); prove with the laser interlocked first.
 
-### 10. "PA done" completion popup / flag  *(2026-07-09)*
+### 10. "PA done" completion popup / flag — DONE 2026-07-20 (v1.13.0)  *(2026-07-09)*
+**Implemented:** `nis_macro_pa_done.mac` (action 9 / the step3_zstack_PA "Execute Command after Capture" hook) writes `pa_done.ini`; GUI "Watch for PA done" button (`_pl_watch_pa_done`) polls it and surfaces a timestamped "PA JOB complete — run After-PA Validation" in the log. Original spec below.
 `step3_zstack_PA` finishes with no notification — operator watches the progress bar to know when to run after-PA Validation.
 **Fix:** final job step / "Execute Command after Capture" hook runs a macro doing `WaitText("PA complete...")` and writes a `pa_done.ini` flag into work_dir so the GUI surfaces it in the (timestamped) log. Pairs with item 9.
 

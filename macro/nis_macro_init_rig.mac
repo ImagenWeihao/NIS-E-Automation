@@ -1,0 +1,131 @@
+// ============================================================================
+// nis_macro_init_rig.mac -- SpheroidPA: normalize the rig to a known-good state
+//
+// Dispatcher action_id 8. Reads C:/SpheroidPA/session.ini -> work_dir ->
+// init_trigger.ini (written by the GUI Init card) and applies the confidently-
+// doable rig normalization before a run: confocal scan-area zoom, the PFS
+// dichroic mirror in/out, and the Perfect Focus System focus-lock on/off. It
+// does NOT image and does NOT move the stage.
+//
+// init_trigger.ini [init] keys:
+//   zoom         = confocal scan-area zoom (default 2.0)
+//   dichroic_out = 1 -> PFS dichroic OUT (extract), 0 -> dichroic IN (insert)
+//   pfs_on       = 1 -> PFS focus lock ON, 0 -> OFF
+//   a1_on        = 1 -> A1 confirmed powered ON (gates the confocal/dichroic calls)
+//
+// A1-present guard (mirrors pa_setup): Confocal_SetScanArea + the PFS-DM insert/
+// extract CRASH the A1 grabber manager when the A1 is powered OFF, so they run
+// ONLY when a1_on == 1. PFS on/off (Stg_SetPFSStatus) is Ti-side and runs
+// regardless. Clear numbuf before the a1_on read: a missing key leaves the
+// buffer unchanged, which would inherit the prior pfs_on value and falsely pass.
+//
+// Rig-side TODO -- unconfirmed NIS-E fns, deliberately NOT attempted here:
+//   * per-OC re-save (restoring each optical config's saved hardware state)
+//   * detector-gain / HV setting
+// Wire these in once the correct NIS-E calls are verified on the rig.
+//
+// Function provenance (rig-verify these names):
+//   Stg_PFSInsertExtractDM(0)=DM OUT, (1)=DM IN  -- from pa_setup / pa_validate
+//   Stg_SetPFSStatus(1)=PFS ON, (0)=PFS OFF; Stg_IsPFSPresent() -- from
+//   macro_selftest/zstack_pfs_zcentre_10x.mac
+//
+// Rig dialect (verified): single main() only; CRLF + ASCII; Int_GetKeyString +
+// atof for INI values; char[] paths; sprintf args as ONE quoted comma-list of
+// variable names. Does NOT write cmd_done.ini -- the dispatcher does that.
+// ============================================================================
+
+#define SEC "init"
+
+int main()
+{
+    char cfg[256];
+    char work_dir[256];
+    char trigger_path[256];
+    char numbuf[64];
+    char dich_str[16];
+    char pfs_str[16];
+    char msg[256];
+    double zoom, dichroic_out, pfs_on, a1_on;
+
+    strcpy(cfg, "C:/SpheroidPA/session.ini");
+    work_dir[0] = 0;
+    Int_GetKeyString(cfg, "paths", "work_dir", work_dir, 256);
+    if( work_dir[0] == 0 )
+    {
+        WaitText(0, "session.ini has no work_dir.\nRun GUI Step 3 first.");
+        return FALSE;
+    }
+    strcpy(trigger_path, work_dir);
+    strcat(trigger_path, "/init_trigger.ini");
+    if( ExistFile(trigger_path) != TRUE )
+    {
+        WaitText(0, "init_trigger.ini not found in work_dir.\nClick 'Init Rig' in the GUI first.");
+        return FALSE;
+    }
+
+    numbuf[0] = 0;
+    Int_GetKeyString(trigger_path, SEC, "zoom", numbuf, 64);
+    zoom = atof(numbuf);
+    if( zoom < 0.5 )
+        zoom = 2.0;
+
+    numbuf[0] = 0;
+    Int_GetKeyString(trigger_path, SEC, "dichroic_out", numbuf, 64);
+    dichroic_out = atof(numbuf);
+
+    numbuf[0] = 0;
+    Int_GetKeyString(trigger_path, SEC, "pfs_on", numbuf, 64);
+    pfs_on = atof(numbuf);
+
+    // Dichroic OUT is the higher-priority parameter: PFS cannot lock with the
+    // dichroic mirror extracted, so OUT forces the focus lock OFF regardless of
+    // what the trigger requested.
+    if( dichroic_out > 0.5 )
+        pfs_on = 0.0;
+
+    // Clear numbuf first: Int_GetKeyString leaves it UNCHANGED when a1_on is
+    // missing, so without this it inherits the prior pfs_on value and silently
+    // passes the guard (same fix pa_setup carries).
+    numbuf[0] = 0;
+    Int_GetKeyString(trigger_path, SEC, "a1_on", numbuf, 64);
+    a1_on = atof(numbuf);
+
+    // Confocal zoom + dichroic: A1 calls, only when the A1 is confirmed ON.
+    strcpy(dich_str, "skipped");
+    if( a1_on > 0.5 )
+    {
+        SetCommandText("Init: confocal zoom + PFS dichroic...");
+        Confocal_SetScanArea(zoom, 0.0, 0.0, 0.0, 1.0);
+        if( dichroic_out > 0.5 )
+        {
+            Stg_PFSInsertExtractDM(0);
+            strcpy(dich_str, "out");
+        }
+        else
+        {
+            Stg_PFSInsertExtractDM(1);
+            strcpy(dich_str, "in");
+        }
+    }
+
+    // PFS focus lock: Ti-side, safe regardless of the A1. Guard on presence.
+    strcpy(pfs_str, "absent");
+    if( Stg_IsPFSPresent() != 0 )
+    {
+        if( pfs_on > 0.5 )
+        {
+            Stg_SetPFSStatus(1);
+            strcpy(pfs_str, "on");
+        }
+        else
+        {
+            Stg_SetPFSStatus(0);
+            strcpy(pfs_str, "off");
+        }
+    }
+
+    sprintf(msg, "Rig initialized: zoom %.1f, dichroic %s, PFS %s.", "zoom,dich_str,pfs_str");
+    WaitText(0, msg);
+    SetCommandText(0);
+    return TRUE;
+}

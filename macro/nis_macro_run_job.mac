@@ -1,0 +1,91 @@
+// ============================================================================
+// nis_macro_run_job.mac -- SpheroidPA: launch a NIS-E JOB by name
+//
+// Dispatcher action_id 10. Reads C:/SpheroidPA/session.ini -> work_dir ->
+// <work_dir>/job_trigger.ini (written by the GUI) and launches the named JOB via
+// Jobs_RunJobByName. It resolves/validates the name against the project first so a
+// typo aborts cleanly instead of launching nothing (or the wrong job).
+//
+// job_trigger.ini ([job] section):
+//   project = NIS-E project DB name (default "IMAGEN" if the key is empty/missing)
+//   name    = the JOB name, e.g. "Step1_Locate_via_scan" or "step3_zstack_PA"
+//
+// LASER SAFETY: for name == "step3_zstack_PA" the launched JOB fires the 850 nm PA
+// activation laser. The GUI gates that (operator confirms A1 on, dichroic/OC prep
+// via nis_macro_pa_setup, etc.); THIS macro just launches whatever job name it is
+// handed -- it does no gating of its own.
+//
+// Jobs_RunJobByName "requires JOBS Editor" per the NIS-E docs (params: ProjDbName,
+// ProjDbJobName -- "Runs the specified job"). If the JOBS Editor license is missing
+// the documented fallback is _Jobs_RunJobOrWizardByName(project, name); do NOT use
+// it here -- switch to it only after confirming the license state on the rig.
+//
+// Rig dialect (verified, same as nis_macro_pa_setup.mac): single main() only (no
+// user functions/globals); CRLF + ASCII; Int_GetKeyString (buf[0]=0 before EACH
+// read -- a missing key leaves the buffer unchanged); sprintf args as ONE quoted
+// comma-list of variable names. Does NOT write cmd_done.ini -- the dispatcher does
+// that when this runs via action_id 10.
+// ============================================================================
+
+int main()
+{
+    char cfg[256];
+    char work_dir[256];
+    char trigger_path[256];
+    char project[128];
+    char name[128];
+    char msg[256];
+    int64 jobkey;
+    int64 runkeys[8];
+    int nr;
+
+    strcpy(cfg, "C:/SpheroidPA/session.ini");
+    work_dir[0] = 0;
+    Int_GetKeyString(cfg, "paths", "work_dir", work_dir, 256);
+    if( work_dir[0] == 0 )
+    {
+        WaitText(0, "session.ini has no work_dir.\nRun GUI Step 3 first.");
+        return FALSE;
+    }
+
+    strcpy(trigger_path, work_dir);
+    strcat(trigger_path, "/job_trigger.ini");
+    if( ExistFile(trigger_path) != TRUE )
+    {
+        WaitText(0, "job_trigger.ini not found in work_dir.\nLaunch a JOB from the GUI first.");
+        return FALSE;
+    }
+
+    project[0] = 0;
+    Int_GetKeyString(trigger_path, "job", "project", project, 128);
+    if( project[0] == 0 )
+        strcpy(project, "IMAGEN");
+
+    name[0] = 0;
+    Int_GetKeyString(trigger_path, "job", "name", name, 128);
+    if( name[0] == 0 )
+    {
+        WaitText(0, "job_trigger.ini [job] has no 'name'.\nPick a JOB in the GUI dropdown first.");
+        return FALSE;
+    }
+
+    // Resolve/validate: Jobs_GetJobKey returns the run count and fills &jobkey +
+    // runkeys[]. 0 runs AND an invalid (0) jobkey => the name is not in the project.
+    jobkey = 0;
+    nr = Jobs_GetJobKey(project, name, &jobkey, runkeys, 8);
+    if( nr == 0 && jobkey == 0 )
+    {
+        sprintf(msg, "JOB '%s' not found in project '%s'.\nCheck the name in the GUI dropdown.", "name,project");
+        WaitText(0, msg);
+        return FALSE;
+    }
+
+    sprintf(msg, "SpheroidPA run_job: launching JOB '%s'...", "name");
+    SetCommandText(msg);
+    Jobs_RunJobByName(project, name);
+
+    sprintf(msg, "Launched JOB '%s' in project '%s'.", "name,project");
+    WaitText(0, msg);
+    SetCommandText(0);
+    return TRUE;
+}

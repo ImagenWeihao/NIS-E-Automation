@@ -87,7 +87,8 @@ pip install cellpose   # optional, for --backend cellpose
   ("prePA"/"postPA") per card (or add a before/after toggle) so the same code serves both. This also
   auto-produces the Before_pa/After_pa layout the comparison figures already expect, removing the manual
   sorting step.
-- TODO (operator-requested 2026-07-15): add an "Initialization" tab/card in Step 4 that puts the rig into
+- DONE (2026-07-20, v1.13.0; Init card + `_pl_init_rig` -> `nis_macro_init_rig.mac` action 8: zoom=2 / dichroic / PFS,
+  a1_on-gated; per-OC re-save + gains still rig-side): add an "Initialization" tab/card in Step 4 that puts the rig into
   a known-good default state before an experiment, via a dispatcher-run setup macro. Primary job: set the
   confocal scan ZOOM to 2 for ALL OC profiles used by the pipeline (the OC-baked-zoom inconsistency keeps
   biting -- e.g. 0715 the 890nm OC "890nm_Galvo_600nm_NDD2_BT" was baked at zoom 3.3 while 940/1050 were at
@@ -184,7 +185,8 @@ pip install cellpose   # optional, for --backend cellpose
   the ND multipoint import happened first (see the Step-4-Run trigger-regen TODO). Verify the exact
   wizard/job name and that _Jobs_RunJobOrWizardByName can start a JOB that itself fires the laser
   (vs only opening the wizard) before wiring it. Prove on the rig with the laser interlocked first.
-- TODO (operator-requested 2026-07-09): add a "PA done" popup when step3_zstack_PA finishes -- currently
+- DONE (2026-07-20, v1.13.0; `nis_macro_pa_done.mac` action 9 writes `pa_done.ini`, GUI "Watch for PA done" polls it):
+  add a "PA done" popup when step3_zstack_PA finishes -- currently
   the JOB completes with NO notification, so the operator has to watch the Job Execution progress bar to
   know when to run the after-PA Validation. Options: (a) a final job step that runs a command/macro doing
   `WaitText(0, "PA complete for N spheroid(s) -- run after-PA Validation next")`; (b) the JOB's

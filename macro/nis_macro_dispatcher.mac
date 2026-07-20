@@ -10,7 +10,8 @@
 // cmd.ini (written by the GUI, [command] section):
 //   action     = human-readable name (echoed back in cmd_done.ini)
 //   action_id  = 1 autofocus | 2 zstack | 3 zcorrected | 4 pa_setup
-//                5 pa_points | 6 pa_pick | 7 pa_validate
+//                5 pa_points | 6 pa_pick | 7 pa_validate | 8 init_rig | 9 pa_done
+//                10 run_job
 //
 // Paths come at RUNTIME from C:/SpheroidPA/session.ini [paths]:
 //   work_dir  = where cmd.ini / cmd_done.ini live (the GUI's current run dir)
@@ -89,6 +90,9 @@ int main()
                 if( aid == 5.0 ) strcpy(macro_name, "nis_macro_pa_points.mac");
                 if( aid == 6.0 ) strcpy(macro_name, "nis_macro_pa_pick_current.mac");
                 if( aid == 7.0 ) strcpy(macro_name, "nis_macro_pa_validate.mac");
+                if( aid == 8.0 ) strcpy(macro_name, "nis_macro_init_rig.mac");
+                if( aid == 9.0 ) strcpy(macro_name, "nis_macro_pa_done.mac");
+                if( aid == 10.0 ) strcpy(macro_name, "nis_macro_run_job.mac");
 
                 // Consume the command first so it runs exactly once.
                 DeleteFile(cmd_path);

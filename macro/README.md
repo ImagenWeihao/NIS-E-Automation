@@ -29,6 +29,9 @@ Two ways to run a macro in NIS-E:
 | `nis_macro_pa_points.mac` | 5 | Step 4 – PA batch points | Builds an ND multipoint (`ND_AppendMultipointPoint`) from EVERY currently-active `af_trigger_NN.ini` (i.e. Step 3's checked-row selection, whatever ranks it contains), for the job's "Import Point Set from ND." | `af_trigger_01..96` → ND multipoint |
 | `nis_macro_pa_pick_current.mac` | 6 | Step 4 – PA single pick | Grabs the current live-centred stage X/Y/Z (`StgGetPos`) → `af_trigger_01` (`sph_pick_01`) + a 1-point multipoint, for manual single-spheroid PA. | (live stage) → `af_trigger_01.ini` |
 | `nis_macro_pa_validate.mac` | 7 | Step 4 – PA validation | Post-PA 1050 nm re-image: select the viz OC (**laser-safety guard** — aborts if the active laser is still ~850 nm), Z-stack per spheroid to confirm the faded square. | `af_trigger_01..N` + `pa_trigger.ini` → `<id>_pacheck.nd2` |
+| `nis_macro_init_rig.mac` | 8 | Init – rig normalization | Sets confocal zoom (default 2), the PFS dichroic in/out (`Stg_PFSInsertExtractDM`), and the PFS focus lock on/off (`Stg_SetPFSStatus`) to a known-good state before a run. Confocal/dichroic calls are gated by `a1_on`. Per-OC re-save + detector-gain remain rig-side TODO. | `init_trigger.ini` → (rig state) |
+| `nis_macro_pa_done.mac` | 9 | PA-complete signal | Writes `pa_done.ini` when the `step3_zstack_PA` JOB finishes — set as that JOB's "Execute Command after Capture" hook; the GUI polls `pa_done.ini` to offer After-PA Validation. | (JOB finish) → `pa_done.ini` |
+| `nis_macro_run_job.mac` | 10 | Launch a JOB by name | Launch a NIS-E JOB by name (`Jobs_RunJobByName`), e.g. Step1 mosaic or step3_zstack_PA; reads `job_trigger.ini`. | `job_trigger.ini` → (JOB launched) |
 
 ## File-flag bridge
 

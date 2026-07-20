@@ -1,0 +1,36 @@
+// ============================================================================
+// nis_macro_pa_done.mac -- SpheroidPA: signal that the PA JOB has finished
+//
+// Dispatcher action_id 9. ALSO the intended "Execute Command after Capture" hook
+// for the step3_zstack_PA JOB: set that JOB field to run this macro so it fires
+// the instant the photoactivation job completes. Writes work_dir/pa_done.ini so
+// the GUI -- which polls for that file -- knows PA is done and can offer the
+// After-PA Validation step.
+//
+// Rig dialect (verified): single main() only; CRLF + ASCII; Int_GetKeyString +
+// atof for INI values; char[] paths. Does NOT write cmd_done.ini -- the
+// dispatcher does that when this runs via action_id 9.
+// ============================================================================
+
+int main()
+{
+    char cfg[256];
+    char work_dir[256];
+    char done_path[256];
+
+    strcpy(cfg, "C:/SpheroidPA/session.ini");
+    work_dir[0] = 0;
+    Int_GetKeyString(cfg, "paths", "work_dir", work_dir, 256);
+    if( work_dir[0] == 0 )
+    {
+        WaitText(0, "session.ini has no work_dir.\nRun GUI Step 3 first.");
+        return FALSE;
+    }
+
+    strcpy(done_path, work_dir);
+    strcat(done_path, "/pa_done.ini");
+    Int_SetKeyString(done_path, "pa", "done", "1");
+
+    WaitText(0, "PA complete -- run After-PA Validation.");
+    return TRUE;
+}
