@@ -45,6 +45,7 @@ int main()
     char dich_str[16];
     char pfs_str[16];
     char msg[256];
+    char mbuf[512];
     double zoom, dichroic_out, pfs_on, a1_on;
 
     strcpy(cfg, "C:/SpheroidPA/session.ini");
@@ -52,14 +53,18 @@ int main()
     Int_GetKeyString(cfg, "paths", "work_dir", work_dir, 256);
     if( work_dir[0] == 0 )
     {
-        WaitText(0, "session.ini has no work_dir.\nRun GUI Step 3 first.");
+        SetCommandText("session.ini has no work_dir.\nRun GUI Step 3 first.");
+        WideCharToMultiByte(mbuf, "session.ini has no work_dir.\nRun GUI Step 3 first.");
+        WriteFile("C:/SpheroidPA/debug/macro_msg.txt", mbuf, strlen("session.ini has no work_dir.\nRun GUI Step 3 first."));
         return FALSE;
     }
     strcpy(trigger_path, work_dir);
     strcat(trigger_path, "/init_trigger.ini");
     if( ExistFile(trigger_path) != TRUE )
     {
-        WaitText(0, "init_trigger.ini not found in work_dir.\nClick 'Init Rig' in the GUI first.");
+        SetCommandText("init_trigger.ini not found in work_dir.\nClick 'Init Rig' in the GUI first.");
+        WideCharToMultiByte(mbuf, "init_trigger.ini not found in work_dir.\nClick 'Init Rig' in the GUI first.");
+        WriteFile("C:/SpheroidPA/debug/macro_msg.txt", mbuf, strlen("init_trigger.ini not found in work_dir.\nClick 'Init Rig' in the GUI first."));
         return FALSE;
     }
 
@@ -125,7 +130,9 @@ int main()
     }
 
     sprintf(msg, "Rig initialized: zoom %.1f, dichroic %s, PFS %s.", "zoom,dich_str,pfs_str");
-    WaitText(0, msg);
+    SetCommandText(msg);
+    WideCharToMultiByte(mbuf, msg);
+    WriteFile("C:/SpheroidPA/debug/macro_msg.txt", mbuf, strlen(msg));
     SetCommandText(0);
     return TRUE;
 }

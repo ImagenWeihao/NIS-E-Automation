@@ -1,0 +1,41 @@
+// ============================================================================
+// diag_nosemove.mac -- validate the nosepiece move+settle logic with a SINGLE
+// Stg_SetNosepiecePosition (index 1 = 'Plan Apo 20x', the wanted objective),
+// poll Get until it lands, and report rc / landed index / settle_polls.
+//
+// SAFETY: issues Set exactly ONCE and does NOT restore/second-move. Back-to-back
+// Stg_SetNosepiecePosition calls (e.g. move then immediately move-back) HANG the
+// Ti turret driver with no popup -- discovered 2026-07-27 when the original two-move
+// version wedged the dispatcher. Never chain Set calls. Running this leaves the
+// turret on index 1 (the correct 20x), which is where captures want it anyway.
+//
+// Run via dispatcher: cmd.ini action_id=20, diag=nosemove.
+//
+// Rig dialect: single main(); CRLF + ASCII; sprintf args ONE quoted comma-list;
+// wide strings -> WideCharToMultiByte before WriteFile.
+// ============================================================================
+
+int main()
+{
+    char msg[512];
+    char mb[512];
+    int orig, rc, cur, tries, tgt;
+
+    orig = Stg_GetNosepiecePosition();
+    tgt = 1;
+
+    rc = Stg_SetNosepiecePosition(tgt);
+    cur = Stg_GetNosepiecePosition();
+    tries = 0;
+    while( cur != tgt && tries < 20 )
+    {
+        Wait(0.25);
+        cur = Stg_GetNosepiecePosition();
+        tries = tries + 1;
+    }
+
+    sprintf(msg, "Nosepiece single-move test\nstart INDEX = %d\nSet(1) [Plan Apo 20x] : rc=%d  landed=%d  settle_polls=%d\n", "orig,rc,cur,tries");
+    WideCharToMultiByte(mb, msg);
+    WriteFile("C:/SpheroidPA/debug/nosemove.txt", mb, strlen(msg));
+    return TRUE;
+}

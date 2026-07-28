@@ -35,6 +35,9 @@ int main()
     char project[128];
     char name[128];
     char msg[256];
+    char json_path[256];
+    char json[4000];
+    char mbuf[512];
     int64 jobkey;
     int64 runkeys[8];
     int nr;
@@ -44,7 +47,9 @@ int main()
     Int_GetKeyString(cfg, "paths", "work_dir", work_dir, 256);
     if( work_dir[0] == 0 )
     {
-        WaitText(0, "session.ini has no work_dir.\nRun GUI Step 3 first.");
+        SetCommandText("session.ini has no work_dir.\nRun GUI Step 3 first.");
+        WideCharToMultiByte(mbuf, "session.ini has no work_dir.\nRun GUI Step 3 first.");
+        WriteFile("C:/SpheroidPA/debug/macro_msg.txt", mbuf, strlen("session.ini has no work_dir.\nRun GUI Step 3 first."));
         return FALSE;
     }
 
@@ -52,7 +57,9 @@ int main()
     strcat(trigger_path, "/job_trigger.ini");
     if( ExistFile(trigger_path) != TRUE )
     {
-        WaitText(0, "job_trigger.ini not found in work_dir.\nLaunch a JOB from the GUI first.");
+        SetCommandText("job_trigger.ini not found in work_dir.\nLaunch a JOB from the GUI first.");
+        WideCharToMultiByte(mbuf, "job_trigger.ini not found in work_dir.\nLaunch a JOB from the GUI first.");
+        WriteFile("C:/SpheroidPA/debug/macro_msg.txt", mbuf, strlen("job_trigger.ini not found in work_dir.\nLaunch a JOB from the GUI first."));
         return FALSE;
     }
 
@@ -65,27 +72,65 @@ int main()
     Int_GetKeyString(trigger_path, "job", "name", name, 128);
     if( name[0] == 0 )
     {
-        WaitText(0, "job_trigger.ini [job] has no 'name'.\nPick a JOB in the GUI dropdown first.");
+        SetCommandText("job_trigger.ini [job] has no 'name'.\nPick a JOB in the GUI dropdown first.");
+        WideCharToMultiByte(mbuf, "job_trigger.ini [job] has no 'name'.\nPick a JOB in the GUI dropdown first.");
+        WriteFile("C:/SpheroidPA/debug/macro_msg.txt", mbuf, strlen("job_trigger.ini [job] has no 'name'.\nPick a JOB in the GUI dropdown first."));
         return FALSE;
     }
 
-    // Resolve/validate: Jobs_GetJobKey returns the run count and fills &jobkey +
-    // runkeys[]. 0 runs AND an invalid (0) jobkey => the name is not in the project.
+    // Resolve the jobkey (needed ONLY for the parameterized path below). Jobs_GetJobKey
+    // returns the number of RUNS and, in practice, only fills jobkey once the job has RUN.
+    // A valid but NEVER-RUN job -- e.g. step3_zstack_PA, which IS defined in jobsdb.dat under
+    // IMAGEN but has no output folder yet (verified 2026-07-27: present in the IMAGEN .dat,
+    // just never run) -- returns nr=0, jobkey=0. That is NOT "job missing": Jobs_RunJobByName
+    // launches it by name regardless of run history. So do NOT abort on jobkey==0 here -- that
+    // was the false "JOB not found in project" that blocked step3_zstack_PA. (A genuinely
+    // wrong name simply no-ops in Jobs_RunJobByName, which for a PA-laser job is the safe
+    // failure.) Only the parameterized path truly needs a resolved jobkey; it is guarded there.
     jobkey = 0;
     nr = Jobs_GetJobKey(project, name, &jobkey, runkeys, 8);
-    if( nr == 0 && jobkey == 0 )
+
+    // If the GUI wrote job_params.json (a Unicode/UTF-16 JSON of "<Task>.<Param>": value
+    // pairs -- e.g. a WellSelection well, or an OC/folder override), run the job WITH those
+    // parameters via Jobs_RunJobInitParam, which SETS the params AND launches the run.
+    // ReadFile + Jobs_RunJobInitParam is the documented pattern (Example 18); the file MUST
+    // be Unicode (the GUI writes UTF-16). No params file -> plain Jobs_RunJobByName
+    // (unchanged). The file is consumed (deleted) so a stale one can't parameterise the
+    // next launch.
+    strcpy(json_path, work_dir);
+    strcat(json_path, "/job_params.json");
+    if( ExistFile(json_path) == TRUE )
     {
-        sprintf(msg, "JOB '%s' not found in project '%s'.\nCheck the name in the GUI dropdown.", "name,project");
-        WaitText(0, msg);
-        return FALSE;
+        // Parameterized launch needs a resolved jobkey. Jobs_GetJobKey only fills it once the
+        // job has RUN (see note above), so a never-run job can't be parameterized on its first
+        // launch. Tell the operator to run it once, rather than silently launching unparameterized.
+        if( jobkey == 0 )
+        {
+            sprintf(msg, "Can't set JOB parameters for '%s' in '%s': jobkey unresolved.\nJobs_GetJobKey needs a PRIOR run -- run '%s' once in JOBS Explorer, then the GUI can launch it with the well parameter.", "name,project,name");
+            SetCommandText(msg);
+            WideCharToMultiByte(mbuf, msg);
+            WriteFile("C:/SpheroidPA/debug/macro_msg.txt", mbuf, strlen(msg));
+            return FALSE;
+        }
+        json[0] = 0;
+        ReadFile(json_path, json, 4000);
+        sprintf(msg, "SpheroidPA run_job: launching JOB '%s' with parameters...", "name");
+        SetCommandText(msg);
+        Jobs_RunJobInitParam(jobkey, json);
+        DeleteFile(json_path);
+        sprintf(msg, "Launched JOB '%s' (project '%s') with GUI parameters.", "name,project");
+    }
+    else
+    {
+        sprintf(msg, "SpheroidPA run_job: launching JOB '%s'...", "name");
+        SetCommandText(msg);
+        Jobs_RunJobByName(project, name);
+        sprintf(msg, "Launched JOB '%s' in project '%s'.", "name,project");
     }
 
-    sprintf(msg, "SpheroidPA run_job: launching JOB '%s'...", "name");
+    // No modal WaitText on success -- it blocks the automated GUI->dispatcher workflow
+    // (the operator had to click Continue after every launch). Report in the command bar
+    // instead so the run is non-blocking. Errors above still WaitText (they need attention).
     SetCommandText(msg);
-    Jobs_RunJobByName(project, name);
-
-    sprintf(msg, "Launched JOB '%s' in project '%s'.", "name,project");
-    WaitText(0, msg);
-    SetCommandText(0);
     return TRUE;
 }

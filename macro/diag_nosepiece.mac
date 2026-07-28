@@ -1,0 +1,44 @@
+// ============================================================================
+// diag_nosepiece.mac -- READ-ONLY: enumerate every nosepiece position and the
+// objective assigned to it (name + code), plus the current position INDEX, and
+// write the map to C:/SpheroidPA/debug/nosepiece.txt. Does NOT move the turret
+// (Stg_GetNosepieceObjectiveName takes the position as an argument), so it's safe
+// to run any time. Lets us pick the exact INDEX for the wanted 20x deterministically.
+//
+// Run via the dispatcher: cmd.ini [command] action_id=20, diag=nosepiece  (the
+// dispatcher builds "diag_nosepiece.mac"). Or Macro > Run directly.
+//
+// Rig dialect: single main() only; CRLF + ASCII; sprintf args as ONE quoted
+// comma-list of variable names; strings are wide -> WideCharToMultiByte before
+// WriteFile(path, mb, strlen(wide)).
+// ============================================================================
+
+int main()
+{
+    char msg[2048];
+    char mb[2048];
+    char line[256];
+    char name[128];
+    char code[64];
+    int cnt, i, cur;
+
+    cur = Stg_GetNosepiecePosition();
+    cnt = Stg_GetNosepiecePositions();
+    sprintf(msg, "Nosepiece map  (current INDEX=%d, total positions=%d)\n\n", "cur,cnt");
+
+    i = 0;
+    while( i < cnt )
+    {
+        name[0] = 0;
+        code[0] = 0;
+        Stg_GetNosepieceObjectiveName(i, name, 128);
+        Stg_GetNosepieceObjectiveCode(i, code, 64);
+        sprintf(line, "index %d : '%s'   [code %s]\n", "i,name,code");
+        strcat(msg, line);
+        i = i + 1;
+    }
+
+    WideCharToMultiByte(mb, msg);
+    WriteFile("C:/SpheroidPA/debug/nosepiece.txt", mb, strlen(msg));
+    return TRUE;
+}

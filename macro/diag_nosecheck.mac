@@ -1,0 +1,37 @@
+// ============================================================================
+// diag_nosecheck.mac -- validate a SINGLE Stg_SetNosepiecePosition move.
+// Fresh filename (never loaded) so NIS-E can't run a cached copy. Moves to index 1
+// (Plan Apo 20x), polls read-only Get until it lands, reports rc / landed /
+// settle_polls. ONE Set only -- never chain (back-to-back Set hangs the turret,
+// see [[nise-nosepiece-turret-hang]]). Writes C:/SpheroidPA/debug/nosecheck.txt.
+//
+// Run via dispatcher: cmd.ini action_id=20, diag=nosecheck.
+//
+// Rig dialect: single main(); CRLF + ASCII; sprintf args ONE quoted comma-list;
+// wide strings -> WideCharToMultiByte before WriteFile.
+// ============================================================================
+
+int main()
+{
+    char msg[512];
+    char mb[512];
+    int orig, rc, cur, tries, tgt;
+
+    orig = Stg_GetNosepiecePosition();
+    tgt = 1;
+
+    rc = Stg_SetNosepiecePosition(tgt);
+    cur = Stg_GetNosepiecePosition();
+    tries = 0;
+    while( cur != tgt && tries < 20 )
+    {
+        Wait(0.25);
+        cur = Stg_GetNosepiecePosition();
+        tries = tries + 1;
+    }
+
+    sprintf(msg, "Nosepiece single-move check\nstart INDEX = %d\nSet(1) [Plan Apo 20x] : rc=%d  landed=%d  settle_polls=%d\n", "orig,rc,cur,tries");
+    WideCharToMultiByte(mb, msg);
+    WriteFile("C:/SpheroidPA/debug/nosecheck.txt", mb, strlen(msg));
+    return TRUE;
+}

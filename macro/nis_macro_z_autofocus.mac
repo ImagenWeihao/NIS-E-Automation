@@ -43,6 +43,7 @@ int main()
     char nn[8];
     char status[32];
     char status_msg[256];
+    char mbuf[512];
     double stage_x, stage_y, z_centre;
     double idle_elapsed;
     int rank, move_rc, af_result, handled_any, ok_flag;
@@ -55,7 +56,9 @@ int main()
     Int_GetKeyString(cfg, "paths", "work_dir", work_dir, 256);
     if( work_dir[0] == 0 )
     {
-        WaitText(0, "session.ini has no work_dir.\nRun GUI Step 3 (Trigger) first, then re-run this macro.");
+        SetCommandText("session.ini has no work_dir.\nRun GUI Step 3 (Trigger) first, then re-run this macro.");
+        WideCharToMultiByte(mbuf, "session.ini has no work_dir.\nRun GUI Step 3 (Trigger) first, then re-run this macro.");
+        WriteFile("C:/SpheroidPA/debug/macro_msg.txt", mbuf, strlen("session.ini has no work_dir.\nRun GUI Step 3 (Trigger) first, then re-run this macro."));
         return FALSE;
     }
     idle_elapsed = 0.0;

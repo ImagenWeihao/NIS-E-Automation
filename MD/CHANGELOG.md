@@ -1,5 +1,55 @@
 # CHANGELOG
 
+## v1.14.0 — 2026-07-27
+
+### Features
+
+- **Non-blocking macro logging (no more modal pop-ups).** Every worker macro
+  (`nis_macro_z_autofocus`, `capture_zstack`, `capture_zcorrected`, `pa_setup`,
+  `pa_points`, `pa_pick_current`, `pa_validate`, `pa_done`, `init_rig`, `run_job`)
+  was converted from modal `WaitText`/message-box output to `SetCommandText` plus a
+  best-effort debug log file (`C:/SpheroidPA/debug/macro_msg.txt`), so an unattended
+  GUI→dispatcher run never stalls waiting for someone to click a dialog on the rig.
+  Errors/exceptions now use escape/cancel + the log instead of a blocking box. The
+  GUI likewise persists its log to `C:/SpheroidPA/logs/spheroidpa_gui.log`.
+- **PA point + well parameterization at launch.** The GUI writes
+  `<work_dir>/job_params.json` from the first `af_trigger` — `PredefinedPoints`
+  `...Position.Stage.x`/`.Stage.y` (native stage µm) + `...Position.z`, and
+  `WellSelection.Selection.Wells[0].Name` — and `nis_macro_run_job` launches
+  `step3_zstack_PA` via `Jobs_RunJobInitParam` (sets params AND runs). **Requires
+  deleting the `NDToPointSet` ("Import points from ND acquisition") task from the
+  JOB**, which otherwise overwrites the parameterized point with the last ND
+  acquisition's position (root cause of the "PA fired at the previous point" bug).
+- **Headless diagnostic harness.** Dispatcher `action_id 20` (`run_diag`) runs
+  `diag_<key>.mac` (prefix-locked so only `diag_*.mac` can run) which writes
+  `C:/SpheroidPA/debug/<name>.txt` for read-back without loading a macro on the rig.
+  New `diag_listoc` (OC enumeration), `diag_nosepiece`, `diag_movepoint` (stage-move
+  point validation), plus `list_lasers`, `list_shutters`, `nosepiece_report`.
+- **1050 nm OC rewired JL2 → WC.** Step 2 + Step 4 now use
+  `1050nm_Galvo_561nm_NDD2_WC` ("close mechanical shutter during experiment"
+  unchecked), avoiding the per-frame shutter open/close that hangs the A1 grabber.
+
+### Fixes
+
+- **Nosepiece selects the correct objective.** Capture now drives the intended
+  Plan Apo 20x (turret slot 2, not the ELWD 20x), using a single
+  `Stg_SetNosepiecePosition` + read-only poll-verify — back-to-back `Set` calls hang
+  the Ti turret with no pop-up.
+- **`run_job` no longer rejects never-run JOBs.** `Jobs_GetJobKey` only fills the
+  jobkey after a prior run, so a defined-but-never-run job (`step3_zstack_PA`) was
+  falsely reported "not found in project". Removed the reject; it launches by name.
+- **Abort key corrected in docs/warnings:** it is **Ctrl+Pause / Ctrl+Break**, not
+  Esc — Esc does not abort a running NIS-E macro.
+
+### Notes / known issues
+
+- Automated 2P capture (`ND_RunZSeriesExp` on a 1050 A1 OC) can still hang/crash the
+  (patched) grabber; recover with a full NIS-E restart — never abort-and-continue.
+- The 0727/2 Well_12 pre/post-PA check (figures under git-ignored `work/`) shows a
+  pan-channel **structural** change (same ring in the non-photoactivatable ch640
+  channels; mBeRFP control has the largest ×5.2 change), **not** PAsfGFP-specific
+  activation — documented in lab notebook NISE-014.
+
 ## v1.13.0 — 2026-07-20
 
 ### Features

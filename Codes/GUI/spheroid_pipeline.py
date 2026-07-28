@@ -321,7 +321,8 @@ def trigger_autofocus_all(records: list[SpheroidRecord], work_dir: Path,
                           z_centre: float | None = None,
                           z_half: float | None = None,
                           z_step: float | None = None,
-                          oc: str | None = None) -> int:
+                          oc: str | None = None,
+                          close_after: str | None = None) -> int:
     """Write per-rank trigger files for the NIS-E capture daemon. Returns count written.
 
     z_centre/z_half/z_step (the Z-stack geometry from GUI Step 3) are written into
@@ -332,6 +333,10 @@ def trigger_autofocus_all(records: list[SpheroidRecord], work_dir: Path,
     it before this spheroid's capture (GUI Step 4 Pre-PA card -- a baseline viz
     pass at a specific wavelength, e.g. 890/940/1050 nm, before firing PA). Omitted
     -> the macro captures on the current ND channels/exposure, unchanged.
+
+    close_after (optional, "1"/"0"): when "1" the capture macro closes each ND2 right
+    after ImageSaveAs (CloseCurrentDocument(2)) so a multi-spheroid pass doesn't pile
+    up windows in NIS-E; "0" keeps them open. Omitted -> key not written (macro default).
 
     Two safeguards (added after a capture run imaged duplicated coordinates — the
     daemon had consumed a folder holding a mix of fresh and stale triggers from
@@ -381,6 +386,8 @@ def trigger_autofocus_all(records: list[SpheroidRecord], work_dir: Path,
             lines.append(f"z_step={z_step}")
         if oc:
             lines.append(f"oc={oc}")
+        if close_after is not None:
+            lines.append(f"close_after={close_after}")
         _atomic_write_crlf(p, lines)
         n += 1
 

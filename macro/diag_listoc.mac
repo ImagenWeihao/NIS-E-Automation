@@ -1,0 +1,37 @@
+// ============================================================================
+// diag_listoc.mac -- READ-ONLY: dump every optical-configuration name (index:name)
+// to C:/SpheroidPA/debug/oclist.txt, so we can confirm the EXACT name of a new OC
+// (e.g. 1050nm_Galvo_561nm_NDD2_WC) and that the old one still exists, before
+// rewiring SelectOptConf targets. Does not change any hardware.
+//
+// Run via dispatcher: cmd.ini action_id=20, diag=listoc.
+//
+// Rig dialect: single main(); CRLF + ASCII; sprintf args ONE quoted comma-list;
+// wide strings -> WideCharToMultiByte before WriteFile.
+// ============================================================================
+
+int main()
+{
+    char msg[8192];
+    char mb[8192];
+    char line[192];
+    char name[128];
+    int cnt, i;
+
+    cnt = GetOptConfCount();
+    sprintf(msg, "Optical configurations: %d\n\n", "cnt");
+
+    i = 0;
+    while( i < cnt )
+    {
+        name[0] = 0;
+        GetOptConfName(i, name, 128);
+        sprintf(line, "%d: %s\n", "i,name");
+        strcat(msg, line);
+        i = i + 1;
+    }
+
+    WideCharToMultiByte(mb, msg);
+    WriteFile("C:/SpheroidPA/debug/oclist.txt", mb, strlen(msg));
+    return TRUE;
+}

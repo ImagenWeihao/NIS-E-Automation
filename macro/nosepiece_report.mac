@@ -1,0 +1,26 @@
+// ============================================================================
+// nosepiece_report.mac -- report the CURRENT nosepiece position INDEX (the exact
+// value Stg_SetNosepiecePosition expects) plus the total number of positions.
+// Get and Set share the same index convention, so: select the DESIRED objective
+// physically, run this, and the INDEX shown is the number to hard-code in the GUI.
+//
+// Use: select the 2nd slot (the wanted 20x, green) in the Ti Full Pad -> run this
+// -> note INDEX. Then select the 3rd slot (the wrong 20x) -> run again -> note
+// INDEX. Tell Claude both numbers so the correct 20x is wired in.
+//
+// Rig dialect: single main() only; CRLF + ASCII; sprintf args as ONE quoted
+// comma-list of variable names. Does NOT move the nosepiece -- read-only.
+// ============================================================================
+
+int main()
+{
+    char msg[256];
+    int pos, cnt;
+
+    pos = Stg_GetNosepiecePosition();
+    cnt = Stg_GetNosepiecePositions();
+
+    sprintf(msg, "Nosepiece current position INDEX = %d\nTotal positions = %d\n\nSelect the DESIRED 20x slot, run this, note the INDEX.", "pos,cnt");
+    WaitText(0, msg);
+    return TRUE;
+}

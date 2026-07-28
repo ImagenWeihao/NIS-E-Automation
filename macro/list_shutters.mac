@@ -1,0 +1,35 @@
+// ============================================================================
+// list_shutters.mac -- one-shot: print every shutter's NAME + current STATE, so
+// we can wire Stg_SetShutterStateEx(<name>, <open>) into the capture macro to
+// auto-open the A1 MP / IR laser shutter. Run once (Macro > Run), read the popup,
+// tell Claude the IR/MP laser shutter's exact name and its state number.
+//
+// Rig dialect: single main() only; CRLF + ASCII; sprintf args as ONE quoted
+// comma-list of variable names; strcat to accumulate (do NOT sprintf into a
+// buffer that is also an argument).
+// ============================================================================
+
+int main()
+{
+    char name[128];
+    char msg[1024];
+    char line[192];
+    int n, i, st;
+
+    n = Stg_GetShutterCount();
+    sprintf(msg, "Shutter count: %d\n\n(state: note which value = CLOSED now -- the IR shutter is closed)\n\n", "n");
+
+    i = 0;
+    while( i < n )
+    {
+        name[0] = 0;
+        Stg_GetShutterName(i, name, 128);
+        st = Stg_GetShutterStateEx(name);
+        sprintf(line, "[%d]  '%s'   state=%d\n", "i,name,st");
+        strcat(msg, line);
+        i = i + 1;
+    }
+
+    WaitText(0, msg);
+    return TRUE;
+}

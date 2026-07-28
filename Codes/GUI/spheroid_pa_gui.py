@@ -1,5 +1,5 @@
 """
-spheroid_pa_gui.py  v1.13.0
+spheroid_pa_gui.py  v1.14.0
 NIS-E Spheroid PA Pipeline — ND2-native I/O
 
 Pipeline:  Job A ND2 → [parse metadata + detect spheroids]
@@ -126,7 +126,7 @@ PA_ACTIVATION_OC_LIST = [
 # conversion); 1050 nm = spheroid-depth / faded-square re-imaging (SLIM031, pa_validate
 # default). 950/970/980/1000 nm are Galvo/Resonance alternates for the same channels.
 PA_VIZ_OC_LIST = [
-    "1050nm_Galvo_561nm_NDD2_JL2",       # default: spheroid depth / PA-validate re-image
+    "1050nm_Galvo_561nm_NDD2_WC",       # default: spheroid depth / PA-validate re-image
     "1050nm_Reso_561nm_NDD2_JL1",
     "1000nm_Galvo_561nm_NDD2_JL1",
     "1000nm_Reso_561nm_NDD2_JL2",
@@ -602,7 +602,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("SpheroidPA  v1.13.0 — NIS-E Spheroid PA Pipeline")
+        self.title("SpheroidPA  v1.14.0 — NIS-E Spheroid PA Pipeline")
         self.geometry("1680x880")
         self.minsize(1000, 660)
         self.configure(bg=BG)
@@ -634,7 +634,7 @@ class App(tk.Tk):
     def _build_ui(self):
         hdr = tk.Frame(self, bg=BG2)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="  SpheroidPA  v1.13.0",
+        tk.Label(hdr, text="  SpheroidPA  v1.14.0",
                  bg=BG2, fg=MAUVE, font=("Segoe UI", 13, "bold"), pady=8
                  ).pack(side="left")
         tk.Label(hdr, text="Screen → Anchor → Autofocus → Capture  ",
@@ -975,7 +975,7 @@ class App(tk.Tk):
                       color, "#1e1e2e", side="left")
         # Global abort: drops a one-shot abort.ini every long-running macro polls, and
         # releases the GUI dispatcher lock. Macros stop at their next loop boundary --
-        # an in-flight Z-series/Capture still needs Esc in NIS-E for a hard stop.
+        # an in-flight Z-series/Capture still needs Ctrl+Pause in NIS-E for a hard stop.
         self._btn(row, "Abort All", self._pl_abort_all, RED, "#1e1e2e", side="right")
         self._pl_dispatch_status = tk.Label(disp, text="Dispatcher: idle.", bg=BG, fg=SUBTEXT,
                                             font=("Segoe UI", 9), anchor="w", justify="left",
@@ -1368,7 +1368,19 @@ class App(tk.Tk):
         self.after(0, lambda: self._phase_lbls[key].configure(bg=bg, fg=fg))
 
     def _log_line(self, text: str, tag: str = "info"):
-        stamped = f"[{datetime.now().strftime('%H:%M:%S')}] {text}"
+        now = datetime.now()
+        stamped = f"[{now.strftime('%H:%M:%S')}] {text}"
+        # Persist every log line to a tailing file (full date + tag) so errors can be
+        # read headless -- without the GUI -- for troubleshooting. Best-effort: logging
+        # must never break the UI, so any failure here is swallowed. Tail it at
+        # C:\SpheroidPA\logs\spheroidpa_gui.log.
+        try:
+            _lp = Path(r"C:\SpheroidPA\logs\spheroidpa_gui.log")
+            _lp.parent.mkdir(parents=True, exist_ok=True)
+            with _lp.open("a", encoding="utf-8") as _f:
+                _f.write(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] [{tag}] {text}\n")
+        except Exception:
+            pass
         def _ins():
             self._log.configure(state="normal")
             self._log.insert("end", stamped + "\n", tag)
@@ -1402,6 +1414,11 @@ class App(tk.Tk):
         self._pl_recenter_n  = tk.StringVar(value="all")
         self._pl_recentered  = {}
         self._pl_locate_only = tk.BooleanVar(value=False)
+        # Step 3 z-stack captures auto-close in NIS-E by default (mirrors Step 4's
+        # _pl_keep_open_in_nise): close_after=1 -> the capture macro CloseCurrentDocument(2)
+        # after ImageSaveAs, so a multi-spheroid pass doesn't pile up windows. Tick the
+        # Step-3 checkbox to KEEP them open (to eyeball each capture).
+        self._pl_s3_keep_open = tk.BooleanVar(value=False)
         self._pl_z_rank      = tk.StringVar()
         self._pl_z_nd2_path  = tk.StringVar()
         self._pl_trigger_dir = tk.StringVar(value=r"S:\Images\Weihao\NISeA\NIS-E-Automation\work")
@@ -1426,12 +1443,12 @@ class App(tk.Tk):
         self._pl_pa_interlock = tk.BooleanVar(value=True)  # True = remove A1 interlock first
         self._pl_pa_a1on     = tk.BooleanVar(value=False)  # True = A1 confirmed powered ON; pa_setup/pa_validate guard aborts if unchecked
         # NIS-E JOB launch (Jobs_RunJobByName via nis_macro_run_job.mac, action 10).
-        # jobs_dir points at NIS-E's jobs/project folder so the name dropdowns list the
-        # actual JOB names on the rig instead of a free-typed string the operator can mistype.
-        self._pl_jobs_dir    = tk.StringVar(value="")
         self._pl_job_project = tk.StringVar(value="IMAGEN")
-        self._pl_job1_name   = tk.StringVar(value="Step1_Locate_via_scan")
-        self._pl_job3_name   = tk.StringVar(value="step3_zstack_PA")
+        # Neither job has a StringVar / dropdown any more: each Run button passes a
+        # LITERAL job name -- Job1 "Step1_Locate_via_scan" (imaging only, ungated) and
+        # Job3 "step3_zstack_PA" (gated, fires the 850 nm laser). Hard-wiring the names
+        # means no control can be pointed at an unintended job. project stays a var
+        # (IMAGEN, editable) because both jobs are launched under the same project.
         # Per-macro "include in Run Pipeline" selections.
         self._pl_pa_sel_setup    = tk.BooleanVar(value=True)
         self._pl_pa_sel_points   = tk.BooleanVar(value=True)
@@ -1546,7 +1563,6 @@ class App(tk.Tk):
                              bg=BG, fg=MAUVE, font=("Segoe UI", 9, "bold"),
                              bd=1, relief="groove")
         job1.pack(fill="x", pady=(0, 4))
-        self._nd2_file_row(job1, "10X mosaic ND2:", self._pl_mosaic_path)
         row_w = tk.Frame(job1, bg=BG); row_w.pack(fill="x", pady=(2, 4), padx=4)
         tk.Label(row_w, text="Well ID (working well -- shared by all jobs):", width=34, anchor="w",
                  bg=BG, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left")
@@ -1554,26 +1570,29 @@ class App(tk.Tk):
                  bg=SURFACE, fg=TEXT, insertbackground=TEXT, relief="flat",
                  font=("Segoe UI", 9)).pack(side="left")
 
-        # NIS-E JOB launch: point at the rig's jobs/project folder so the name dropdown
-        # lists real JOB names (Jobs_RunJobByName), then fire Job1 (the 10X mosaic) directly.
+        # NIS-E JOB launch: Job1 (the 10X mosaic) is fired directly via Jobs_RunJobByName
+        # under the project below. The job NAME is hard-wired -- no dropdown / jobs-dir
+        # picker (see row_j2). Project stays editable (defaults IMAGEN).
         row_j = tk.Frame(job1, bg=BG); row_j.pack(fill="x", pady=(2, 2), padx=4)
-        tk.Label(row_j, text="NIS-E Jobs dir:", bg=BG, fg=TEXT2,
-                 font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
-        tk.Entry(row_j, textvariable=self._pl_jobs_dir, width=28, bg=SURFACE, fg=TEXT,
-                 insertbackground=TEXT, relief="flat", font=("Segoe UI", 9)).pack(side="left")
-        self._btn(row_j, "Browse",
-                  lambda: self._pl_browse_dir(self._pl_jobs_dir), SURFACE2, TEXT, side="left")
         tk.Label(row_j, text="Project:", bg=BG, fg=TEXT2,
-                 font=("Segoe UI", 9)).pack(side="left", padx=(6, 3))
+                 font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
         tk.Entry(row_j, textvariable=self._pl_job_project, width=10, bg=SURFACE, fg=TEXT,
                  insertbackground=TEXT, relief="flat", font=("Segoe UI", 9)).pack(side="left")
         row_j2 = tk.Frame(job1, bg=BG); row_j2.pack(fill="x", pady=(0, 4), padx=4)
+        # Job1 is HARD-WIRED to the imaging-only mosaic JOB. There is deliberately NO
+        # dropdown here: a selectable list could offer step3_zstack_PA, whose JOB fires
+        # the 850 nm PA activation laser -- and this Run button is UNGATED (gated=False).
+        # We pass the literal job name (not a mutable StringVar) so nothing on this
+        # control can ever be pointed at the PA job / fire the laser. Laser firing is
+        # confined to the Step 4 Job3 card, which is gated (A1 confirm + confirm dialog).
         self._btn(row_j2, "Run Job1 (10X mosaic)",
-                  lambda: self._pl_run_job(self._pl_job1_name, False), BLUE, "#1e1e2e", side="left")
-        _cb_job1 = ttk.Combobox(row_j2, textvariable=self._pl_job1_name, width=26,
-                                font=("Segoe UI", 9), values=self._pl_list_jobs())
-        _cb_job1.configure(postcommand=lambda cb=_cb_job1: cb.configure(values=self._pl_list_jobs()))
-        _cb_job1.pack(side="left", padx=(6, 0))
+                  self._pl_run_job1_at_well, BLUE, "#1e1e2e", side="left")
+        tk.Label(row_j2, text="Fires: Step1_Locate_via_scan  (fixed -- imaging only, no laser)",
+                 bg=BG, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(8, 0))
+        # 10X mosaic ND2 -- moved here, directly UNDER Run Job1. After the job runs it
+        # auto-fills with the mosaic just saved (newest folder under the Step1 jobs dir);
+        # or Browse to a file manually.
+        self._nd2_file_row(job1, "10X mosaic ND2:", self._pl_mosaic_path)
 
         row_d = tk.Frame(f1, bg=BG); row_d.pack(fill="x", pady=2)
         tk.Label(row_d, text="Output directory:", width=26, anchor="w",
@@ -1673,10 +1692,21 @@ class App(tk.Tk):
                      font=("Segoe UI", 9)).pack(side="left", padx=(0, 16))
 
         btn3a = tk.Frame(f_s3, bg=BG); btn3a.pack(fill="x", padx=12, pady=(4, 0))
-        self._btn(btn3a, "Trigger NIS-E Z-Stack Captures",
-                  self._pl_trigger_autofocus, BLUE, "#1e1e2e")
+        # Step 3 has exactly TWO actions: Capture (here) and Recenter (btn3b). "Capture"
+        # regenerates triggers from the checked rows, pins the 1050 nm depth OC, and runs
+        # the z-stack macro -- a full stack by default (ND_RunZSeriesExp, the confocal
+        # path), or a single plane if "Locate only" is ticked. Captures land in nd2/.
+        self._btn(btn3a, "Capture", self._pl_capture_thread, GREEN, "#1e1e2e")
         tk.Checkbutton(btn3a, text="Locate only (1 plane)", variable=self._pl_locate_only,
                        bg=BG, fg=TEXT2, selectcolor=SURFACE, activebackground=BG,
+                       activeforeground=TEXT, font=("Segoe UI", 8)).pack(side="left", padx=(8, 0))
+        tk.Checkbutton(btn3a, text="Keep captures open in NIS-E", variable=self._pl_s3_keep_open,
+                       bg=BG, fg=TEXT2, selectcolor=SURFACE, activebackground=BG,
+                       activeforeground=TEXT, font=("Segoe UI", 8)).pack(side="left", padx=(8, 0))
+        # Capture is 2-photon (1050 confocal): it removes the A1 interlock, so it requires
+        # this confirmation (shared with Step 4's PA cards -- same _pl_pa_a1on var).
+        tk.Checkbutton(btn3a, text="A1 powered ON (2P)", variable=self._pl_pa_a1on,
+                       bg=BG, fg="#f7768e", selectcolor=SURFACE, activebackground=BG,
                        activeforeground=TEXT, font=("Segoe UI", 8)).pack(side="left", padx=(8, 0))
         self._pl_af_status_lbl = tk.Label(f_s3, text="Autofocus: not started.",
                                            bg=BG, fg=SUBTEXT, font=("Segoe UI", 9), anchor="w",
@@ -1684,8 +1714,11 @@ class App(tk.Tk):
         self._pl_af_status_lbl.pack(fill="x", padx=12)
 
         btn3b = tk.Frame(f_s3, bg=BG); btn3b.pack(fill="x", padx=12, pady=(6, 0))
-        self._btn(btn3b, "Refresh Status", self._pl_poll_af_thread, SURFACE2, TEXT)
-        self._btn(btn3b, "Re-center from captures", self._pl_recenter_thread, MAUVE, "#1e1e2e")
+        # Recenter: reads the previous 1050 nm captures, re-centers each spheroid, and
+        # AUTO-UPDATES the triggers with the corrected coords (then Capture again to
+        # verify, or proceed to Step 4). '# to use' limits how many ranks; flip X/Y set
+        # the camera-pixel -> stage-um axis sign.
+        self._btn(btn3b, "Recenter", self._pl_recenter_thread, MAUVE, "#1e1e2e")
         tk.Label(btn3b, text="  # to use:", bg=BG, fg=TEXT2, font=("Segoe UI", 8)).pack(side="left")
         tk.Entry(btn3b, textvariable=self._pl_recenter_n, width=5, bg=SURFACE, fg=TEXT,
                  insertbackground=TEXT, relief="flat", font=("Segoe UI", 9)).pack(side="left", padx=(2, 6))
@@ -2038,15 +2071,22 @@ class App(tk.Tk):
                              "click; run PA Points first so the ND multipoint is loaded.",
                  bg=BG2, fg=RED, font=("Segoe UI", 8), justify="left",
                  wraplength=460).pack(anchor="w")
+        # Job3 is HARD-WIRED to step3_zstack_PA (the ONLY job this card may launch).
+        # There is deliberately NO dropdown: a selectable list could point this GATED,
+        # laser-firing button at a different/unintended job. Passing the literal name
+        # (not a mutable StringVar) guarantees this button launches exactly
+        # step3_zstack_PA. Firing stays gated -- _pl_run_job(..., True) requires
+        # 'A1 powered ON' + an explicit confirm click before the 850 nm laser fires.
         rj = tk.Frame(bodyj, bg=BG2); rj.pack(fill="x", pady=(2, 0))
-        tk.Label(rj, text="Job:", bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
-        _cb_job3 = ttk.Combobox(rj, textvariable=self._pl_job3_name, width=26,
-                                font=("Segoe UI", 9), values=self._pl_list_jobs())
-        _cb_job3.configure(postcommand=lambda cb=_cb_job3: cb.configure(values=self._pl_list_jobs()))
-        _cb_job3.pack(side="left")
+        tk.Label(rj, text="Job: step3_zstack_PA  (fixed -- the only PA job this button fires)",
+                 bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
+        # The PA job's point + well are now set DIRECTLY at launch (Jobs_RunJobInitParam) from the
+        # current spheroid trigger -- see _pl_run_pa_job / _pl_pa_point_params -- so it fires on the
+        # EXACT supplied point, not the job's stale in-job PredefinedPoint. Well comes from the
+        # shared _pl_well_id (Step 1's, editable on this card).
         rjb = tk.Frame(bodyj, bg=BG2); rjb.pack(fill="x", pady=(4, 0))
         self._btn(rjb, "Run Photoactivation",
-                  lambda: self._pl_run_job(self._pl_job3_name, True), RED, "#1e1e2e", side="left")
+                  self._pl_run_pa_job, RED, "#1e1e2e", side="left")
 
         # Card 3 -- After-PA Validation (dispatcher z-stack action, id 2): the SAME
         # multi-channel capture as the before-PA Validation card, but its passes save
@@ -2966,10 +3006,10 @@ class App(tk.Tk):
     def _pl_trigger_autofocus(self):
         import spheroid_pipeline as _pl
         if not self._pl_records:
-            messagebox.showwarning("No records", "Run Steps 1-2 first."); return
+            messagebox.showwarning("No records", "Run Steps 1-2 first."); return False
         out = self._pl_out_dir.get().strip()
         if not out:
-            messagebox.showwarning("No output dir", "Set output directory in Step 1."); return
+            messagebox.showwarning("No output dir", "Set output directory in Step 1."); return False
         # Writing a fresh trigger set means the operator is starting new work -- drop any
         # leftover abort flag so the macro they run next isn't killed at rank 1.
         self._pl_abort_clear()
@@ -2979,7 +3019,7 @@ class App(tk.Tk):
             z_step   = float(self._pl_z_step.get())
         except ValueError:
             messagebox.showerror(
-                "Bad value", "Middle plane Z, Z half-range, and Z step must be numbers."); return
+                "Bad value", "Middle plane Z, Z half-range, and Z step must be numbers."); return False
         locate = self._pl_locate_only.get()
         if locate:
             z_half = 0.0          # single plane at z_centre -- fast locate pass for re-centering
@@ -2988,10 +3028,13 @@ class App(tk.Tk):
         if not recs:
             messagebox.showwarning(
                 "None selected",
-                "Every spheroid is unchecked in the Use column — nothing to trigger."); return
+                "Every spheroid is unchecked in the Use column — nothing to trigger."); return False
+        # Auto-close each capture in NIS-E by default (Step 3 checkbox); "0" keeps open.
+        close_after = "0" if self._pl_s3_keep_open.get() else "1"
         try:
             n = _pl.trigger_autofocus_all(recs, Path(out) / "autofocus",
-                                          z_centre=z_centre, z_half=z_half, z_step=z_step)
+                                          z_centre=z_centre, z_half=z_half, z_step=z_step,
+                                          close_after=close_after)
         except Exception as e:
             # Same defect class as _pl_regen_triggers: this mkdirs, writes N trigger
             # files and session.ini. An OSError (share drop / read-only run folder) or
@@ -3002,13 +3045,14 @@ class App(tk.Tk):
             self.after(0, lambda m=str(e): self._pl_af_status_lbl.configure(
                 text=f"Trigger write FAILED — {m}", fg=RED))
             self._pl_log(f"Step 3: trigger write FAILED ({type(e).__name__}): {e}")
-            return
+            return False
         mode = "1-plane LOCATE" if locate else f"Z-stack +/-{z_half:g}/{z_step:g} um"
         skipped = len(self._pl_records) - len(recs)
         extra = f" ({skipped} unchecked skipped)" if skipped else ""
         self._pl_log(f"Step 3: {n} {mode} triggers written to autofocus/ (centre={z_centre}){extra}")
         self.after(0, lambda m=mode, e=extra: self._pl_af_status_lbl.configure(
-            text=f"{n} {m} triggers written{e}. Run nis_macro_capture_zstack.mac in NIS-E.", fg=YELLOW))
+            text=f"{n} {m} triggers written{e}.", fg=YELLOW))
+        return True
 
     def _pl_poll_af_thread(self):
         threading.Thread(target=self._pl_poll_af, daemon=True).start()
@@ -3036,8 +3080,30 @@ class App(tk.Tk):
         self._pl_update_step_dots()
 
     def _pl_recenter_thread(self):
+        # Recenter now REWRITES the on-disk trigger set (auto-retrigger), so it must NOT
+        # run while a Capture's macro is mid-sweep -- clearing/rewriting the triggers the
+        # running daemon is consuming would corrupt the batch (remaining ranks captured
+        # oc-less / wrong-channel, good captures overwritten). Hold the same single-in-
+        # flight lock Capture uses, and release it in _pl_recenter_run's finally.
+        if getattr(self, "_pl_dispatch_busy", False):
+            messagebox.showinfo("Dispatcher busy",
+                                "A capture is running via the dispatcher — wait for it to finish before re-centering."); return
+        self._pl_dispatch_busy = True
         self._pl_af_status_lbl.configure(text="Re-alignment in process …", fg=YELLOW)
-        threading.Thread(target=self._pl_recenter, daemon=True).start()
+        try:
+            threading.Thread(target=self._pl_recenter_run, daemon=True).start()
+        except Exception as e:
+            # Same guard as _pl_capture_thread: if the worker never starts, its finally
+            # (the only clearer) never runs -- release the lock so the GUI isn't wedged.
+            self._pl_dispatch_busy = False
+            self._pl_log(f"Recenter: failed to start worker thread: {e}")
+            self._pl_af_status_lbl.configure(text="Recenter: could not start (see log).", fg=RED)
+
+    def _pl_recenter_run(self):
+        try:
+            self._pl_recenter()
+        finally:
+            self._pl_dispatch_busy = False
 
     def _pl_recenter(self):
         import spheroid_pipeline as _pl
@@ -3110,12 +3176,197 @@ class App(tk.Tk):
         self.after(0, self._pl_refresh_dashboard)
         deltas = "   ".join(f"#{rank} Δ({dx:+.0f},{dy:+.0f})" for rank, dcol, drow, dx, dy in res)
         warn = f"   ⚠ {len(skipped)} SKIPPED (not corrected): {[r for r, _ in skipped]}" if skipped else ""
-        self.after(0, lambda n=len(res), d=deltas, w=warn: self._pl_af_status_lbl.configure(
-            text=(f"Re-aligned {n} from captures (Δum):  {d}.   Re-Trigger + re-run the macro "
-                  f"(toggle flip X/Y if more off-center).{w}"),
-            fg=(YELLOW if warn else GREEN)))
+        # Auto-update the on-disk triggers with the corrected coords so the operator
+        # doesn't have to click a separate Trigger: recenter_from_captures already nudged
+        # verified_x/y in-place, so regen writes the corrected positions (honoring Locate-
+        # only). The next Capture then re-images at the corrected centres.
+        # _pl_regen_triggers returns True BOTH when it wrote triggers AND when it SKIPPED
+        # (no Output dir -> kept existing on-disk triggers). Distinguish them: without an
+        # Output dir the correction lives only in memory and is NOT persisted, so don't
+        # claim it was written.
+        out_set = bool(self._pl_out_dir.get().strip())
+        retrig = self._pl_regen_triggers()
+        persisted = retrig and out_set
+        failed = not retrig
+        if persisted:
+            self._pl_log("Re-center: triggers updated with corrected coordinates.")
+            upd = "  Triggers updated -- click Capture to re-image."
+        elif retrig and not out_set:
+            self._pl_log("Re-center: correction is IN MEMORY only -- no Output dir set, triggers NOT written.")
+            upd = "  Correction in MEMORY only -- set Step-1 Output dir + Capture to persist it."
+        else:
+            # Genuine regen failure (bad Step-3 Z values / write error). _pl_regen_triggers
+            # routes its detailed reason to the Step-4 label, so log a Step-3 pointer here too.
+            self._pl_log("Re-center: trigger update FAILED (bad Step-3 Z values or write error) -- correction NOT persisted.")
+            upd = "  Trigger update FAILED (see log) -- correction NOT persisted."
+        self.after(0, lambda n=len(res), d=deltas, w=warn, u=upd, ok=persisted, bad=failed: self._pl_af_status_lbl.configure(
+            text=(f"Re-aligned {n} from captures (Δum):  {d}.{u}"
+                  f"  (toggle flip X/Y if more off-center).{w}"),
+            fg=(RED if bad else (GREEN if (ok and not warn) else YELLOW))))
         self._pl_log(f"Re-center: adjusted {len(res)} spheroids from their captures"
                      + (f"; {len(skipped)} SKIPPED (see above)." if skipped else "."))
+
+    def _pl_capture_thread(self):
+        """Step 3 "Capture": write triggers from the checked rows on the MAIN thread
+        (honoring Locate-only + Keep-open; _pl_trigger_autofocus shows modal dialogs on
+        failure, so it must not run off-thread), then on a worker thread inject the 1050 nm
+        depth OC and run the z-stack macro (action 2). Full stack by default
+        (ND_RunZSeriesExp, the confocal path); a single plane only if Locate-only is ticked.
+        Captures land in the plain nd2/ dir that 'Recenter' reads."""
+        if getattr(self, "_pl_dispatch_busy", False):
+            messagebox.showinfo("Dispatcher busy",
+                                "A macro is already running via the dispatcher — wait for it to finish."); return
+        # The 1050 nm Capture is 2-PHOTON: the macro removes the A1 interlock and selects a
+        # confocal/2P OC. Both crash the grabber if the A1 is OFF, and without the interlock
+        # cleared + NIS-E in 2-Photon mode the frame comes off the widefield camera (a DIA
+        # capture, not the 1050 confocal). Require the A1-on confirmation, like Step 4.
+        if not self._pl_pa_a1on.get():
+            messagebox.showwarning(
+                "A1 not confirmed",
+                "The 1050 nm Capture is 2-photon: it removes the A1 interlock and needs the "
+                "A1/2P powered ON.\n\nTick 'A1 powered ON (2P)' first, and make sure NIS-E is "
+                "switched to the 2-Photon acquisition mode (not Flash 4 + BF)."); return
+        if not self._pl_trigger_autofocus():
+            return   # nothing selected / bad value / write failed -- dialog already shown
+        self._pl_abort_clear()          # a stale flag must not kill the run we're starting
+        self._pl_dispatch_busy = True
+        self.after(0, lambda: self._pl_af_status_lbl.configure(
+            text="Capture: 1050 OC + z-stack starting…", fg=YELLOW))
+        try:
+            threading.Thread(target=self._pl_capture_1050, daemon=True).start()
+        except Exception as e:
+            # If the worker never starts, its finally (the only clearer) never runs --
+            # release the lock here so the GUI isn't left wedged.
+            self._pl_dispatch_busy = False
+            self._pl_log(f"Capture: failed to start worker thread: {e}")
+            self.after(0, lambda: self._pl_af_status_lbl.configure(
+                text="Capture: could not start (see log).", fg=RED))
+
+    def _pl_capture_1050(self):
+        """Worker: inject the 1050 nm depth OC (the SAME OC Step 4's Validation uses --
+        see _pl_prepa_checked_ocs) into the triggers _pl_trigger_autofocus just wrote, then
+        dispatch the z-stack macro (action 2). Preserves the z geometry the triggers carry,
+        so a full stack (Locate-only OFF) runs ND_RunZSeriesExp -- the confocal path that
+        actually images the 1050 channel; the single-plane path (Locate-only ON) now also
+        images the OC's channel via the macro's 1-plane-ND-series fix. Captures land in the
+        plain nd2/ dir 'Recenter' reads. Guarded trigger restore + busy release in finally
+        (models _pl_prepa_capture_ocs)."""
+        import configparser, time, spheroid_pipeline as _pl
+        oc_name, tag = "1050nm_Galvo_561nm_NDD2_WC", "1050nm_depth"   # == _pl_prepa_checked_ocs 1050
+        light_path = "2-Photon"   # NIS-E light path for the A1/2P acquisition (macro SelectLightPath)
+        nosepiece_20x = 1         # 20X nosepiece POSITION for the macro's Stg_SetNosepiecePosition (0-based,
+                                  # same as the nd2 NosPosition: 10X=0, 20X=1 -- confirmed from the 10X mosaic
+                                  # AND a 20X capture). The earlier "10X" result was the WRONG function name
+                                  # (NosepiecePosition, not callable -> "Cannot Evaluate"), not an index issue.
+        wd = None
+        triggers = []
+        status = None
+        try:
+            # work_dir was just synced by _pl_trigger_autofocus -> trigger_autofocus_all.
+            cp = configparser.ConfigParser()
+            try:
+                if _pl.SESSION_INI.exists():
+                    cp.read(_pl.SESSION_INI)
+            except Exception:
+                pass
+            work = cp.get("paths", "work_dir", fallback="").strip() or self._pl_trigger_dir.get().strip()
+            if not work:
+                o = self._pl_out_dir.get().strip()
+                work = str(Path(o) / "autofocus") if o else ""
+            if not work:
+                self.after(0, lambda: self._pl_af_status_lbl.configure(
+                    text="Capture: no work dir -- set the Output dir in Step 1.", fg=RED)); return
+            wd = Path(work)
+            for p in sorted(wd.glob(f"{_pl.AF_TRIGGER_PREFIX}*.ini")):
+                d = _pl.parse_ini(p.read_text(encoding="utf-8"))
+                if {"rank", "stage_x", "stage_y"} <= d.keys():
+                    triggers.append(d)
+            if not triggers:
+                self.after(0, lambda: self._pl_af_status_lbl.configure(
+                    text="Capture: no af_trigger_*.ini were written.", fg=RED)); return
+            # Inject the 1050 OC into each trigger, PRESERVING the z geometry + close_after
+            # _pl_trigger_autofocus already wrote (a full stack stays a full stack; a
+            # Locate-only single plane stays single).
+            for d in triggers:
+                lines = ["[spheroid]", f"rank={d['rank']}",
+                         f"spheroid_id={d.get('spheroid_id', '')}",
+                         f"stage_x={d['stage_x']}", f"stage_y={d['stage_y']}"]
+                for k in ("z_centre", "z_half", "z_step", "close_after"):
+                    if k in d:
+                        lines.append(f"{k}={d[k]}")
+                lines.append(f"oc={oc_name}")
+                # 2-photon prep (macro does these ONCE, before the first SelectOptConf, gated on
+                # a1_on): switch the light path to 2-Photon (SelectOptConf alone leaves the camera
+                # on Flash 4 + BF -> a DIA capture) and clear the A1 interlock so the 2P scanner
+                # can image. a1_on was confirmed in _pl_capture_thread; mirrors pa_setup. Step-4
+                # validation writes NONE of these, so it is unchanged.
+                lines.append(f"light_path={light_path}")
+                if nosepiece_20x > 0:
+                    lines.append(f"nosepiece_pos={nosepiece_20x}")   # switch to 20X before imaging
+                lines.append("a1_on=1")
+                lines.append("remove_interlock=1")
+                _pl._atomic_write_crlf(wd / f"af_trigger_{int(d['rank']):02d}.ini", lines)
+            # Dispatch the z-stack once (the macro loops all triggers). We deliberately do
+            # NOT redirect session.ini nd2_dir: the captures land in the plain nd2/ dir the
+            # trigger write set, which is where 'Recenter' looks for *_zstack.nd2.
+            self.after(0, lambda n=len(triggers): self._pl_af_status_lbl.configure(
+                text=f"Capture: {tag} for {n} spheroid(s)…", fg=YELLOW))
+            self._pl_log(f"Capture: dispatched 1050 z-stack ({oc_name}) for {len(triggers)} spheroid(s)")
+            done = wd / "cmd_done.ini"
+            try:
+                done.unlink()
+            except FileNotFoundError:
+                pass
+            _pl._atomic_write_crlf(wd / "cmd.ini",
+                                   ["[command]", f"action=zstack_{tag}", "action_id=2"])
+            status = None
+            for _ in range(1800):
+                if done.exists():
+                    cp2 = configparser.ConfigParser()
+                    try:
+                        cp2.read(done)
+                        status = cp2.get("command", "status",
+                                         fallback=cp2.get("spheroid", "status", fallback="?"))
+                    except Exception:
+                        time.sleep(1.0); continue
+                    break
+                if self._pl_abort_requested(wd):
+                    status = "aborted"; break
+                time.sleep(1.0)
+            self._pl_log(f"Capture: 1050 z-stack -> {status or 'timeout'}")
+            if status != "ok":
+                msg = (f"Capture: 1050 z-stack -> {status}" if status
+                       else "Capture: timed out (is nis_macro_dispatcher.mac running?)")
+                self.after(0, lambda m=msg: self._pl_af_status_lbl.configure(text=m, fg=RED)); return
+            self.after(0, lambda: self._pl_af_status_lbl.configure(
+                text="Capture: 1050 stacks captured -- click 'Recenter'.", fg=GREEN))
+            self.after(0, self._pl_poll_af_thread)   # refresh the table/dashboard from af_done
+        except Exception as e:
+            self._pl_log(f"Capture: FAILED ({type(e).__name__}): {e}")
+            self.after(0, lambda m=str(e): self._pl_af_status_lbl.configure(
+                text=f"Capture: FAILED -- {m}", fg=RED))
+        finally:
+            # Restore the plain (oc-less) triggers the macro consumed after each capture,
+            # so 'Recenter' / PA Points don't find an empty autofocus/ folder. Re-persists
+            # the SAME coords already written -- no staleness.
+            #
+            # ONLY when the macro actually REPORTED (status set): on a poll timeout (status
+            # stays None) the daemon may still be mid-sweep, and rewriting its triggers
+            # oc-less now would corrupt the remaining ranks (same class as the Recenter
+            # race). status is set on ok/aborted, None on timeout / an early exception.
+            try:
+                if wd is not None and triggers and status is not None:
+                    for d in triggers:
+                        lines = ["[spheroid]", f"rank={d['rank']}",
+                                 f"spheroid_id={d.get('spheroid_id', '')}",
+                                 f"stage_x={d['stage_x']}", f"stage_y={d['stage_y']}"]
+                        for k in ("z_centre", "z_half", "z_step"):
+                            if k in d:
+                                lines.append(f"{k}={d[k]}")
+                        _pl._atomic_write_crlf(wd / f"af_trigger_{int(d['rank']):02d}.ini", lines)
+            except Exception as e:
+                self._pl_log(f"Capture: WARNING - could not restore triggers: {e}")
+            self._pl_dispatch_busy = False
 
     # ── Step 4 handlers ───────────────────────────────────────────────────────
 
@@ -3332,7 +3583,7 @@ class App(tk.Tk):
 
         Note: a macro already inside a blocking NIS-E call (mid ND Z-series, mid
         Capture) can only honor this at its NEXT loop iteration -- a true immediate
-        hard-stop still requires Esc in NIS-E. Say so plainly rather than implying
+        hard-stop still requires Ctrl+Pause in NIS-E. Say so plainly rather than implying
         the button kills the scanner mid-frame."""
         import spheroid_pipeline as _pl
         if not getattr(self, "_pl_dispatch_busy", False):
@@ -3362,7 +3613,7 @@ class App(tk.Tk):
             "Abort requested",
             "Abort flag written.\n\nRunning macros stop at their next loop step (per-spheroid / "
             "per-pass boundary).\n\nA macro already inside a Z-series or Capture cannot be "
-            "interrupted from here — press Esc in NIS-E for an immediate hard stop.")
+            "interrupted from here — press Ctrl+Pause in NIS-E for an immediate hard stop.")
 
     def _pl_pa_run_macro(self, action, action_id):
         if getattr(self, "_pl_dispatch_busy", False):
@@ -3395,7 +3646,7 @@ class App(tk.Tk):
         if v940.get():
             ocs.append(("940nm_Galvo_488nm_NDD2_JL", "940nm_PAsfGFP"))
         if v1050.get():
-            ocs.append(("1050nm_Galvo_561nm_NDD2_JL2", "1050nm_depth"))
+            ocs.append(("1050nm_Galvo_561nm_NDD2_WC", "1050nm_depth"))
         return ocs
 
     def _pl_prepa_capture_ocs(self, phase="prePA"):
@@ -3718,8 +3969,9 @@ class App(tk.Tk):
             self._pl_log("WARNING: no reference .bin set — generated bins will be flagged "
                          "'Incompatible Z Correction and Camera' by NIS-E. Browse a rig export.")
         # Fall back to the Step-3 Middle plane Z / half / step when a record has no
-        # recorded z_centre (e.g. Refresh Status wasn't run) -- the spheroids are all
-        # captured centred on that plane, so it IS the correct bin z-centre.
+        # recorded z_centre (e.g. no capture has recorded one yet -- Capture auto-refreshes
+        # it) -- the spheroids are all captured centred on that plane, so it IS the correct
+        # bin z-centre.
         try: gui_z = float(self._pl_z_centre.get())
         except Exception: gui_z = 0.0
         try: gui_h = float(self._pl_z_half.get())
@@ -3734,7 +3986,7 @@ class App(tk.Tk):
                 if not r.z_step_um: r.z_step_um = gui_s
             if r.z_centre_um == 0.0:
                 self._pl_log(f"Rank {r.rank}: skipping bin — Z not recorded "
-                             "(set Step-3 Middle plane Z or run Refresh Status)"); continue
+                             "(set Step-3 Middle plane Z, or Capture to record it)"); continue
             try:
                 _pl.generate_bin(r, P0, L_um, ch_field, bin_dir, reference_bin=ref_bin)
                 n_ok += 1
@@ -3813,30 +4065,175 @@ class App(tk.Tk):
 
     # ── _btn grid-mode overload ────────────────────────────────────────────────
 
-    def _pl_list_jobs(self) -> list:
-        """Enumerate JOB names from the configured NIS-E jobs dir: immediate subdirectory
-        names + file stems found in it, sorted and de-duplicated. Falls back to the two
-        pipeline defaults if the dir is unset/missing or on any error."""
-        defaults = ["Step1_Locate_via_scan", "step3_zstack_PA"]
-        try:
-            d = self._pl_jobs_dir.get().strip()
-            if not d:
-                return defaults
-            p = Path(d)
-            if not p.is_dir():
-                return defaults
-            names = set()
-            for entry in p.iterdir():
-                names.add(entry.name if entry.is_dir() else entry.stem)
-            return sorted(names)
-        except Exception:
-            return defaults
+    # The WellSelection task's JSON parameter key for Jobs_RunJobInitParam is UNDOCUMENTED.
+    # Discover it ONCE on the rig with the NIS-E Debug task (insert it after the "Select Wells"
+    # task in Step1_Locate_via_scan, pick the selection parameter, run with a known well, read
+    # the printed "<Task>.<Param>" key + the value FORMAT it shows), then set both below.
+    #   WELL_PARAM_KEY -- the JSON key. The Debug task shows the read path as
+    #     "Job.WellSelection.Selection.Wells[0].Name"; the InitParam JSON key drops the "Job."
+    #     prefix (doc keys like "OCSel.OptConf" have none). So we set Wells[0].Name -- the
+    #     first (and only) selected well's name.
+    #   _pl_well_param_value() -- the value is just the well name (e.g. "B02").
+    # If setting Name alone does not MOVE the scan (task also keys off Index/Position), the
+    # selection is too structured for InitParam and we pivot to the point-set approach.
+    # Empty key -> the job launches WITHOUT the well (plain Jobs_RunJobByName) -- safe no-op.
+    WELL_PARAM_KEY = "WellSelection.Selection.Wells[0].Name"      # Step1_Locate_via_scan (confirmed)
+    # step3_zstack_PA (PA) IS parameterized too: its in-job PredefinedPoints REUSES THE LAST
+    # point unless the "Import from ND" task is manually re-triggered in the editor -> the 850 nm
+    # laser could fire on a STALE spot (observed 2026-07-27: nd2 landed 65 um off the supplied
+    # spheroid; the in-job point was even seen at -50 mm). So we set the point (and well) DIRECTLY
+    # at launch via Jobs_RunJobInitParam. Keys confirmed via the job's Debug task (drop the "Job."
+    # prefix, per Example 18/19). X/Y are native stage um (Position.Stage.x/y); Z is um (Position.z,
+    # a sibling of Stage -- not Stage.z). Single point (Positions[0]) for now.
+    PA_POINT_X_KEY = "PredefinedPoints.Positions.Positions[0].Position.Stage.x"
+    PA_POINT_Y_KEY = "PredefinedPoints.Positions.Positions[0].Position.Stage.y"
+    PA_POINT_Z_KEY = "PredefinedPoints.Positions.Positions[0].Position.z"
 
-    def _pl_run_job(self, name_var, gated):
-        """Launch a NIS-E JOB by name via Jobs_RunJobByName (nis_macro_run_job.mac,
-        action 10). Resolves work_dir like _pl_send_command, writes job_trigger.ini there,
+    def _pl_well_param_value(self, well):
+        """Format the GUI well id into the value WellSelection Wells[0].Name expects. The plate
+        names wells WITHOUT a leading zero (the Debug task showed 'B1', not 'B01'), so normalize
+        e.g. 'B02' -> 'B2', 'a01' -> 'A1'. Unrecognised formats pass through unchanged."""
+        import re
+        m = re.match(r"^\s*([A-Za-z]+)\s*0*(\d+)\s*$", well)
+        return f"{m.group(1).upper()}{int(m.group(2))}" if m else well
+
+    def _pl_well_params(self, key, tag):
+        """Build {key: value} from the SHARED _pl_well_id (Step 1's working well, also editable
+        on the Step 4 PA card -- same StringVar, so Step 4 defaults to Step 1's well and, if
+        Step 1 was skipped, uses whatever is typed in Step 4). None when no well or no key."""
+        well = self._pl_well_id.get().strip()
+        if well and key:
+            return {key: self._pl_well_param_value(well)}
+        if well and not key:
+            self._pl_log(f"{tag}: Well ID '{well}' set but the well-parameter key is not "
+                         f"configured yet (run this job's Debug-task probe) -- launching WITHOUT it.")
+        return None
+
+    def _pl_pa_point_params(self):
+        """Build the JOB parameters that set step3_zstack_PA's PredefinedPoint[0] (and well) to
+        the CURRENT spheroid, so the 850 nm PA fires on the exact supplied point instead of the
+        job's stale in-job point. Reads coords from the current af_trigger_*.ini (the checked
+        spheroids, written by _pl_regen_triggers). SINGLE point for now: uses the first trigger and
+        logs a warning if >1 spheroid is checked (the job has ONE PredefinedPoint -- multi-spheroid
+        PA needs the point array grown). Returns the params dict, or None (then the job launches
+        un-parameterized on its in-job point -- surfaced loudly in the log)."""
+        import configparser, spheroid_pipeline as _pl
+        cp0 = configparser.ConfigParser()
+        try:
+            if _pl.SESSION_INI.exists():
+                cp0.read(_pl.SESSION_INI)
+        except Exception:
+            pass
+        work = cp0.get("paths", "work_dir", fallback="").strip() or self._pl_trigger_dir.get().strip()
+        if not work:
+            self._pl_log("PA: no work dir -- launching WITHOUT a point param (uses in-job point).")
+            return None
+        trigs = sorted(Path(work).glob("af_trigger_*.ini"))
+        if not trigs:
+            self._pl_log("PA: no af_trigger_*.ini found -- launching WITHOUT a point param "
+                         "(the job images its in-job PredefinedPoint, which may be STALE).")
+            return None
+        if len(trigs) > 1:
+            self._pl_log(f"PA WARNING: {len(trigs)} spheroids checked but step3_zstack_PA has ONE "
+                         f"PredefinedPoint -- parameterizing only {trigs[0].name}. Multi-spheroid PA "
+                         f"needs the job's point array extended (Positions[0..N]).")
+        cp = configparser.ConfigParser()
+        try:
+            cp.read(trigs[0])
+            x = float(cp.get("spheroid", "stage_x"))
+            y = float(cp.get("spheroid", "stage_y"))
+            z = float(cp.get("spheroid", "z_centre"))
+        except Exception as e:
+            self._pl_log(f"PA: could not read coords from {trigs[0].name} ({e}) -- launching "
+                         f"WITHOUT a point param (uses in-job point).")
+            return None
+        params = {self.PA_POINT_X_KEY: x, self.PA_POINT_Y_KEY: y, self.PA_POINT_Z_KEY: z}
+        well = self._pl_well_id.get().strip()
+        if well:
+            params[self.WELL_PARAM_KEY] = self._pl_well_param_value(well)
+        self._pl_log(f"PA point param <- {trigs[0].name}: Stage.x/y=({x:.1f},{y:.1f}) um, z={z:.1f} um, "
+                     f"well={well or '(none)'}  [verify in sim: if the nd2 lands ~1000x off, Stage is mm]")
+        return params
+
+    def _pl_run_pa_job(self):
+        """Step 4 'Run Photoactivation Job': regenerate the current triggers, then launch
+        step3_zstack_PA with its PredefinedPoint[0] + well set to the CURRENT spheroid via
+        Jobs_RunJobInitParam -- the activation fires on the exact supplied point, never the job's
+        stale in-job point. Still gated (A1 confirm + fire-confirm) inside _pl_run_job."""
+        if not self._pl_regen_triggers():
+            return
+        self._pl_run_job("step3_zstack_PA", True, params=self._pl_pa_point_params())
+
+    # Where the Step1_Locate_via_scan JOB writes its mosaic -- a NEW timestamped folder per run,
+    # under the NIS-E jobs DB (NOT the pipeline nd2_dir). See the [[nise-step1-locate-scan-save-path]] note.
+    MOSAIC_JOB_DIR = r"C:/ProgramData/Laboratory Imaging/Jobs/jobsdb Projects/IMAGEN/Step1_Locate_via_scan"
+
+    def _pl_run_job1_at_well(self):
+        """Step 1 'Run Job1': launch Step1_Locate_via_scan, setting the WELL from the GUI Well
+        ID via Jobs_RunJobInitParam. No well/key -> plain, safe mosaic launch. After launching,
+        watches the JOB's output dir for the NEW folder it creates and auto-fills the mosaic
+        ND2 field with the stitched nd2 it saves there."""
+        self._pl_run_job("Step1_Locate_via_scan", False,
+                         params=self._pl_well_params(self.WELL_PARAM_KEY, "Run Job1"))
+        # Snapshot existing run folders BEFORE the job creates its new one, so the watcher
+        # picks only the folder generated by THIS click.
+        try:
+            base = Path(self.MOSAIC_JOB_DIR)
+            before = {str(p) for p in base.iterdir() if p.is_dir()} if base.is_dir() else set()
+            self.after(0, lambda: self._pl_screen_lbl.configure(
+                text="Mosaic: waiting for the JOB to save its nd2…", fg=YELLOW))
+            threading.Thread(target=self._pl_watch_mosaic, args=(base, before), daemon=True).start()
+        except Exception as e:
+            self._pl_log(f"Run Job1: could not start mosaic auto-load watcher: {e}")
+
+    def _pl_watch_mosaic(self, base, before):
+        """Poll the Step1 mosaic JOB output dir for the NEW timestamped folder (not in `before`);
+        once it holds a STABLE nd2, set _pl_mosaic_path to the LARGEST nd2 in it (the stitched
+        whole-well mosaic). ~15 min, then gives up (the operator can Browse manually)."""
+        import time
+        last_size = -1
+        stable = 0
+        for _ in range(300):          # ~15 min at 3 s/poll
+            time.sleep(3)
+            try:
+                if not base.is_dir():
+                    continue
+                new = [p for p in base.iterdir() if p.is_dir() and str(p) not in before]
+                if not new:
+                    continue
+                folder = max(new, key=lambda p: p.stat().st_mtime)   # newest of the new folders
+                nd2s = list(folder.rglob("*.nd2"))
+                if not nd2s:
+                    continue
+                nd2 = max(nd2s, key=lambda p: p.stat().st_size)      # largest = the stitched mosaic
+                sz = nd2.stat().st_size
+                if sz > 0 and sz == last_size:
+                    stable += 1
+                else:
+                    stable = 0; last_size = sz
+                if stable >= 3:        # size unchanged ~9 s -> the write has finished
+                    p = str(nd2)
+                    self.after(0, lambda pp=p: self._pl_mosaic_path.set(pp))
+                    self.after(0, lambda pp=p: self._pl_screen_lbl.configure(
+                        text=f"Mosaic auto-loaded: {Path(pp).name} — click Run Screener.", fg=GREEN))
+                    self._pl_log(f"Run Job1: mosaic auto-loaded -> {p}")
+                    return
+            except Exception:
+                continue
+        self.after(0, lambda: self._pl_screen_lbl.configure(
+            text="Mosaic auto-load timed out — Browse to the nd2 manually.", fg=YELLOW))
+        self._pl_log("Run Job1: mosaic auto-load watcher timed out (no new nd2) — Browse manually.")
+
+    def _pl_run_job(self, name_var, gated, params=None):
+        """Launch a NIS-E JOB (nis_macro_run_job.mac, action 10). Writes job_trigger.ini,
         then dispatches. When gated, requires the A1-powered confirmation AND an explicit
-        confirm click because the JOB fires the 850 nm PA activation laser."""
+        confirm click (the JOB fires the 850 nm PA activation laser).
+
+        params: optional dict of {"<Task>.<Param>": value} (e.g. a WellSelection well). When
+        given, the JOB is launched via Jobs_RunJobInitParam (sets the params AND launches) --
+        the GUI writes job_params.json next to the trigger as UTF-16 (the docs REQUIRE the
+        JSON be Unicode), and the macro ReadFiles it. When None, a stale job_params.json is
+        removed so the macro falls back to plain Jobs_RunJobByName."""
         import configparser, spheroid_pipeline as _pl
         cp = configparser.ConfigParser()
         try:
@@ -3851,7 +4248,9 @@ class App(tk.Tk):
         if not work:
             messagebox.showwarning("No work dir",
                                    "Run Step 3 (Trigger) first, or set the Trigger dir."); return
-        name = name_var.get().strip()
+        # name_var may be a StringVar (Job3 dropdown) OR a plain literal string (Job1,
+        # hard-wired to the imaging-only mosaic so it can never point at the PA job).
+        name = (name_var.get() if hasattr(name_var, "get") else str(name_var)).strip()
         if not name:
             self._pl_log("Run Job: no job name set -- aborted"); return
         if gated:
@@ -3870,10 +4269,21 @@ class App(tk.Tk):
             wd.mkdir(parents=True, exist_ok=True)
             _pl._atomic_write_crlf(wd / "job_trigger.ini",
                                    ["[job]", f"project={project}", f"name={name}"])
+            # Job parameters (e.g. a WellSelection well): write a Unicode/UTF-16 JSON that the
+            # macro ReadFiles into Jobs_RunJobInitParam. Remove any stale file when there are
+            # no params, so a plain launch uses Jobs_RunJobByName (the macro keys off its
+            # presence). UTF-16 (with BOM) is Windows "Unicode" -- required by the docs.
+            pj = wd / "job_params.json"
+            if params:
+                import json as _json
+                pj.write_text(_json.dumps(params, ensure_ascii=False), encoding="utf-16")
+            else:
+                pj.unlink(missing_ok=True)
         except Exception as exc:
-            messagebox.showerror("Run Job", f"Failed to write job trigger: {exc}"); return
+            messagebox.showerror("Run Job", f"Failed to write job trigger/params: {exc}"); return
         self._pl_send_command("run_job", 10)
-        self._pl_log(f"Run Job: launched '{name}' (project {project}) via action run_job (id 10)")
+        pmsg = f" with params {list(params)}" if params else ""
+        self._pl_log(f"Run Job: launched '{name}' (project {project}){pmsg} via action run_job (id 10)")
 
     def _pl_send_command(self, action, action_id):
         """Write a dispatcher command (cmd.ini) for the always-on nis_macro_dispatcher.mac

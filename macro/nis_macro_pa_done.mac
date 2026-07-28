@@ -17,13 +17,16 @@ int main()
     char cfg[256];
     char work_dir[256];
     char done_path[256];
+    char mbuf[512];
 
     strcpy(cfg, "C:/SpheroidPA/session.ini");
     work_dir[0] = 0;
     Int_GetKeyString(cfg, "paths", "work_dir", work_dir, 256);
     if( work_dir[0] == 0 )
     {
-        WaitText(0, "session.ini has no work_dir.\nRun GUI Step 3 first.");
+        SetCommandText("session.ini has no work_dir.\nRun GUI Step 3 first.");
+        WideCharToMultiByte(mbuf, "session.ini has no work_dir.\nRun GUI Step 3 first.");
+        WriteFile("C:/SpheroidPA/debug/macro_msg.txt", mbuf, strlen("session.ini has no work_dir.\nRun GUI Step 3 first."));
         return FALSE;
     }
 
@@ -31,6 +34,8 @@ int main()
     strcat(done_path, "/pa_done.ini");
     Int_SetKeyString(done_path, "pa", "done", "1");
 
-    WaitText(0, "PA complete -- run After-PA Validation.");
+    SetCommandText("PA complete -- run After-PA Validation.");
+    WideCharToMultiByte(mbuf, "PA complete -- run After-PA Validation.");
+    WriteFile("C:/SpheroidPA/debug/macro_msg.txt", mbuf, strlen("PA complete -- run After-PA Validation."));
     return TRUE;
 }

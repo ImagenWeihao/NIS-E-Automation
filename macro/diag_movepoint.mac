@@ -1,0 +1,33 @@
+// ============================================================================
+// diag_movepoint.mac -- confirm BOTH XY axes track StgMoveXY with an in-bounds move:
+// read current pos, target = (x+300, y-300) um (well inside the plate working area),
+// absolute StgMoveXY, settle, read back. after should == target and dx=+300 dy=-300.
+// Writes C:/SpheroidPA/debug/movepoint.txt. No A1/laser/sample needed.
+// Rig dialect: single main(); CRLF+ASCII; sprintf args ONE quoted comma-list;
+// Stg* are microns; wide -> WideCharToMultiByte -> WriteFile.
+// ============================================================================
+
+int main()
+{
+    char msg[512];
+    char mb[512];
+    double bx, by, bz;
+    double tx, ty;
+    double ax, ay, az;
+    double dx, dy;
+    int rcxy;
+
+    StgGetPos(&bx, &by, &bz);
+    tx = bx + 300.0;
+    ty = by - 300.0;
+    rcxy = StgMoveXY(tx, ty, 0);
+    Wait(5.0);
+    StgGetPos(&ax, &ay, &az);
+    dx = ax - bx;
+    dy = ay - by;
+
+    sprintf(msg, "XY in-bounds move test (microns)  StgMoveXY rc=%d\nbefore: x=%.1f y=%.1f\ntarget: x=%.1f y=%.1f  (before +300,-300)\nafter : x=%.1f y=%.1f\ndelta : dx=%.1f dy=%.1f  (expect +300, -300)\n", "rcxy,bx,by,tx,ty,ax,ay,dx,dy");
+    WideCharToMultiByte(mb, msg);
+    WriteFile("C:/SpheroidPA/debug/movepoint.txt", mb, strlen(msg));
+    return TRUE;
+}

@@ -38,13 +38,14 @@ int main()
     char numbuf[64];
     char nd2_path[256];
     char msg[256];
+    char mbuf[512];
     double x, y;
     double viz_zoom, viz_z, viz_zhalf, viz_zstep, z_top, z_bottom;
     double laser_wl, laser_pw, laser_hv;
     int count, i, done;
 
     // ---- EDIT for your rig --------------------------------------------------
-    strcpy(viz_oc, "1050nm_Galvo_561nm_NDD2_JL2");   // exact NIS-E 1050 nm OC name (from nd2 metadata)
+    strcpy(viz_oc, "1050nm_Galvo_561nm_NDD2_WC");   // 1050 nm OC (WC = mechanical-shutter-during-experiment OFF)
     count     = 9;              // same count pa_points.mac used (first N triggers)
     viz_zoom  = 2.5;            // scan-area zoom: frames the ~250 um spheroid (~254 um FOV)
     viz_z     = 7640.0;         // Z centre of the validation stack = the PA/focus plane
@@ -59,7 +60,9 @@ int main()
     Int_GetKeyString(cfg, "paths", "nd2_dir", nd2_dir, 256);
     if( work_dir[0] == 0 )
     {
-        WaitText(0, "session.ini has no work_dir.\nRun GUI Step 3 first.");
+        SetCommandText("session.ini has no work_dir.\nRun GUI Step 3 first.");
+        WideCharToMultiByte(mbuf, "session.ini has no work_dir.\nRun GUI Step 3 first.");
+        WriteFile("C:/SpheroidPA/debug/macro_msg.txt", mbuf, strlen("session.ini has no work_dir.\nRun GUI Step 3 first."));
         return FALSE;
     }
     if( nd2_dir[0] == 0 )
@@ -104,7 +107,9 @@ int main()
         strcat(msg, "/cmd_done.ini");
         Int_SetKeyString(msg, "command", "status", "aborted_no_a1");
         Int_SetKeyString(msg, "command", "message", "A1 not confirmed powered ON (a1_on != 1) -- aborted before any A1 call.");
-        WaitText(0, "A1 not confirmed powered ON (a1_on != 1).\nTick 'A1 powered on' in the GUI (or set a1_on=1 in pa_trigger.ini [photoactivation]) once the A1 is up.\nAborting to avoid an A1 grabber crash.");
+        SetCommandText("A1 not confirmed powered ON (a1_on != 1).\nTick 'A1 powered on' in the GUI (or set a1_on=1 in pa_trigger.ini [photoactivation]) once the A1 is up.\nAborting to avoid an A1 grabber crash.");
+        WideCharToMultiByte(mbuf, "A1 not confirmed powered ON (a1_on != 1).\nTick 'A1 powered on' in the GUI (or set a1_on=1 in pa_trigger.ini [photoactivation]) once the A1 is up.\nAborting to avoid an A1 grabber crash.");
+        WriteFile("C:/SpheroidPA/debug/macro_msg.txt", mbuf, strlen("A1 not confirmed powered ON (a1_on != 1).\nTick 'A1 powered on' in the GUI (or set a1_on=1 in pa_trigger.ini [photoactivation]) once the A1 is up.\nAborting to avoid an A1 grabber crash."));
         return FALSE;
     }
 
@@ -126,7 +131,9 @@ int main()
     if( laser_wl > 700.0 && laser_wl < 950.0 )
     {
         sprintf(msg, "PA Validate ABORTED: active laser is %.0f nm (PA laser still on).\nOC '%s' did not switch -- set the exact 1050 nm config name and retry.", "laser_wl,viz_oc");
-        WaitText(0, msg);
+        SetCommandText(msg);
+        WideCharToMultiByte(mbuf, msg);
+        WriteFile("C:/SpheroidPA/debug/macro_msg.txt", mbuf, strlen(msg));
         SetCommandText(0);
         return FALSE;
     }
@@ -178,7 +185,9 @@ int main()
     }
 
     sprintf(msg, "PA validation done: imaged %d spheroid(s) at 1050 nm (zoom %.1f, Z ~%.0f).\nSaved <id>_pacheck.nd2 -- scroll Z to find the faded square.", "done,viz_zoom,viz_z");
-    WaitText(0, msg);
+    SetCommandText(msg);
+    WideCharToMultiByte(mbuf, msg);
+    WriteFile("C:/SpheroidPA/debug/macro_msg.txt", mbuf, strlen(msg));
     SetCommandText(0);
     return TRUE;
 }

@@ -36,6 +36,7 @@ int main()
     char rank_buf[16];
     char numbuf[64];
     char msg[256];
+    char mbuf[512];
     double stage_x, stage_y;
     double z_centre, z_half, z_step, z_top, z_bottom;
     double idle_elapsed;
@@ -47,7 +48,9 @@ int main()
     Int_GetKeyString(cfg, "paths", "work_dir", work_dir, 256);
     if( work_dir[0] == 0 )
     {
-        WaitText(0, "session.ini has no work_dir.\nRun GUI Step 3 first, then start the Step 4 capture queue.");
+        SetCommandText("session.ini has no work_dir.\nRun GUI Step 3 first, then start the Step 4 capture queue.");
+        WideCharToMultiByte(mbuf, "session.ini has no work_dir.\nRun GUI Step 3 first, then start the Step 4 capture queue.");
+        WriteFile("C:/SpheroidPA/debug/macro_msg.txt", mbuf, strlen("session.ini has no work_dir.\nRun GUI Step 3 first, then start the Step 4 capture queue."));
         return FALSE;
     }
 

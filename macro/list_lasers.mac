@@ -1,0 +1,54 @@
+// ============================================================================
+// list_lasers.mac -- one-shot: enumerate every MultiLaser device + its lines
+// (name, used flag, power) and WRITE THE FULL DUMP to C:/SpheroidPA/laser_list.txt
+// so Claude can read it directly (the WaitText popup clips at ~10 lines). We want
+// to find whether the A1 MP / IR (1050 nm 2P) laser appears here as a controllable
+// line -- if so, Stg_SetMultiLaserLineUsed may open its beam from a macro.
+//
+// Macro strings are wide (UTF-16); a text file needs WideCharToMultiByte first,
+// then WriteFile(path, multibyte_buf, strlen(wide_buf)) -- the documented pattern.
+//
+// Rig dialect: single main() only; CRLF + ASCII; sprintf args as ONE quoted
+// comma-list of variable names; strcat to accumulate.
+// ============================================================================
+
+int main()
+{
+    char name[128];
+    char lname[128];
+    char msg[4096];
+    char mb[4096];
+    char line[256];
+    int nml, i, nl, j, used, pwr;
+
+    nml = Stg_GetMultiLaserCount();
+    sprintf(msg, "MultiLaser device count: %d\n\n", "nml");
+
+    i = 0;
+    while( i < nml )
+    {
+        name[0] = 0;
+        Stg_GetMultiLaserName(i, name);
+        nl = Stg_GetMultiLaserNumLines(name);
+        sprintf(line, "Device[%d]  '%s'   lines=%d\n", "i,name,nl");
+        strcat(msg, line);
+
+        j = 0;
+        while( j < nl )
+        {
+            lname[0] = 0;
+            Stg_GetMultiLaserLineName(name, j, lname);
+            used = Stg_GetMultiLaserLineUsed(name, j);
+            pwr  = Stg_GetMultiLaserPower(name, j);
+            sprintf(line, "    line[%d] '%s'  used=%d  power=%d\n", "j,lname,used,pwr");
+            strcat(msg, line);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    WideCharToMultiByte(mb, msg);
+    WriteFile("C:/SpheroidPA/laser_list.txt", mb, strlen(msg));
+    WaitText(0, "Laser list written to C:/SpheroidPA/laser_list.txt");
+    return TRUE;
+}

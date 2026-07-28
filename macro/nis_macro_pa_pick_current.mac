@@ -26,6 +26,7 @@ int main()
     char ybuf[32];
     char zbuf[32];
     char msg[256];
+    char mbuf[512];
     double x, y, z;
 
     strcpy(cfg, "C:/SpheroidPA/session.ini");
@@ -33,7 +34,9 @@ int main()
     Int_GetKeyString(cfg, "paths", "work_dir", work_dir, 256);
     if( work_dir[0] == 0 )
     {
-        WaitText(0, "session.ini has no work_dir.\nRun GUI Step 3 first.");
+        SetCommandText("session.ini has no work_dir.\nRun GUI Step 3 first.");
+        WideCharToMultiByte(mbuf, "session.ini has no work_dir.\nRun GUI Step 3 first.");
+        WriteFile("C:/SpheroidPA/debug/macro_msg.txt", mbuf, strlen("session.ini has no work_dir.\nRun GUI Step 3 first."));
         return FALSE;
     }
 
@@ -60,6 +63,8 @@ int main()
     ND_AppendMultipointPoint(x, y, z, "sph_pick_01");
 
     sprintf(msg, "Picked spheroid: X %.1f  Y %.1f  Z %.1f\nWrote af_trigger_01 + 1-point ND multipoint.\nNext: pa_setup -> job Import Point Set from ND -> Run -> pa_validate (count=1).", "x,y,z");
-    WaitText(0, msg);
+    SetCommandText(msg);
+    WideCharToMultiByte(mbuf, msg);
+    WriteFile("C:/SpheroidPA/debug/macro_msg.txt", mbuf, strlen(msg));
     return TRUE;
 }

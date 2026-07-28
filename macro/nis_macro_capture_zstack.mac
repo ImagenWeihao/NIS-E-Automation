@@ -21,7 +21,7 @@
 //
 // PREREQ: 20X objective; XY+Z initialized; Z drive NOT in Escape; PFS OFF (it
 // holds focus and defeats the Z-series); camera NOT in Live. Run GUI Step 3
-// "Trigger NIS-E Z-Stack Captures" first -- it writes the af_trigger_NN.ini files
+// "Capture" first -- it writes the af_trigger_NN.ini files
 // AND C:/SpheroidPA/session.ini (work_dir + nd2_dir) that this macro reads.
 // ============================================================================
 
@@ -41,12 +41,15 @@ int main()
     char nn[8];
     char zbuf[32];
     char msg[256];
+    char mbuf[512];
     char oc[128];
+    char light_path[64];
     char abort_path[256];
     double stage_x, stage_y;
     double z_centre, z_half, z_step, z_top, z_bottom;
-    double idle_elapsed, close_after;
-    int rank, move_rc, handled_any, handled_total, aborted;
+    double idle_elapsed, close_after, a1_on, remove_interlock, nose_pos;
+    int rank, move_rc, handled_any, handled_total, aborted, interlock_done, objective_done, npos;
+    int nose_ok, curpos, tries;
 
     // Trigger + output dirs are NOT hardcoded: read them from the fixed pointer
     // file the GUI writes at Step 3, so this daemon follows the Step 1 save dir.
@@ -57,16 +60,21 @@ int main()
     Int_GetKeyString(cfg, "paths", "nd2_dir", nd2_dir, 256);
     if( work_dir[0] == 0 )
     {
-        WaitText(0, "session.ini has no work_dir.\nRun GUI Step 3 (Trigger NIS-E Z-Stack Captures) first, then re-run this macro.");
+        SetCommandText("session.ini has no work_dir.\nRun GUI Step 3 (Capture) first, then re-run this macro.");
+        WideCharToMultiByte(mbuf, "session.ini has no work_dir.\nRun GUI Step 3 (Capture) first, then re-run this macro.");
+        WriteFile("C:/SpheroidPA/debug/macro_msg.txt", mbuf, strlen("session.ini has no work_dir.\nRun GUI Step 3 (Capture) first, then re-run this macro."));
         return FALSE;
     }
 
     idle_elapsed = 0.0;
     handled_total = 0;
     aborted = FALSE;
+    interlock_done = FALSE;
+    objective_done = FALSE;
 
     // Global abort flag written by the GUI's "Abort All" button. Polled once per rank
-    // (i.e. between spheroids) so a long multi-spheroid run can be stopped without Esc.
+    // (i.e. between spheroids) so a long multi-spheroid run can be stopped without a
+    // Ctrl+Pause macro abort (Esc does NOT abort a NIS-E macro; Ctrl+Pause / Ctrl+Break does).
     // A capture already in flight still finishes -- this is a clean boundary stop, not
     // a mid-Z-series kill. The GUI clears the flag when it starts the next run.
     strcpy(abort_path, work_dir);
@@ -118,17 +126,51 @@ int main()
                 Int_GetKeyString(trigger_path, SEC, "close_after", numbuf, 64);
                 close_after = atof(numbuf);
 
+                // A1 2-photon imaging prep (GUI Step 3 Capture): a1_on confirms the A1 is
+                // powered ON (Stg_RemoveInterlock/SelectOptConf CRASH the grabber when it is
+                // OFF); remove_interlock=1 requests clearing the laser interlock -- REQUIRED
+                // before the A1/2P scanner can image. Without it the interlock shutters stay
+                // closed on the 2P light path and the frame falls back to the widefield
+                // camera (a DIA/brightfield capture, not the confocal channel). Absent keys
+                // -> 0, so Step-4 validation triggers (which do not set them) are unchanged.
+                numbuf[0] = 0;
+                Int_GetKeyString(trigger_path, SEC, "a1_on", numbuf, 64);
+                a1_on = atof(numbuf);
+                numbuf[0] = 0;
+                Int_GetKeyString(trigger_path, SEC, "remove_interlock", numbuf, 64);
+                remove_interlock = atof(numbuf);
+                // Optional light path (GUI Step 3 Capture writes "2-Photon"): the acquisition
+                // mode / camera path. SelectOptConf sets the OC's channel but does NOT move the
+                // light path, so without this the 2P OC images off whatever camera is active
+                // (e.g. Flash 4 + BF -> a DIA capture). Own buffer, cleared before the read.
+                light_path[0] = 0;
+                Int_GetKeyString(trigger_path, SEC, "light_path", light_path, 64);
+                // Imaging objective (Step 3/4 image at 20X; the Step 1 mosaic leaves the
+                // nosepiece at 10X). GUI Step 3 Capture writes the 20X nosepiece POSITION.
+                // By position (int), NOT name -- the objective name "Plan Apo (lambda) 20x"
+                // has a non-ASCII char the ASCII-only macro cannot carry. 0/absent -> unchanged.
+                numbuf[0] = 0;
+                Int_GetKeyString(trigger_path, SEC, "nosepiece_pos", numbuf, 64);
+                nose_pos = atof(numbuf);
+
                 // Z-stack geometry from the trigger (GUI Step 3); fall back to
-                // defaults if a key is absent (atof returns 0 for missing/blank).
+                // defaults if a key is absent. numbuf MUST be cleared before EACH read:
+                // Int_GetKeyString leaves it UNCHANGED on a missing key on this build, so an
+                // absent z_centre/z_half/z_step would otherwise inherit the PRIOR key's value
+                // (e.g. remove_interlock=1 leaking into z_centre, or z_centre leaking into an
+                // absent z_half) and silently defeat the documented default -> bad Z range.
+                numbuf[0] = 0;
                 Int_GetKeyString(trigger_path, SEC, "z_centre", numbuf, 64);
                 z_centre = atof(numbuf);
                 if( z_centre == 0.0 )
                     z_centre = 7680.0;
+                numbuf[0] = 0;
                 Int_GetKeyString(trigger_path, SEC, "z_half", numbuf, 64);
                 if( numbuf[0] == 0 )
                     z_half = 90.0;            // key absent -> default full stack
                 else
                     z_half = atof(numbuf);    // 0 = locate (single plane), >0 = stack
+                numbuf[0] = 0;
                 Int_GetKeyString(trigger_path, SEC, "z_step", numbuf, 64);
                 z_step = atof(numbuf);
                 if( z_step == 0.0 )
@@ -161,6 +203,63 @@ int main()
                 }
                 else
                 {
+                    // Objective: switch the nosepiece to the imaging objective ONCE per run,
+                    // before any capture. Ti-side (safe with the A1 off) so NOT a1_on-gated.
+                    // 0/absent -> leave the current objective unchanged. On THIS turret index 1
+                    // = 'Plan Apo 20x' (wanted) and index 2 = 'S Plan Fluor ELWD 20x' (a second,
+                    // different 20x) -- so landing on the wrong index silently images the wrong
+                    // objective. nose_ok gates the capture below.
+                    nose_ok = TRUE;
+                    if( nose_pos > 0.5 && objective_done == FALSE )
+                    {
+                        npos = nose_pos;
+                        sprintf(msg, "Capture: nosepiece -> index %d", "npos");
+                        SetCommandText(msg);
+                        move_rc = Stg_SetNosepiecePosition(npos);
+                        // Stg_SetNosepiecePosition can return BEFORE the turret settles -- that is
+                        // how a capture imaged index 2 while the code asked for index 1. Poll Get
+                        // until it lands; if it never reaches the target, DO NOT image -- nose_ok=
+                        // FALSE is reported below and objective_done stays FALSE so the next trigger
+                        // retries. CRITICAL: issue Set exactly ONCE and NEVER re-issue while a move
+                        // may be in flight -- a second Stg_SetNosepiecePosition on top of an
+                        // unsettled one HANGS the Ti turret driver (no popup, blocks the daemon;
+                        // proven by diag_nosemove's back-to-back Set(2)+Set(1) wedge 2026-07-27).
+                        curpos = Stg_GetNosepiecePosition();
+                        tries = 0;
+                        while( curpos != npos && tries < 20 )
+                        {
+                            Wait(0.25);
+                            curpos = Stg_GetNosepiecePosition();
+                            tries = tries + 1;
+                        }
+                        if( curpos == npos )
+                            objective_done = TRUE;
+                        else
+                            nose_ok = FALSE;
+                    }
+                    if( nose_ok == TRUE )
+                    {
+                    // A1 2-photon prep (ONCE per run, gated by a1_on to avoid the grabber
+                    // crash when the A1 is OFF):
+                    //   (a) SelectLightPath -> move the acquisition path to 2-Photon. SelectOptConf
+                    //       sets the OC's channel but does NOT move the light path, so the 2P OC
+                    //       would otherwise image off the active camera (e.g. Flash 4 + BF -> DIA).
+                    //   (b) Stg_RemoveInterlock -> changing the light path closes the safety
+                    //       shutters; re-open them so the A1 scanner can actually image.
+                    // Mirrors nis_macro_pa_setup.mac. Step-4 validation writes neither key, so it
+                    // is unchanged (it relies on the operator pre-selecting the path/interlock).
+                    if( remove_interlock > 0.5 && a1_on > 0.5 && interlock_done == FALSE )
+                    {
+                        if( light_path[0] != 0 )
+                        {
+                            sprintf(msg, "Capture: light path -> '%s' (2P)", "light_path");
+                            SetCommandText(msg);
+                            SelectLightPath(light_path);
+                        }
+                        SetCommandText("Capture: removing A1 interlock (2P imaging)...");
+                        Stg_RemoveInterlock();
+                        interlock_done = TRUE;
+                    }
                     // Optional per-trigger optical config (GUI Step 4 Pre-PA card);
                     // absent -> unchanged behaviour (current ND channels/exposure).
                     if( oc[0] != 0 )
@@ -171,10 +270,14 @@ int main()
                     }
                     if( z_half < 0.5 )
                     {
-                        // 1-plane LOCATE pass (z_half=0): just the centre plane, fast,
-                        // enough to find the spheroid centroid for re-centering.
-                        StgMoveZ(z_centre, 0);
-                        Capture();
+                        // 1-plane LOCATE pass (z_half=0): a SINGLE-plane ND Z-series at the
+                        // centre plane (top==centre==bottom) -- NOT a bare Capture(). Capture()
+                        // grabs the current live camera, which after SelectOptConf(a confocal
+                        // OC) is NOT the confocal detector, so a 1050 nm locate captured the
+                        // WRONG channel (widefield). Running a 1-plane ND_RunZSeriesExp images
+                        // the selected OC's channel, identical to the multi-plane branch.
+                        ND_SetZSeriesExp(0, z_centre, z_centre, z_centre, z_step, 0, 0, 0, "", "", "");
+                        ND_RunZSeriesExp();
                     }
                     else
                     {
@@ -199,6 +302,21 @@ int main()
                         Int_SetKeyString(done_path, SEC, "oc", oc);
                     Int_SetKeyString(done_path, SEC, "status", "ok");
                     DeleteFile(trigger_path);
+                    }
+                    else
+                    {
+                        // Nosepiece never reached the requested objective -> record + skip this
+                        // trigger rather than image the wrong 20x. Non-blocking (matches the
+                        // move_failed path above): the GUI sees status=nosepiece_failed, and
+                        // objective_done stayed FALSE so the next trigger re-attempts the move.
+                        sprintf(msg, "Capture: nosepiece stuck at index %d (wanted %d, rc=%d) -- SKIPPED", "curpos,npos,move_rc");
+                        SetCommandText(msg);
+                        DeleteFile(done_path);
+                        Int_SetKeyString(done_path, SEC, "rank", rank_buf);
+                        Int_SetKeyString(done_path, SEC, "spheroid_id", spheroid_id);
+                        Int_SetKeyString(done_path, SEC, "status", "nosepiece_failed");
+                        DeleteFile(trigger_path);
+                    }
                 }
             }
             rank = rank + 1;
@@ -220,12 +338,12 @@ int main()
                 {
                     // Batch done and the queue is empty -> STOP. Do not linger and grab
                     // the next pass's triggers (e.g. the full Z-stack written after
-                    // re-center); re-run this macro once per Trigger click.
+                    // re-center); re-run this macro once per Capture click.
                     idle_elapsed = 9999.0;
                 }
                 else
                 {
-                    SetCommandText("Capture daemon: waiting for triggers (click GUI Step 3 Trigger)");
+                    SetCommandText("Capture daemon: waiting for triggers (click GUI Step 3 Capture)");
                     Wait(1.0);
                     idle_elapsed = idle_elapsed + 1.0;
                 }

@@ -12,6 +12,12 @@
 //   action_id  = 1 autofocus | 2 zstack | 3 zcorrected | 4 pa_setup
 //                5 pa_points | 6 pa_pick | 7 pa_validate | 8 init_rig | 9 pa_done
 //                10 run_job
+//                20 run_diag -- runs a READ-ONLY diagnostic. The macro name is
+//                   BUILT here as "diag_" + <diag key> + ".mac" (prefix hardcoded),
+//                   so this action can ONLY launch diag_*.mac files -- never a
+//                   laser/PA/job macro even if cmd.ini is tampered with. The diag
+//                   writes its result to C:/SpheroidPA/debug/<name>.txt (no popup),
+//                   which the caller reads directly. cmd.ini extra key: diag=<name>.
 //
 // Paths come at RUNTIME from C:/SpheroidPA/session.ini [paths]:
 //   work_dir  = where cmd.ini / cmd_done.ini live (the GUI's current run dir)
@@ -25,7 +31,8 @@
 // RunMacro(file) runs a .mac in-process and returns when it completes.
 //
 // PREREQ: the GUI has written C:/SpheroidPA/session.ini (any Step 3/4 action, or
-// a Dispatcher button, writes work_dir + macro_dir). Press Esc to stop the loop.
+// a Dispatcher button, writes work_dir + macro_dir). Press Ctrl+Pause to stop the loop
+// (Esc does NOT abort a running NIS-E macro -- Ctrl+Pause / Ctrl+Break does).
 //
 // cmd.ini/cmd_done.ini section is the LITERAL string "command", not a #define --
 // a #define SEC here gets corrupted by RunMacro()-ing a worker macro whose own
@@ -52,7 +59,51 @@ int main()
     strcpy(cfg, "C:/SpheroidPA/session.ini");
     idle = 0.0;
 
-    // Loop for up to ~4 h of inactivity; press Esc to stop, or re-run to resume.
+    // Startup drain: clear COMMAND/JOB flags left over from a PREVIOUS session so the
+    // dispatcher can't execute a stale command -- or launch a stale JOB / fire the
+    // 850 nm PA laser -- the instant it starts. A cmd.ini un-consumed because the GUI
+    // wrote it while no dispatcher was running would otherwise run immediately; for
+    // action_id 10 (run_job) with a stale job_trigger.ini naming step3_zstack_PA that
+    // means the laser fires on startup with NO gating. Dropping one legit-but-
+    // unconsumed command (dispatcher crashed mid-command) is the safe failure mode --
+    // the operator just re-clicks. Only command-level flags are cleared here; the
+    // per-spheroid af_trigger_NN.ini / pa_trigger.ini selection state is left intact so
+    // an operator restarting the dispatcher mid-session keeps their spheroid selection.
+    // done_path is reused as a scratch path buffer for the extra flag files.
+    work_dir[0] = 0;
+    Int_GetKeyString(cfg, "paths", "work_dir", work_dir, 256);
+    if( work_dir[0] != 0 )
+    {
+        found = 0;
+
+        strcpy(cmd_path, work_dir);
+        strcat(cmd_path, "/cmd.ini");
+        if( ExistFile(cmd_path) == TRUE ) { DeleteFile(cmd_path); found = 1; }
+
+        strcpy(done_path, work_dir);
+        strcat(done_path, "/job_trigger.ini");
+        if( ExistFile(done_path) == TRUE ) { DeleteFile(done_path); found = 1; }
+
+        strcpy(done_path, work_dir);
+        strcat(done_path, "/cmd_done.ini");
+        if( ExistFile(done_path) == TRUE ) DeleteFile(done_path);
+
+        strcpy(done_path, work_dir);
+        strcat(done_path, "/abort.ini");
+        if( ExistFile(done_path) == TRUE ) DeleteFile(done_path);
+
+        strcpy(done_path, work_dir);
+        strcat(done_path, "/pa_done.ini");
+        if( ExistFile(done_path) == TRUE ) DeleteFile(done_path);
+
+        if( found == 1 )
+        {
+            SetCommandText("SpheroidPA dispatcher: cleared stale command/job flags from a previous session (NOT executed).");
+            Wait(1.5);
+        }
+    }
+
+    // Loop for up to ~4 h of inactivity; press Ctrl+Pause to stop, or re-run to resume.
     while( idle < 14400.0 )
     {
         // Re-read paths every pass so the dispatcher follows the GUI's current run.
@@ -93,6 +144,21 @@ int main()
                 if( aid == 8.0 ) strcpy(macro_name, "nis_macro_init_rig.mac");
                 if( aid == 9.0 ) strcpy(macro_name, "nis_macro_pa_done.mac");
                 if( aid == 10.0 ) strcpy(macro_name, "nis_macro_run_job.mac");
+                // 20 = run_diag: name is BUILT as diag_<key>.mac (prefix hardcoded)
+                // so only read-only diag_*.mac can ever run via this action. numbuf
+                // is free here (action_id already parsed into aid). A missing/empty
+                // diag key leaves macro_name empty -> unknown_action (safe no-op).
+                if( aid == 20.0 )
+                {
+                    numbuf[0] = 0;
+                    Int_GetKeyString(cmd_path, "command", "diag", numbuf, 64);
+                    if( numbuf[0] != 0 )
+                    {
+                        strcpy(macro_name, "diag_");
+                        strcat(macro_name, numbuf);
+                        strcat(macro_name, ".mac");
+                    }
+                }
 
                 // Consume the command first so it runs exactly once.
                 DeleteFile(cmd_path);

@@ -73,6 +73,32 @@ pip install cellpose   # optional, for --backend cellpose
   path but also redefines T/XY/Z/L, so preserve the job's loop/z config (verify the exact save-path fn
   against the docs index at `C:\Program Files\NIS-Elements\Docs\nis\eng_ar\`). Same root cause as the ND
   "Save to File" item in the Initialization-tab TODO below.
+- TODO (operator-requested 2026-07-24): add a "Run Z-Stack" button directly in Step 3, next to the existing
+  "Trigger NIS-E Z-Stack Captures" button, that dispatches `nis_macro_capture_zstack.mac` (action 2) -- so the
+  operator can write triggers AND run the capture from Step 3 in one place. Today Step 3's button
+  (`_pl_trigger_autofocus`, spheroid_pa_gui.py ~1683) only WRITES `af_trigger_*.ini`; the actual run requires
+  clicking the separate "Z-Stack" button (action 2) in the "NIS-E Macro Dispatcher" panel (~970), a context
+  switch. Implementation MUST respect the #1 single-authoritative-selection invariant that the generic
+  Dispatcher-panel buttons currently VIOLATE (see the "Dispatcher buttons do not regen triggers" NEW issue):
+  the new Step-3 Run button should regen triggers from Step 3's checked rows (honoring the "Locate only"
+  checkbox) BEFORE dispatching action 2 -- i.e. call `_pl_regen_triggers()` (or re-run `_pl_trigger_autofocus`)
+  then `_pl_send_command("zstack", 2)` -- so the capture always matches the current checkbox selection. Guard
+  on the `_pl_dispatch_busy` lock like the other dispatch paths.
+- TODO (operator-requested 2026-07-24): for the Step 3 Recenter run, have the Step-3 z-stack trigger/run button
+  auto-set-up the 1050 nm OC and capture in one click -- generate the required triggers, inject the 1050 OC,
+  and start the z-stack macro on the generated triggers with the recenter parameters preset. Use the SAME 1050
+  OC Step 4 uses: `1050nm_Galvo_561nm_NDD2_JL2` (tag `1050nm_depth`, the spheroid-depth / faded-square channel;
+  the VIS_OCS default at spheroid_pa_gui.py ~129, also `_pl_prepa_checked_ocs` ~3408). The full mechanism
+  ALREADY EXISTS in Step 4's `_pl_prepa_capture_ocs` (~3411): it (1) regenerates `af_trigger_NN.ini` from the
+  checked selection via `_pl_regen_triggers`, (2) injects `oc=` into every trigger, (3) optionally forces
+  z_half=0 for a locate/single-plane pass, and (4) dispatches the z-stack (action 2) into its own nd2
+  subfolder -- so this is mostly reusing that pattern on the Step-3 Recenter path with `oc` pinned to the 1050
+  depth OC and the recenter Z parameters preset (z_centre / z_half / z_step -- likely a single-plane locate).
+  This CLOSES the recenter loop: the Python side already consumes the captures (`_pl_recenter` ->
+  `recenter_from_captures`, ~3052/3100), so one click goes trigger -> 1050 OC -> capture -> recenter offsets.
+  Completes the partial "#13 Recenter macro 1050 nm auto-select" item (Python side already done; the capture-
+  side OC auto-select was the gap). Pairs with the Step-3 "Run Z-Stack" button TODO above (same
+  regen-then-dispatch requirement; must honor the #1 single-authoritative-selection invariant).
 - DONE (2026-07-17, After-PA Validation card + `phase`-parameterized `_pl_prepa_capture_ocs`/`_pl_prepa_run_thread`;
   new `_pl_postpa_oc_*` checkboxes, saves to `nd2/postPA_<tag>/`): the Validation card captures all 3 channels into `prePA_<tag>`
   subfolders (prePA_890nm_mBeRFP / prePA_940nm_PAsfGFP / prePA_1050nm_depth), but Validation is run BOTH
