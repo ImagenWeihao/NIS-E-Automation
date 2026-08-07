@@ -1,5 +1,5 @@
 """
-spheroid_pa_gui.py  v1.14.0
+spheroid_pa_gui.py  v1.15.0
 NIS-E Spheroid PA Pipeline — ND2-native I/O
 
 Pipeline:  Job A ND2 → [parse metadata + detect spheroids]
@@ -87,6 +87,12 @@ MAX_POWER_PCT          = 100.0
 # (it's set manually in NIS-E's own Job Wizard) -- this GUI-side cap is a strong
 # default/reminder, not a technical enforcement of the real laser power.
 MAX_PA_ACTIVATION_POWER_PCT = 30.0
+
+# Sharpness-peak prominence floor for per-spheroid Find Z-Center: a captured wide/coarse
+# 1050 stack must show a focus peak at least this fraction above its baseline to be
+# trusted as a real focal plane (find_zcenter_all confidence gate). Below it the result
+# falls back to the geometric middle -- see the ±25 µm through-focus / edge-snap note.
+ZC_PROMINENCE_MIN = 0.35
 
 # NIS-E "mGold" optical-config group. Exact names as configured on the rig (Optical
 # Configuration list) -- see NISE010/NISE011 for the activation-vs-visualization
@@ -602,7 +608,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("SpheroidPA  v1.14.0 — NIS-E Spheroid PA Pipeline")
+        self.title("SpheroidPA  v1.15.0 — NIS-E Spheroid PA Pipeline")
         self.geometry("1680x880")
         self.minsize(1000, 660)
         self.configure(bg=BG)
@@ -616,6 +622,7 @@ class App(tk.Tk):
         self._ch_names:  list = []   # populated after ND2 load
 
         # Pipeline tab state
+        self._pl_zc_found: dict = {}   # {sid: find_zcenter result} for the viewer highlight
         self._pl_records:  list = []   # list[SpheroidRecord]
         self._pl_state     = None      # PipelineState | None
         self._pl_anchors:  list = []   # list of anchor result dicts
@@ -634,7 +641,7 @@ class App(tk.Tk):
     def _build_ui(self):
         hdr = tk.Frame(self, bg=BG2)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="  SpheroidPA  v1.14.0",
+        tk.Label(hdr, text="  SpheroidPA  v1.15.0",
                  bg=BG2, fg=MAUVE, font=("Segoe UI", 13, "bold"), pady=8
                  ).pack(side="left")
         tk.Label(hdr, text="Screen → Anchor → Autofocus → Capture  ",
@@ -1405,10 +1412,20 @@ class App(tk.Tk):
         # Step 4 writes .../work, matching the daemons out of the box.
         self._pl_out_dir     = tk.StringVar(value=r"S:\Images\Weihao\NISeA\NIS-E-Automation\work")
         self._pl_well_id     = tk.StringVar(value="")
+        self._pl_plate_calib = None   # 3-well affine well->stage-XY calib (lazy-loaded from PLATE_CALIB_INI)
         self._pl_n_spheroids = tk.StringVar(value="")
         self._pl_z_centre    = tk.StringVar(value="7680.0")
         self._pl_z_half      = tk.StringVar(value="90.0")
         self._pl_z_step      = tk.StringVar(value="5.0")
+        # Find Z-Center (per spheroid): a WIDE/COARSE 1050 search stack (the ±90/5 Capture
+        # slab is too thin to see a ~300 um spheroid's through-focus), then peak-detect each
+        # spheroid's focal plane. zc_offset is a one-time OC->PA focal ΔZ added to a confident
+        # centre when it is written into z_centre.
+        self._pl_zc_half     = tk.StringVar(value="150.0")
+        self._pl_zc_step     = tk.StringVar(value="15.0")
+        self._pl_zc_oc       = tk.StringVar(value="1050nm_Galvo_561nm_NDD2_WC")
+        self._pl_zc_offset   = tk.StringVar(value="0.0")
+        self._pl_zc_apply    = tk.BooleanVar(value=True)
         self._pl_recenter_flipx = tk.BooleanVar(value=False)
         self._pl_recenter_flipy = tk.BooleanVar(value=False)
         self._pl_recenter_n  = tk.StringVar(value="all")
@@ -1431,7 +1448,7 @@ class App(tk.Tk):
         self._pl_beer_lambert = tk.BooleanVar(value=False)
         self._pl_ref_bin     = tk.StringVar()
         # Photoactivation (Step 4) -- parameters for the NIS-E JOB step3_zstack_PA.
-        self._pl_pa_job      = tk.StringVar(value="step3_zstack_PA")
+        self._pl_pa_job      = tk.StringVar(value="step3_zstack_PA_WC")
         self._pl_pa_oc       = tk.StringVar(value="850 nm power loop full reso2")
         self._pl_pa_power    = tk.StringVar(value="30")
         self._pl_pa_power.trace_add("write", self._pl_pa_power_clamp)
@@ -1559,7 +1576,7 @@ class App(tk.Tk):
         # Well ID here is the CANONICAL working well: PA Setup's and the Job3
         # card's Well fields are bound to this SAME StringVar, so setting it once
         # (e.g. "A02") automatically updates every other job's well field too.
-        job1 = tk.LabelFrame(f1, text=" Job1 (X10 Mosaic -- Step1_Locate_via_scan) ",
+        job1 = tk.LabelFrame(f1, text=" Job1 (X10 Mosaic -- Step1_Locate_via_scan_WC) ",
                              bg=BG, fg=MAUVE, font=("Segoe UI", 9, "bold"),
                              bd=1, relief="groove")
         job1.pack(fill="x", pady=(0, 4))
@@ -1587,12 +1604,19 @@ class App(tk.Tk):
         # confined to the Step 4 Job3 card, which is gated (A1 confirm + confirm dialog).
         self._btn(row_j2, "Run Job1 (10X mosaic)",
                   self._pl_run_job1_at_well, BLUE, "#1e1e2e", side="left")
-        tk.Label(row_j2, text="Fires: Step1_Locate_via_scan  (fixed -- imaging only, no laser)",
+        tk.Label(row_j2, text="Fires: Step1_Locate_via_scan_WC  (fixed -- imaging only, no laser)",
                  bg=BG, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(8, 0))
         # 10X mosaic ND2 -- moved here, directly UNDER Run Job1. After the job runs it
         # auto-fills with the mosaic just saved (newest folder under the Step1 jobs dir);
         # or Browse to a file manually.
         self._nd2_file_row(job1, "10X mosaic ND2:", self._pl_mosaic_path)
+
+        # ── Plate calibration ────────────────────────────────────────────────
+        # Run Job1 drives the mosaic by stage COORDINATE (NIS-E WellSelection is not
+        # param-drivable -- Index/Position are rebuilt from the UI selection at run time).
+        # That needs a well -> stage affine, fit here from >=3 reference wells and persisted
+        # to PLATE_CALIB_INI so it survives a GUI restart. Re-run this after any plate re-align.
+        self._pl_build_plate_calib_panel(f1)
 
         row_d = tk.Frame(f1, bg=BG); row_d.pack(fill="x", pady=2)
         tk.Label(row_d, text="Output directory:", width=26, anchor="w",
@@ -1728,6 +1752,41 @@ class App(tk.Tk):
         tk.Checkbutton(btn3b, text="flip Y", variable=self._pl_recenter_flipy, bg=BG, fg=TEXT2,
                        selectcolor=SURFACE, activebackground=BG, activeforeground=TEXT,
                        font=("Segoe UI", 8)).pack(side="left", padx=(4, 0))
+
+        # Find Z-Center card: capture ONE wide/coarse 1050 stack per spheroid (deliberately
+        # wider than the ±90/5 Capture slab, whose 50 um span can't see a ~300 um spheroid's
+        # through-focus), then peak-detect each spheroid's focal plane and write it to
+        # z_centre. Two actions: "Capture Z-Search" (runs on the rig, same 2P/1050 idiom as
+        # Capture but wide/coarse) and "Find Centers" (offline peak detection on the captures).
+        zc_card = tk.Frame(f_s3, bg=BG2, bd=1, relief="solid")
+        zc_card.pack(fill="x", padx=12, pady=(10, 2))
+        tk.Label(zc_card, text="Find Z-Center (per spheroid)", bg=BG2, fg=MAUVE,
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=8, pady=(4, 0))
+        zc_p = tk.Frame(zc_card, bg=BG2); zc_p.pack(fill="x", padx=8, pady=2)
+        for lbl, var in [("Search half-range (um):", self._pl_zc_half),
+                         ("Search step (um):",       self._pl_zc_step),
+                         ("OC->PA dZ offset (um):",   self._pl_zc_offset)]:
+            tk.Label(zc_p, text=lbl, bg=BG2, fg=TEXT2,
+                     font=("Segoe UI", 9)).pack(side="left", padx=(0, 4))
+            tk.Entry(zc_p, textvariable=var, width=7, bg=SURFACE, fg=TEXT,
+                     insertbackground=TEXT, relief="flat",
+                     font=("Segoe UI", 9)).pack(side="left", padx=(0, 12))
+        zc_oc = tk.Frame(zc_card, bg=BG2); zc_oc.pack(fill="x", padx=8, pady=2)
+        tk.Label(zc_oc, text="Search OC:", bg=BG2, fg=TEXT2,
+                 font=("Segoe UI", 9)).pack(side="left", padx=(0, 4))
+        tk.Entry(zc_oc, textvariable=self._pl_zc_oc, bg=SURFACE, fg=TEXT,
+                 insertbackground=TEXT, relief="flat",
+                 font=("Segoe UI", 9)).pack(side="left", fill="x", expand=True, padx=(0, 8))
+        zc_btn = tk.Frame(zc_card, bg=BG2); zc_btn.pack(fill="x", padx=8, pady=(2, 4))
+        self._btn(zc_btn, "Capture Z-Search", self._pl_zc_capture_thread, GREEN, "#1e1e2e")
+        self._btn(zc_btn, "Find Centers", self._pl_zc_find_thread, MAUVE, "#1e1e2e")
+        tk.Checkbutton(zc_btn, text="Apply found centres to z_centre", variable=self._pl_zc_apply,
+                       bg=BG2, fg=TEXT2, selectcolor=SURFACE, activebackground=BG2,
+                       activeforeground=TEXT, font=("Segoe UI", 8)).pack(side="left", padx=(8, 0))
+        self._pl_zc_status_lbl = tk.Label(zc_card, text="Find Z-Center: idle.", bg=BG2, fg=SUBTEXT,
+                                          font=("Segoe UI", 9), anchor="w", justify="left",
+                                          wraplength=480)
+        self._pl_zc_status_lbl.pack(fill="x", padx=8, pady=(0, 4))
 
         # Z rank/nd2 widgets kept for fallback _pl_record_z handler (no button exposed)
         self._pl_z_rank_combo = ttk.Combobox(f_s3, textvariable=self._pl_z_rank, width=6,
@@ -2064,21 +2123,21 @@ class App(tk.Tk):
         # Run Pipeline sequence, which deliberately stops before the laser fires).
         paj = tk.Frame(pa, bg=BG2, bd=1, relief="solid"); paj.pack(fill="x", padx=4, pady=3)
         hdrj = tk.Frame(paj, bg=BG2); hdrj.pack(fill="x", padx=6, pady=(3, 0))
-        tk.Label(hdrj, text="Photoactivation JOB  (launch step3_zstack_PA - FIRES 850 nm LASER)",
+        tk.Label(hdrj, text="Photoactivation JOB  (launch step3_zstack_PA_WC - FIRES 850 nm LASER)",
                  bg=BG2, fg=MAUVE, font=("Segoe UI", 9, "bold")).pack(side="left")
         bodyj = tk.Frame(paj, bg=BG2); bodyj.pack(fill="x", padx=24, pady=(0, 6))
         tk.Label(bodyj, text="Fires the PA activation laser. Requires 'A1 powered ON' + a confirm "
                              "click; run PA Points first so the ND multipoint is loaded.",
                  bg=BG2, fg=RED, font=("Segoe UI", 8), justify="left",
                  wraplength=460).pack(anchor="w")
-        # Job3 is HARD-WIRED to step3_zstack_PA (the ONLY job this card may launch).
+        # Job3 is HARD-WIRED to step3_zstack_PA_WC (the ONLY job this card may launch).
         # There is deliberately NO dropdown: a selectable list could point this GATED,
         # laser-firing button at a different/unintended job. Passing the literal name
         # (not a mutable StringVar) guarantees this button launches exactly
-        # step3_zstack_PA. Firing stays gated -- _pl_run_job(..., True) requires
+        # step3_zstack_PA_WC. Firing stays gated -- _pl_run_job(..., True) requires
         # 'A1 powered ON' + an explicit confirm click before the 850 nm laser fires.
         rj = tk.Frame(bodyj, bg=BG2); rj.pack(fill="x", pady=(2, 0))
-        tk.Label(rj, text="Job: step3_zstack_PA  (fixed -- the only PA job this button fires)",
+        tk.Label(rj, text="Job: step3_zstack_PA_WC  (fixed -- the only PA job this button fires)",
                  bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
         # The PA job's point + well are now set DIRECTLY at launch (Jobs_RunJobInitParam) from the
         # current spheroid trigger -- see _pl_run_pa_job / _pl_pa_point_params -- so it fires on the
@@ -2517,6 +2576,23 @@ class App(tk.Tk):
         mid    = self._pl_zv_mid
         sign   = 1.0 if self._pl_zv_b2t else -1.0
         chan   = getattr(self, "_pl_zv_chan", None)
+        # Find Z-Center override: if this spheroid has a found result, highlight its focal
+        # plane (nearest by absolute Z when zabs is populated, else its plane_index) in GREEN
+        # when confident / AMBER on the geometric-middle fallback, keeping the blue geometric
+        # middle as a faint secondary marker.
+        geom_center = center
+        found = None; found_idx = None
+        if isinstance(getattr(self, "_pl_zc_found", None), dict) and self._pl_zc_found:
+            found = self._pl_zc_found.get(self._pl_zc_sid_from_key(self._pl_zv_sel.get()))
+        if found:
+            if zabs is not None:
+                found_idx = int(_np.argmin(_np.abs(
+                    _np.asarray(zabs, dtype=float) - float(found["z_centre_um"]))))
+            else:
+                found_idx = int(found.get("plane_index", geom_center))
+            found_idx = max(0, min(found_idx, z - 1))
+            self._pl_zv_center = found_idx
+            center = found_idx
         THUMB = 150
         for i in range(z):
             a = _np.clip((arr[i].astype(_np.float32) - vmin) / (vmax - vmin), 0.0, 1.0)
@@ -2529,17 +2605,28 @@ class App(tk.Tk):
                 absz = zabs[i]
             else:
                 absz = self._pl_zv_basez + (i - mid) * (self._pl_zv_step or 0.0) * sign
-            is_centre = (i == center)
-            cellbg = SURFACE2 if is_centre else BG2
-            edge   = BLUE if is_centre else SURFACE
+            is_found = (found is not None and i == found_idx)
+            is_geom  = (i == geom_center)
+            if is_found:
+                conf = bool(found.get("confidence"))
+                edge = GREEN if conf else PEACH
+                cellbg = SURFACE2
+                note = (f"found center  Zc={float(found['z_centre_um']):.1f} um" if conf
+                        else f"middle (fallback: {found.get('reason')})")
+                note_fg = edge
+            elif is_geom and found is not None:
+                edge = LAVENDER; cellbg = BG2; note = "middle"; note_fg = SUBTEXT
+            elif is_geom:
+                edge = BLUE; cellbg = SURFACE2; note = "focus centre"; note_fg = BLUE
+            else:
+                edge = SURFACE; cellbg = BG2; note = ""; note_fg = TEXT2
             cell = tk.Frame(self._pl_zv_strip, bg=cellbg, padx=3, pady=3,
                             highlightthickness=2, highlightbackground=edge,
                             highlightcolor=edge)
             cell.pack(side="left", padx=3, pady=4)
             tk.Label(cell, image=photo, bg=cellbg).pack()
-            cap = f"Z {absz:.1f} um\n" + ("focus centre" if is_centre else "")
-            tk.Label(cell, text=cap, bg=cellbg,
-                     fg=(BLUE if is_centre else TEXT2),
+            cap = f"Z {absz:.1f} um\n" + note
+            tk.Label(cell, text=cap, bg=cellbg, fg=note_fg,
                      font=("Segoe UI", 8), justify="center").pack()
         self._pl_zv_strip_canvas.update_idletasks()
         self._pl_zv_strip_canvas.configure(
@@ -2665,11 +2752,25 @@ class App(tk.Tk):
     def _pl_zv_append_row(self, name, st):
         import numpy as _np
         arr = st["arr"]; vmin = st["vmin"]; vmax = st["vmax"]; center = st["center"]
+        # Find Z-Center override for the list row (no per-plane zabs here, so map via
+        # plane_index); keep the geometric middle as a faint secondary marker.
+        geom_center = center
+        found = None; found_idx = None
+        if isinstance(getattr(self, "_pl_zc_found", None), dict) and self._pl_zc_found:
+            found = self._pl_zc_found.get(self._pl_zc_sid_from_key(name))
+        if found:
+            found_idx = max(0, min(int(found.get("plane_index", geom_center)), arr.shape[0] - 1))
+            center = found_idx
         row = tk.Frame(self._pl_zv_strip, bg=BG2)
         row.pack(side="top", fill="x", anchor="w", pady=(2, 8))
         tag = "  (FOV-matched crop)" if st.get("cropped") else ""
+        note = ""
+        if found is not None:
+            note = ("   [found Zc={:.1f} um]".format(float(found["z_centre_um"]))
+                    if found.get("confidence")
+                    else "   [middle fallback: {}]".format(found.get("reason")))
         tk.Label(row,
-                 text=f"{name}     centre Z {st['basez']:.1f} um     {st['n_planes']} planes{tag}",
+                 text=f"{name}     centre Z {st['basez']:.1f} um     {st['n_planes']} planes{tag}{note}",
                  bg=BG2, fg=MAUVE, font=("Segoe UI", 9, "bold"), anchor="w"
                  ).pack(side="top", anchor="w", padx=2)
         sub = tk.Frame(row, bg=BG2); sub.pack(side="top", anchor="w")
@@ -2681,9 +2782,17 @@ class App(tk.Tk):
             im.thumbnail((96, 96))
             photo = _PILImageTk.PhotoImage(im)
             self._pl_zv_thumbs.append(photo)
-            is_c = (i == center)
-            cbg = SURFACE2 if is_c else BG2
-            edge = BLUE if is_c else SURFACE
+            is_found = (found is not None and i == found_idx)
+            is_geom  = (i == geom_center)
+            if is_found:
+                edge = GREEN if found.get("confidence") else PEACH
+                cbg = SURFACE2
+            elif is_geom and found is not None:
+                edge = LAVENDER; cbg = BG2
+            elif is_geom:
+                edge = BLUE; cbg = SURFACE2
+            else:
+                edge = SURFACE; cbg = BG2
             cell = tk.Frame(sub, bg=cbg, padx=1, pady=1, highlightthickness=2,
                             highlightbackground=edge, highlightcolor=edge)
             cell.pack(side="left", padx=1, pady=1)
@@ -3242,7 +3351,8 @@ class App(tk.Tk):
             self.after(0, lambda: self._pl_af_status_lbl.configure(
                 text="Capture: could not start (see log).", fg=RED))
 
-    def _pl_capture_1050(self):
+    def _pl_capture_1050(self, z_half=None, z_step=None, oc_name=None, tag=None,
+                         load_captured=False):
         """Worker: inject the 1050 nm depth OC (the SAME OC Step 4's Validation uses --
         see _pl_prepa_checked_ocs) into the triggers _pl_trigger_autofocus just wrote, then
         dispatch the z-stack macro (action 2). Preserves the z geometry the triggers carry,
@@ -3252,7 +3362,14 @@ class App(tk.Tk):
         plain nd2/ dir 'Recenter' reads. Guarded trigger restore + busy release in finally
         (models _pl_prepa_capture_ocs)."""
         import configparser, time, spheroid_pipeline as _pl
-        oc_name, tag = "1050nm_Galvo_561nm_NDD2_WC", "1050nm_depth"   # == _pl_prepa_checked_ocs 1050
+        # Defaults reproduce the Step-3 Capture exactly; the Find Z-Center "Capture Z-Search"
+        # passes a wide/coarse (z_half, z_step) + search oc/tag and load_captured=True to
+        # auto-show the filmstrips. When z_half/z_step are given they OVERRIDE the trigger's
+        # geometry in the injection loop below (z_centre + close_after still come from it).
+        if oc_name is None:
+            oc_name, tag = "1050nm_Galvo_561nm_NDD2_WC", "1050nm_depth"   # == _pl_prepa_checked_ocs 1050
+        elif tag is None:
+            tag = "1050nm_zsearch"
         light_path = "2-Photon"   # NIS-E light path for the A1/2P acquisition (macro SelectLightPath)
         nosepiece_20x = 1         # 20X nosepiece POSITION for the macro's Stg_SetNosepiecePosition (0-based,
                                   # same as the nd2 NosPosition: 10X=0, 20X=1 -- confirmed from the 10X mosaic
@@ -3284,15 +3401,19 @@ class App(tk.Tk):
             if not triggers:
                 self.after(0, lambda: self._pl_af_status_lbl.configure(
                     text="Capture: no af_trigger_*.ini were written.", fg=RED)); return
-            # Inject the 1050 OC into each trigger, PRESERVING the z geometry + close_after
+            # Inject the OC into each trigger, PRESERVING the z geometry + close_after
             # _pl_trigger_autofocus already wrote (a full stack stays a full stack; a
-            # Locate-only single plane stays single).
+            # Locate-only single plane stays single) -- unless the caller overrides
+            # z_half/z_step (the Z-Search wide/coarse sweep), in which case those win.
+            z_override = {"z_half": z_half, "z_step": z_step}
             for d in triggers:
                 lines = ["[spheroid]", f"rank={d['rank']}",
                          f"spheroid_id={d.get('spheroid_id', '')}",
                          f"stage_x={d['stage_x']}", f"stage_y={d['stage_y']}"]
                 for k in ("z_centre", "z_half", "z_step", "close_after"):
-                    if k in d:
+                    if z_override.get(k) is not None:
+                        lines.append(f"{k}={z_override[k]}")
+                    elif k in d:
                         lines.append(f"{k}={d[k]}")
                 lines.append(f"oc={oc_name}")
                 # 2-photon prep (macro does these ONCE, before the first SelectOptConf, gated on
@@ -3341,6 +3462,18 @@ class App(tk.Tk):
             self.after(0, lambda: self._pl_af_status_lbl.configure(
                 text="Capture: 1050 stacks captured -- click 'Recenter'.", fg=GREEN))
             self.after(0, self._pl_poll_af_thread)   # refresh the table/dashboard from af_done
+            if load_captured:
+                # Auto-show the just-captured filmstrips so Find Z-Center's highlights land
+                # somewhere visible. Captures kept the plain nd2/ dir (nd2_dir was never
+                # redirected), named {sid}_zstack.nd2 exactly as Recenter/Validation expect.
+                nd2_cfg = cp.get("paths", "nd2_dir", fallback="").strip()
+                base_nd2 = Path(nd2_cfg) if nd2_cfg else wd.parent / "nd2"
+                items = []
+                for d in triggers:
+                    sid = (str(d.get("spheroid_id") or "").strip()
+                           or f"rank{int(d['rank']):02d}")
+                    items.append((f"{sid}_zstack.nd2", str(base_nd2 / f"{sid}_zstack.nd2")))
+                self.after(0, lambda it=items: self._pl_zv_load_captured(it, "Z-Search"))
         except Exception as e:
             self._pl_log(f"Capture: FAILED ({type(e).__name__}): {e}")
             self.after(0, lambda m=str(e): self._pl_af_status_lbl.configure(
@@ -3367,6 +3500,142 @@ class App(tk.Tk):
             except Exception as e:
                 self._pl_log(f"Capture: WARNING - could not restore triggers: {e}")
             self._pl_dispatch_busy = False
+
+    # ── Find Z-Center handlers ────────────────────────────────────────────────
+
+    def _pl_zc_capture_thread(self):
+        """Find Z-Center "Capture Z-Search": the EXACT Step-3 Capture idiom
+        (_pl_capture_thread) but drives a WIDE/COARSE stack from _pl_zc_half/_pl_zc_step
+        and the search OC, so each spheroid's full through-focus is imaged. Same A1/2P
+        interlock guards; non-blocking; auto-loads the captures into the viewer on success."""
+        if getattr(self, "_pl_dispatch_busy", False):
+            messagebox.showinfo("Dispatcher busy",
+                                "A macro is already running via the dispatcher — wait for it to finish."); return
+        if not self._pl_pa_a1on.get():
+            messagebox.showwarning(
+                "A1 not confirmed",
+                "The Z-Search capture is 2-photon: it removes the A1 interlock and needs the "
+                "A1/2P powered ON.\n\nTick 'A1 powered ON (2P)' first, and make sure NIS-E is "
+                "switched to the 2-Photon acquisition mode (not Flash 4 + BF)."); return
+        try:
+            z_half = float(self._pl_zc_half.get()); z_step = float(self._pl_zc_step.get())
+        except ValueError:
+            messagebox.showerror("Bad value", "Search half-range and step must be numbers."); return
+        oc = self._pl_zc_oc.get().strip()
+        if not oc:
+            messagebox.showwarning("No OC", "Set a search OC for the Z-Search capture."); return
+        if not self._pl_trigger_autofocus():
+            return   # nothing selected / bad value / write failed -- dialog already shown
+        self._pl_abort_clear()          # a stale flag must not kill the run we're starting
+        self._pl_dispatch_busy = True
+        self.after(0, lambda: self._pl_zc_status_lbl.configure(
+            text=f"Capture Z-Search: wide +/-{z_half:g}/{z_step:g} um 1050 stack starting…", fg=YELLOW))
+        try:
+            threading.Thread(target=self._pl_capture_1050,
+                             kwargs=dict(z_half=z_half, z_step=z_step, oc_name=oc,
+                                         tag="1050nm_zsearch", load_captured=True),
+                             daemon=True).start()
+        except Exception as e:
+            self._pl_dispatch_busy = False
+            self._pl_log(f"Capture Z-Search: failed to start worker thread: {e}")
+            self.after(0, lambda: self._pl_zc_status_lbl.configure(
+                text="Capture Z-Search: could not start (see log).", fg=RED))
+
+    def _pl_zc_find_thread(self):
+        threading.Thread(target=self._pl_zc_find, daemon=True).start()
+
+    def _pl_zc_search_dir(self) -> str:
+        """Resolve the folder holding the *_zstack.nd2 search captures the same way
+        Recenter does: session.ini nd2_dir -> work_dir/nd2 -> Output dir/nd2 -> the
+        Step-4 ND2 field (or its /nd2 child). Returns "" if none carry captures."""
+        import configparser, spheroid_pipeline as _pl
+        def _caps(d) -> bool:
+            try:
+                return bool(d) and Path(d).is_dir() and any(Path(d).glob("*_zstack.nd2"))
+            except Exception:
+                return False
+        try:
+            cp = configparser.ConfigParser(); cp.read(_pl.SESSION_INI)
+            c = cp.get("paths", "nd2_dir", fallback="").strip()
+            if _caps(c):
+                return c
+            wd = cp.get("paths", "work_dir", fallback="").strip()
+            if wd and _caps(str(Path(wd).parent / "nd2")):
+                return str(Path(wd).parent / "nd2")
+        except Exception:
+            pass
+        out = self._pl_out_dir.get().strip()
+        if out and _caps(str(Path(out) / "nd2")):
+            return str(Path(out) / "nd2")
+        c = self._pl_nd2_out_dir.get().strip()
+        if _caps(c):
+            return c
+        if c and _caps(str(Path(c) / "nd2")):
+            return str(Path(c) / "nd2")
+        return ""
+
+    def _pl_zc_find(self):
+        """Peak-detect each spheroid's focal plane from the wide search captures
+        (find_zcenter_all), store the results for the viewer highlight, apply confident
+        centres (+ the OC->PA dZ offset) to z_centre when the toggle is on, and auto-load
+        the captures so the found planes are highlighted."""
+        import spheroid_pipeline as _pl
+        if not self._pl_records:
+            self.after(0, lambda: self._pl_zc_status_lbl.configure(
+                text="Find Centers: run Steps 1-3 (capture) first.", fg=RED)); return
+        search_dir = self._pl_zc_search_dir()
+        if not search_dir:
+            self.after(0, lambda: self._pl_zc_status_lbl.configure(
+                text="Find Centers: no *_zstack.nd2 found -- Capture Z-Search first.", fg=RED)); return
+        try:
+            offset = float(self._pl_zc_offset.get())
+        except ValueError:
+            self.after(0, lambda: self._pl_zc_status_lbl.configure(
+                text="Find Centers: OC->PA dZ offset must be a number.", fg=RED)); return
+        try:
+            res = _pl.find_zcenter_all(self._pl_records, search_dir,
+                                       prominence_min=ZC_PROMINENCE_MIN)
+        except Exception as e:
+            self._pl_log(f"Find Centers: FAILED ({type(e).__name__}): {e}")
+            self.after(0, lambda m=str(e): self._pl_zc_status_lbl.configure(
+                text=f"Find Centers: FAILED -- {m}", fg=RED)); return
+        self._pl_zc_found = res
+        apply = self._pl_zc_apply.get()
+        by_sid = {str(r.spheroid_id): r for r in self._pl_records}
+        n_conf = 0
+        for sid, result in res.items():
+            conf = bool(result.get("confidence"))
+            n_conf += int(conf)
+            self._pl_log(
+                f"Find Z-Center: sid={sid} plane={result.get('plane_index')} "
+                f"z_centre_um={float(result.get('z_centre_um', 0.0)):.1f} conf={conf} "
+                f"prom={float(result.get('prominence', 0.0)):.2f} ({result.get('reason')})")
+            if apply and conf:
+                r = by_sid.get(str(sid))
+                if r is not None:
+                    r.z_centre_um = float(result["z_centre_um"]) + offset
+        self.after(0, self._pl_update_table)
+        self.after(0, self._pl_refresh_dashboard)
+        applied = f" ({n_conf} applied +{offset:g} um)" if apply else " (not applied)"
+        self.after(0, lambda n=len(res), c=n_conf, a=applied: self._pl_zc_status_lbl.configure(
+            text=f"Find Centers: {c}/{n} confident{a}. Highlights shown in Captured Z-Stacks.",
+            fg=(GREEN if c else YELLOW)))
+        self.after(0, self._pl_zv_autoload)   # re-render so found-centre highlights appear
+
+    def _pl_zc_sid_from_key(self, key: str) -> str:
+        """Extract a spheroid id from a viewer entry key, matching how _pl_zv entries are
+        keyed: "{sid}_zstack.nd2", the "Add..." "name  [parent]" variant, or the phase-
+        qualified "{phase}/{tag}/{sid}" Validation display name."""
+        if not key:
+            return ""
+        s = key.split("  [")[0].strip()
+        if "/" in s:
+            s = s.rsplit("/", 1)[-1]
+        if s.endswith(".nd2"):
+            s = s[:-4]
+        if s.endswith("_zstack"):
+            s = s[:-7]
+        return s.strip()
 
     # ── Step 4 handlers ───────────────────────────────────────────────────────
 
@@ -4077,12 +4346,17 @@ class App(tk.Tk):
     # If setting Name alone does not MOVE the scan (task also keys off Index/Position), the
     # selection is too structured for InitParam and we pivot to the point-set approach.
     # Empty key -> the job launches WITHOUT the well (plain Jobs_RunJobByName) -- safe no-op.
-    WELL_PARAM_KEY = "WellSelection.Selection.Wells[0].Name"      # Step1_Locate_via_scan (confirmed)
-    # step3_zstack_PA (PA) IS parameterized too: its in-job PredefinedPoints REUSES THE LAST
-    # point unless the "Import from ND" task is manually re-triggered in the editor -> the 850 nm
-    # laser could fire on a STALE spot (observed 2026-07-27: nd2 landed 65 um off the supplied
-    # spheroid; the in-job point was even seen at -50 mm). So we set the point (and well) DIRECTLY
-    # at launch via Jobs_RunJobInitParam. Keys confirmed via the job's Debug task (drop the "Job."
+    WELL_PARAM_KEY = "WellSelection.Selection.Wells[0].Name"      # Step1 mosaic: RELABELS output file only
+    WELL_INDEX_KEY = "WellSelection.Selection.Wells[0].Index"     # NOT settable -- rebuilt from the UI selection at run time
+    WELL_NCOLS     = 12   # plate columns (Cellvis 96-well) for the well<->index numbering
+    PLATE_CALIB_INI = r"C:/SpheroidPA/plate_calib.ini"           # 3-well affine calib: well -> stage XY (survives GUI restart)
+    # step3_zstack_PA_WC (PA) is parameterized too. The ORIGINAL step3_zstack_PA had an
+    # "Import points from ND acquisition" (NDToPointSet, Replace Points) task that overwrote
+    # PredefinedPoints at run time from the LAST ND acquisition -> the 850 nm laser fired on a
+    # STALE spot (observed 2026-07-27: both PA nd2 landed at the last-imaged coord regardless of
+    # the stored point; the in-job point was even seen at -50 mm). step3_zstack_PA_WC has that
+    # task DELETED, so the manual PredefinedPoints is authoritative and we set the point (and
+    # well) DIRECTLY at launch via Jobs_RunJobInitParam. Keys confirmed via the job's Debug task (drop the "Job."
     # prefix, per Example 18/19). X/Y are native stage um (Position.Stage.x/y); Z is um (Position.z,
     # a sibling of Stage -- not Stage.z). Single point (Positions[0]) for now.
     PA_POINT_X_KEY = "PredefinedPoints.Positions.Positions[0].Position.Stage.x"
@@ -4097,16 +4371,288 @@ class App(tk.Tk):
         m = re.match(r"^\s*([A-Za-z]+)\s*0*(\d+)\s*$", well)
         return f"{m.group(1).upper()}{int(m.group(2))}" if m else well
 
+    def _pl_well_index_value(self, well):
+        """Row-major 0-based well INDEX for WellSelection.Selection.Wells[0].Index -- the field
+        that actually repositions the Step 1 mosaic (Name only relabels). Rig-verified 2026-08-07:
+        B1 -> 12, i.e. Index = row_idx*WELL_NCOLS + (col-1), row A=0..H=7. So A1=0, A2=1, B2=13,
+        H12=95. Returns None if the well can't be parsed (single-letter rows only)."""
+        import re
+        m = re.match(r"^\s*([A-Za-z])\s*0*(\d+)\s*$", well)
+        if not m:
+            return None
+        return (ord(m.group(1).upper()) - ord("A")) * self.WELL_NCOLS + (int(m.group(2)) - 1)
+
+    # ── Plate coordinate calibration (well -> stage XY) ────────────────────────
+    # WellSelection can't be parameterized: its Wells[] are rebuilt from the task's internal UI
+    # selection at run time (rig-proven -- setting Index/Position is ignored; only .Name relabels).
+    # So the mosaic is driven by a stage COORDINATE instead -- an affine map (origin + column/row
+    # pitch vectors, rotation-aware) fit from 3 reference wells, set as the job's PredefinedPoint
+    # (the SAME param proven settable on the PA job). Persisted to PLATE_CALIB_INI.
+    @staticmethod
+    def _plate_well_rc(well):
+        """'A02'/'a2' -> (row_idx 0-based, col 1-based); None if unparseable (single-letter rows)."""
+        import re
+        m = re.match(r"^\s*([A-Za-z])\s*0*(\d+)\s*$", str(well))
+        return (ord(m.group(1).upper()) - ord("A"), int(m.group(2))) if m else None
+
+    @staticmethod
+    def _solve3(A, b):
+        """Solve 3x3  A x = b  by Cramer's rule (numpy is optional in this GUI). None if singular."""
+        def d3(m):
+            return (m[0][0]*(m[1][1]*m[2][2]-m[1][2]*m[2][1])
+                  - m[0][1]*(m[1][0]*m[2][2]-m[1][2]*m[2][0])
+                  + m[0][2]*(m[1][0]*m[2][1]-m[1][1]*m[2][0]))
+        D = d3(A)
+        if abs(D) < 1e-9:
+            return None
+        res = []
+        for j in range(3):
+            Aj = [row[:] for row in A]
+            for i in range(3):
+                Aj[i][j] = b[i]
+            res.append(d3(Aj) / D)
+        return res
+
+    @classmethod
+    def _plate_fit(cls, refs):
+        """Least-squares affine fit over ALL provided wells (>=3). Returns {bx,cx,rx,by,cy,ry} or
+        None. Model: x = bx + (col-1)*cx + row*rx ; y = by + (col-1)*cy + row*ry. Solved via the
+        normal equations (AtA is 3x3 -> Cramer), so no numpy dependency; using >3 wells averages
+        out plate non-idealities (corner-to-corner the grid isn't perfectly affine)."""
+        pts = []
+        for w, x, y in refs:
+            rc = cls._plate_well_rc(w)
+            if rc is None:
+                return None
+            pts.append(([1.0, rc[1] - 1, rc[0]], float(x), float(y)))
+        if len(pts) < 3:
+            return None
+        AtA = [[0.0]*3 for _ in range(3)]
+        Atx = [0.0]*3; Aty = [0.0]*3
+        for a, x, y in pts:
+            for i in range(3):
+                Atx[i] += a[i]*x; Aty[i] += a[i]*y
+                for j in range(3):
+                    AtA[i][j] += a[i]*a[j]
+        sx = cls._solve3([r[:] for r in AtA], Atx)
+        sy = cls._solve3([r[:] for r in AtA], Aty)
+        if sx is None or sy is None:
+            return None
+        return {"bx": sx[0], "cx": sx[1], "rx": sx[2], "by": sy[0], "cy": sy[1], "ry": sy[2]}
+
+    @classmethod
+    def _plate_well_xy(cls, calib, well):
+        """Stage (x,y) for a well from a calib dict; None if no calib / unparseable well."""
+        if not calib:
+            return None
+        rc = cls._plate_well_rc(well)
+        if rc is None:
+            return None
+        row, col = rc
+        return (calib["bx"] + (col - 1)*calib["cx"] + row*calib["rx"],
+                calib["by"] + (col - 1)*calib["cy"] + row*calib["ry"])
+
+    def _pl_load_plate_calib(self):
+        """Load the persisted 3-well affine calib from PLATE_CALIB_INI. Caches on
+        self._pl_plate_calib and returns it (or None if absent/invalid)."""
+        import configparser
+        try:
+            p = Path(self.PLATE_CALIB_INI)
+            if p.exists():
+                cp = configparser.ConfigParser(); cp.read(p)
+                refs = [(cp.get(s, "well"), cp.getfloat(s, "x"), cp.getfloat(s, "y"))
+                        for s in (f"ref{i}" for i in range(1, 10)) if cp.has_section(s)]
+                if len(refs) >= 3:
+                    self._pl_plate_calib = self._plate_fit(refs)
+                    return self._pl_plate_calib
+        except Exception as e:
+            self._pl_log(f"Plate calib: load failed: {e}")
+        self._pl_plate_calib = None
+        return None
+
+    def _pl_save_plate_calib(self, refs):
+        """Fit + persist 3 reference wells. refs: [(well,x,y)]*3. Returns the calib dict or None."""
+        calib = self._plate_fit(refs)
+        if calib is None:
+            self._pl_log("Plate calib: fit failed -- pick 3 wells that span BOTH rows and columns.")
+            return None
+        import configparser
+        cp = configparser.ConfigParser()
+        for i, (w, x, y) in enumerate(refs, 1):
+            cp[f"ref{i}"] = {"well": str(w).strip().upper(), "x": f"{float(x):.3f}", "y": f"{float(y):.3f}"}
+        try:
+            p = Path(self.PLATE_CALIB_INI); p.parent.mkdir(parents=True, exist_ok=True)
+            with p.open("w") as f:
+                cp.write(f)
+        except Exception as e:
+            self._pl_log(f"Plate calib: save failed: {e}"); return None
+        self._pl_plate_calib = calib
+        cpit = math.hypot(calib["cx"], calib["cy"]); rpit = math.hypot(calib["rx"], calib["ry"])
+        self._pl_log(f"Plate calib saved: A1 origin=({calib['bx']:.1f},{calib['by']:.1f}) um, "
+                     f"col-pitch={cpit:.1f}, row-pitch={rpit:.1f} um (expect ~9000).")
+        return calib
+
+    # Number of reference-well rows offered in the calibration panel. 3 is the minimum for an
+    # affine fit; the extra rows are optional and simply average out plate non-idealities.
+    PLATE_CALIB_ROWS = 4
+
+    def _pl_build_plate_calib_panel(self, parent):
+        """Build the 'Plate Calibration' panel: N (well, stage x, stage y) rows + Compute & Save.
+
+        How the operator fills it: in NIS-E, click a well in the job's WellSelection task and read
+        that well's `...Position.Stage.x/y` off the Debug task (or move the stage to the well
+        centre and read the stage readout). Enter >=3 wells that span BOTH rows and columns --
+        corner wells (A1 / A12 / H1 / H12) give the best-conditioned fit. Rows left blank are
+        ignored. 'Compute & Save' fits the affine and writes PLATE_CALIB_INI."""
+        box = tk.LabelFrame(parent, text=" Plate Calibration (well -> stage XY) ",
+                            bg=BG, fg=MAUVE, font=("Segoe UI", 9, "bold"),
+                            bd=1, relief="groove")
+        box.pack(fill="x", pady=(0, 4))
+        tk.Label(box, text="Reference wells: enter >=3 spanning both rows and columns "
+                           "(corners are best). Stage XY in um.",
+                 bg=BG, fg=SUBTEXT, font=("Segoe UI", 8), anchor="w").pack(fill="x", padx=6, pady=(2, 0))
+
+        hdr = tk.Frame(box, bg=BG); hdr.pack(fill="x", padx=6)
+        for txt, w in (("Well", 8), ("Stage X (um)", 14), ("Stage Y (um)", 14)):
+            tk.Label(hdr, text=txt, width=w, anchor="w", bg=BG, fg=TEXT2,
+                     font=("Segoe UI", 8, "bold")).pack(side="left", padx=(0, 4))
+
+        self._pl_calib_rows = []
+        for _ in range(self.PLATE_CALIB_ROWS):
+            r = tk.Frame(box, bg=BG); r.pack(fill="x", padx=6, pady=1)
+            vs = []
+            for w in (8, 14, 14):
+                v = tk.StringVar()
+                tk.Entry(r, textvariable=v, width=w, bg=SURFACE, fg=TEXT,
+                         insertbackground=TEXT, relief="flat",
+                         font=("Segoe UI", 9)).pack(side="left", padx=(0, 4))
+                vs.append(v)
+            self._pl_calib_rows.append(tuple(vs))
+
+        btn = tk.Frame(box, bg=BG); btn.pack(fill="x", padx=6, pady=(3, 2))
+        self._btn(btn, "Compute & Save", self._pl_calib_compute_save, BLUE, "#1e1e2e", side="left")
+        self._btn(btn, "Reload from file", self._pl_calib_fill_from_file, SURFACE2, TEXT, side="left")
+        self._btn(btn, "Preview Well ID", self._pl_calib_preview, SURFACE2, TEXT, side="left")
+
+        self._pl_calib_lbl = tk.Label(box, text="", bg=BG, fg=SUBTEXT,
+                                      font=("Segoe UI", 8), anchor="w", justify="left")
+        self._pl_calib_lbl.pack(fill="x", padx=6, pady=(0, 4))
+        self._pl_calib_fill_from_file()
+
+    def _pl_calib_read_rows(self):
+        """Rows -> [(well, x, y)], skipping blank rows. Raises ValueError naming the bad row."""
+        refs = []
+        for i, (wv, xv, yv) in enumerate(self._pl_calib_rows, 1):
+            w, x, y = wv.get().strip(), xv.get().strip(), yv.get().strip()
+            if not (w or x or y):
+                continue
+            if not (w and x and y):
+                raise ValueError(f"row {i} is incomplete -- fill well, X and Y (or clear it).")
+            if self._plate_well_rc(w) is None:
+                raise ValueError(f"row {i}: '{w}' is not a well ID (expected e.g. A1, A01, H12).")
+            try:
+                refs.append((w.upper(), float(x), float(y)))
+            except ValueError:
+                raise ValueError(f"row {i}: X/Y must be numbers (got '{x}', '{y}').")
+        return refs
+
+    def _pl_calib_fill_from_file(self):
+        """Prefill the rows from PLATE_CALIB_INI and show the fit that is currently in force."""
+        import configparser
+        try:
+            p = Path(self.PLATE_CALIB_INI)
+            refs = []
+            if p.exists():
+                cp = configparser.ConfigParser(); cp.read(p)
+                for s in (f"ref{i}" for i in range(1, 10)):
+                    if cp.has_section(s):
+                        refs.append((cp.get(s, "well"), cp.get(s, "x"), cp.get(s, "y")))
+            for (wv, xv, yv), val in zip(self._pl_calib_rows,
+                                         refs + [("", "", "")] * len(self._pl_calib_rows)):
+                wv.set(val[0]); xv.set(val[1]); yv.set(val[2])
+            if len(refs) > len(self._pl_calib_rows):
+                # The ini holds more refs than the panel can show. Say so loudly: a later
+                # 'Compute & Save' rewrites the file from the ROWS, which would silently
+                # discard the ones that never made it on screen.
+                self._pl_log(f"Plate calib: {self.PLATE_CALIB_INI} has {len(refs)} reference "
+                             f"wells but the panel shows {len(self._pl_calib_rows)} -- "
+                             f"'Compute & Save' would DROP the rest. Raise PLATE_CALIB_ROWS "
+                             f"or edit the ini directly.")
+        except Exception as e:
+            self._pl_calib_lbl.configure(text=f"Could not read {self.PLATE_CALIB_INI}: {e}", fg=RED)
+            return
+        self._pl_calib_show(self._pl_load_plate_calib(), loaded=True)
+
+    def _pl_calib_show(self, calib, loaded=False):
+        """Render the fit summary: pitches (expect ~9000 um on a 96-well plate), rotation, and the
+        worst reference-well residual -- the number that says whether the fit can be trusted."""
+        if not calib:
+            self._pl_calib_lbl.configure(
+                text="No calibration -- Run Job1 cannot drive by coordinate (it will image the "
+                     "job's stored point). Enter >=3 wells and Compute & Save.", fg=YELLOW)
+            return
+        cpit = math.hypot(calib["cx"], calib["cy"]); rpit = math.hypot(calib["rx"], calib["ry"])
+        rot  = math.degrees(math.atan2(calib["cy"], -calib["cx"]))
+        worst = ""
+        try:
+            refs = self._pl_calib_read_rows()
+            if refs:
+                res = max(math.hypot(*(a - b for a, b in
+                                       zip(self._plate_well_xy(calib, w), (x, y))))
+                          for w, x, y in refs)
+                worst = f" | worst residual {res:.1f} um"
+        except ValueError:
+            pass
+        self._pl_calib_lbl.configure(
+            text=(f"{'Loaded' if loaded else 'Saved'}: A1 origin "
+                  f"({calib['bx']:.1f}, {calib['by']:.1f}) um | col-pitch {cpit:.1f} | "
+                  f"row-pitch {rpit:.1f} um (expect ~9000) | rotation {rot:+.3f} deg{worst}"),
+            fg=GREEN)
+
+    def _pl_calib_compute_save(self):
+        """Fit + persist the entered reference wells, then refresh the summary."""
+        try:
+            refs = self._pl_calib_read_rows()
+        except ValueError as e:
+            messagebox.showwarning("Plate calibration", str(e)); return
+        if len(refs) < 3:
+            messagebox.showwarning("Plate calibration",
+                                   "Need at least 3 reference wells spanning both rows and "
+                                   "columns."); return
+        calib = self._pl_save_plate_calib(refs)
+        if calib is None:
+            self._pl_calib_lbl.configure(
+                text="Fit failed -- the wells are collinear (all in one row or one column). "
+                     "Pick wells that span BOTH.", fg=RED)
+            return
+        self._pl_calib_show(calib)
+
+    def _pl_calib_preview(self):
+        """Show where the CURRENT Well ID maps to, so the operator can sanity-check the fit
+        against the stage readout BEFORE firing a mosaic at it."""
+        well  = self._pl_well_id.get().strip()
+        calib = getattr(self, "_pl_plate_calib", None) or self._pl_load_plate_calib()
+        if not calib:
+            self._pl_calib_lbl.configure(text="No calibration loaded -- Compute & Save first.",
+                                         fg=YELLOW); return
+        xy = self._plate_well_xy(calib, well)
+        if xy is None:
+            self._pl_calib_lbl.configure(
+                text=f"Well ID '{well or '(blank)'}' is not a well (expected e.g. A02).", fg=RED)
+            return
+        self._pl_calib_lbl.configure(
+            text=f"Well {well.upper()} -> stage ({xy[0]:.1f}, {xy[1]:.1f}) um  "
+                 f"-- Run Job1 will centre the mosaic here.", fg=BLUE)
+        self._pl_log(f"Plate calib preview: {well.upper()} -> ({xy[0]:.1f}, {xy[1]:.1f}) um")
+
     def _pl_well_params(self, key, tag):
-        """Build {key: value} from the SHARED _pl_well_id (Step 1's working well, also editable
-        on the Step 4 PA card -- same StringVar, so Step 4 defaults to Step 1's well and, if
-        Step 1 was skipped, uses whatever is typed in Step 4). None when no well or no key."""
+        """Build {key: value} (the WellSelection Name) from the shared _pl_well_id. NOTE: this only
+        RELABELS the mosaic's output file -- WellSelection can't be repositioned by param (Index and
+        Position are rebuilt from the UI selection at run time). Coordinate drive lives in
+        _pl_run_job1_at_well. None when no well/key."""
         well = self._pl_well_id.get().strip()
         if well and key:
             return {key: self._pl_well_param_value(well)}
-        if well and not key:
-            self._pl_log(f"{tag}: Well ID '{well}' set but the well-parameter key is not "
-                         f"configured yet (run this job's Debug-task probe) -- launching WITHOUT it.")
         return None
 
     def _pl_pa_point_params(self):
@@ -4157,24 +4703,44 @@ class App(tk.Tk):
 
     def _pl_run_pa_job(self):
         """Step 4 'Run Photoactivation Job': regenerate the current triggers, then launch
-        step3_zstack_PA with its PredefinedPoint[0] + well set to the CURRENT spheroid via
+        step3_zstack_PA_WC with its PredefinedPoint[0] + well set to the CURRENT spheroid via
         Jobs_RunJobInitParam -- the activation fires on the exact supplied point, never the job's
         stale in-job point. Still gated (A1 confirm + fire-confirm) inside _pl_run_job."""
         if not self._pl_regen_triggers():
             return
-        self._pl_run_job("step3_zstack_PA", True, params=self._pl_pa_point_params())
+        self._pl_run_job("step3_zstack_PA_WC", True, params=self._pl_pa_point_params())
 
-    # Where the Step1_Locate_via_scan JOB writes its mosaic -- a NEW timestamped folder per run,
+    # Where the Step1_Locate_via_scan_WC JOB writes its mosaic -- a NEW timestamped folder per run,
     # under the NIS-E jobs DB (NOT the pipeline nd2_dir). See the [[nise-step1-locate-scan-save-path]] note.
-    MOSAIC_JOB_DIR = r"C:/ProgramData/Laboratory Imaging/Jobs/jobsdb Projects/IMAGEN/Step1_Locate_via_scan"
+    MOSAIC_JOB_DIR = r"C:/ProgramData/Laboratory Imaging/Jobs/jobsdb Projects/IMAGEN/Step1_Locate_via_scan_WC"
 
     def _pl_run_job1_at_well(self):
-        """Step 1 'Run Job1': launch Step1_Locate_via_scan, setting the WELL from the GUI Well
-        ID via Jobs_RunJobInitParam. No well/key -> plain, safe mosaic launch. After launching,
-        watches the JOB's output dir for the NEW folder it creates and auto-fills the mosaic
-        ND2 field with the stitched nd2 it saves there."""
-        self._pl_run_job("Step1_Locate_via_scan", False,
-                         params=self._pl_well_params(self.WELL_PARAM_KEY, "Run Job1"))
+        """Step 1 'Run Job1': launch Step1_Locate_via_scan_WC at the GUI Well ID. WellSelection
+        can't be repositioned by param, so when a plate calibration exists we compute the well's
+        stage (x,y) and drive the mosaic via the job's PredefinedPoint (Jobs_RunJobInitParam);
+        otherwise we fall back to the Name param (RELABELS only -- won't move) and warn. After
+        launching, watches the JOB's output dir and auto-fills the mosaic ND2 field."""
+        well  = self._pl_well_id.get().strip()
+        calib = getattr(self, "_pl_plate_calib", None) or self._pl_load_plate_calib()
+        xy    = self._plate_well_xy(calib, well) if (calib and well) else None
+        if xy is not None:
+            # PredefinedPoint ONLY. Do NOT add WELL_PARAM_KEY here: the WellSelection task was
+            # DELETED from Step1_Locate_via_scan_WC (that deletion is the whole point of the
+            # coordinate drive), so a "WellSelection.*" key now names a task the job no longer
+            # has. The mosaic's filename therefore loses its well label -- harmless, because
+            # _pl_watch_mosaic picks the LARGEST nd2 in the run folder, not one matched by name.
+            params = {self.PA_POINT_X_KEY: round(xy[0], 3),
+                      self.PA_POINT_Y_KEY: round(xy[1], 3)}
+            self._pl_log(f"Run Job1: well {well} -> stage ({xy[0]:.1f}, {xy[1]:.1f}) um "
+                         f"via plate calib (PredefinedPoint drive).")
+        else:
+            # No calib -> nothing we can send. The Name param can't help either (no WellSelection
+            # task to relabel), so launch un-parameterized and say plainly where it will land.
+            params = None
+            self._pl_log(f"Run Job1: NO plate calibration -- launching UN-PARAMETERIZED. The "
+                         f"mosaic will image the job's STORED PredefinedPoint, NOT well "
+                         f"{well or '(none)'}. Calibrate the plate to enable coordinate drive.")
+        self._pl_run_job("Step1_Locate_via_scan_WC", False, params=params)
         # Snapshot existing run folders BEFORE the job creates its new one, so the watcher
         # picks only the folder generated by THIS click.
         try:

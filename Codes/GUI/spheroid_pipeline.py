@@ -322,7 +322,8 @@ def trigger_autofocus_all(records: list[SpheroidRecord], work_dir: Path,
                           z_half: float | None = None,
                           z_step: float | None = None,
                           oc: str | None = None,
-                          close_after: str | None = None) -> int:
+                          close_after: str | None = None,
+                          *, per_record_z: bool = False) -> int:
     """Write per-rank trigger files for the NIS-E capture daemon. Returns count written.
 
     z_centre/z_half/z_step (the Z-stack geometry from GUI Step 3) are written into
@@ -337,6 +338,11 @@ def trigger_autofocus_all(records: list[SpheroidRecord], work_dir: Path,
     close_after (optional, "1"/"0"): when "1" the capture macro closes each ND2 right
     after ImageSaveAs (CloseCurrentDocument(2)) so a multi-spheroid pass doesn't pile
     up windows in NIS-E; "0" keeps them open. Omitted -> key not written (macro default).
+
+    per_record_z: when True, each record with a measured z_centre_um > 0 (e.g. from
+    find_zcenter_all) has THAT depth written into its own trigger, so every spheroid
+    autofocuses at its own centre; the global z_centre is still used for any record
+    without one. Default False keeps the single global z_centre for every trigger.
 
     Two safeguards (added after a capture run imaged duplicated coordinates — the
     daemon had consumed a folder holding a mix of fresh and stale triggers from
@@ -378,7 +384,9 @@ def trigger_autofocus_all(records: list[SpheroidRecord], work_dir: Path,
             f"stage_x={r.verified_x_um}",
             f"stage_y={r.verified_y_um}",
         ]
-        if z_centre is not None:
+        if per_record_z and r.z_centre_um > 0.0:
+            lines.append(f"z_centre={r.z_centre_um}")
+        elif z_centre is not None:
             lines.append(f"z_centre={z_centre}")
         if z_half is not None:
             lines.append(f"z_half={z_half}")
@@ -600,6 +608,221 @@ def focus_scores(stack, method: str = "variance") -> list:
             s = float(q.var()) / (mu * mu)
         scores.append(s)
     return scores
+
+
+# ── Step 3: Per-spheroid Z-centre from a through-focus stack ───────────────────
+
+ZCENTER_PROMINENCE_MIN = 0.35   # peak must rise this far above the brighter edge plane
+
+
+def _per_plane_z_from_events(f, nz: int) -> list[float] | None:
+    """Absolute per-plane Z (µm) from an nd2's frame events, ordered by Z Index.
+
+    Ti ZDrive / Z Coord carry the true stage Z each plane sat at, so an off-centre
+    or drifting acquisition still maps planes to real depth (a synthetic ramp
+    around a nominal centre would not). Returns None unless every plane is covered.
+    """
+    try:
+        ev = f.events()
+    except Exception:
+        return None
+    if not ev:
+        return None
+    keys = list(ev[0].keys()) if hasattr(ev[0], "keys") else []
+    zkey = None
+    for pref in ("Ti ZDrive", "Z Coord"):
+        zkey = next((k for k in keys if k.startswith(pref)), None)
+        if zkey:
+            break
+    if zkey is None:
+        return None
+    by_idx: dict[int, float] = {}
+    for i, e in enumerate(ev):
+        zi = e.get("Z Index", i)
+        zv = e.get(zkey)
+        if zi is None or zv is None:
+            continue
+        by_idx[int(zi)] = float(zv)
+    if any(i not in by_idx for i in range(nz)):
+        return None
+    return [by_idx[i] for i in range(nz)]
+
+
+def _zstack_home_z(f) -> float:
+    try:
+        fm = f.frame_metadata(0)
+        return float(fm.channels[0].position.stagePositionUm.z)
+    except Exception:
+        return 0.0
+
+
+def find_zcenter_from_stack(nd2_path: str, *, prominence_min: float = 0.35,
+                            focus_frac: float = 0.5, symmetry_min: float = 0.6) -> dict:
+    """Locate the focal centre of a through-focus spheroid stack, focus-aware.
+
+    The per-plane signal is Sobel edge energy inside the spheroid mask -- a focus
+    measure, not a brightness measure, so a bright-but-defocused plane scores low
+    and cannot masquerade as a spheroid boundary. Using focus rather than an
+    intensity envelope is the guard against out-of-focus haze setting the top/bottom
+    too far out (the failure mode is worst in widefield, which has no optical
+    sectioning).
+
+    Two auto-selected regimes:
+      * focus-bracketed -- edge energy falls to baseline at BOTH stack ends, so the
+        stack spans the whole spheroid. The in-focus extent [z_top, z_bot] is the
+        planes above focus_frac of the peak; the centre is the focus-weighted
+        centroid of that band. A symmetry check on the two flanks guards against a
+        poorly-focused pole biasing the centre -- unbalanced flanks (or a centroid
+        that disagrees with the sharpness peak) drop confidence so the caller can
+        re-acquire wider or trust a sharp-surface+radius estimate instead.
+      * not bracketed -- focus still high at an end, i.e. the window is narrower than
+        the spheroid; fall back to the sub-plane focus peak gated on prominence.
+
+    Keys: plane_index, z_centre_um, confidence, prominence, reason, method,
+    n_planes, z_top, z_bot, symmetry, sharpness, z_abs. Raises if unreadable.
+    """
+    import numpy as np
+    import nd2 as _nd2
+    from skimage.filters import gaussian, threshold_otsu, sobel
+    from scipy.ndimage import binary_fill_holes, binary_dilation
+
+    with _nd2.ND2File(nd2_path) as f:
+        dims = list(f.sizes.keys())
+        arr = np.asarray(f.asarray())
+        for k in [d for d in dims if d not in ("Z", "Y", "X")]:
+            ax = dims.index(k)
+            arr = np.take(arr, 0, axis=ax)
+            dims = [d for d in dims if d != k]
+        if "Z" in dims:
+            zax = dims.index("Z")
+            if zax != 0:
+                arr = np.moveaxis(arr, zax, 0)
+                dims.insert(0, dims.pop(zax))
+            nz = int(arr.shape[0])
+        else:
+            arr = arr[None, ...]
+            nz = 1
+        a = arr.astype(np.float32)
+        step = float(f.voxel_size().z)
+        z_events = _per_plane_z_from_events(f, nz)
+        if z_events is not None:
+            z_abs = z_events
+        else:
+            basez = _zstack_home_z(f)
+            z_abs = [basez + (i - (nz - 1) / 2.0) * step for i in range(nz)]
+
+    if nz == 1:
+        return {
+            "plane_index": 0, "z_centre_um": float(z_abs[0]), "confidence": False,
+            "prominence": 0.0, "reason": "single-plane", "method": "single-plane",
+            "n_planes": 1, "z_top": 0, "z_bot": 0, "symmetry": 0.0,
+            "sharpness": [0.0], "z_abs": [float(z_abs[0])],
+        }
+
+    mp = a.max(0)
+    mask = binary_dilation(
+        binary_fill_holes(gaussian(mp, 3, preserve_range=True) > threshold_otsu(mp)),
+        iterations=3,
+    )
+    marea = max(int(mask.sum()), 1)
+    sharp = np.array([
+        float((sobel(gaussian(a[i], 1, preserve_range=True)) ** 2)[mask].sum()) / marea
+        for i in range(nz)
+    ])
+    fn = (sharp - sharp.min()) / (np.ptp(sharp) + 1e-9)
+    peak = int(np.argmax(fn))
+    interior = bool(0 < peak < nz - 1)
+    prominence = float(1.0 - max(fn[0], fn[-1]))
+
+    def _vertex(idx: int) -> float:
+        if not (0 < idx < nz - 1):
+            return float(idx)
+        y0, y1, y2 = float(sharp[idx - 1]), float(sharp[idx]), float(sharp[idx + 1])
+        denom = y0 - 2.0 * y1 + y2
+        d = 0.0 if abs(denom) < 1e-12 else 0.5 * (y0 - y2) / denom
+        return max(0.0, min(float(nz - 1), idx + max(-1.0, min(1.0, d))))
+
+    band = np.where(fn >= focus_frac)[0]
+    z_top, z_bot = (int(band[0]), int(band[-1])) if band.size else (peak, peak)
+    bracketed = bool(max(fn[0], fn[-1]) < prominence_min and (z_bot - z_top) >= 2)
+    frac_peak = _vertex(peak)
+    mid = (nz - 1) // 2
+
+    if bracketed:
+        idx = np.arange(z_top, z_bot + 1)
+        w = fn[idx]
+        frac = float((idx * w).sum() / (w.sum() + 1e-9))
+        top_flank = float(fn[z_top:peak + 1].sum())
+        bot_flank = float(fn[peak:z_bot + 1].sum())
+        symmetry = float(min(top_flank, bot_flank) / (max(top_flank, bot_flank) + 1e-9))
+        agree = abs(frac - frac_peak) <= max(1.5, 0.15 * (z_bot - z_top))
+        method = "focus-extent-centroid"
+        confidence = bool(interior and symmetry >= symmetry_min and agree)
+        if confidence:
+            reason = "ok"
+        elif symmetry < symmetry_min:
+            reason = "asymmetric focus: a pole is poorly focused"
+        else:
+            reason = "focus peak and extent centre disagree"
+    else:
+        symmetry = 0.0
+        method = "focus-peak"
+        confidence = bool(interior and prominence > prominence_min)
+        frac = frac_peak
+        reason = ("ok" if confidence
+                  else "edge-peak: focus not bracketed" if not interior
+                  else "low-prominence: window too narrow")
+
+    if not confidence:
+        frac = float(mid)
+    plane_index = max(0, min(nz - 1, int(round(frac))))
+    z_centre_um = float(np.interp(frac, np.arange(nz, dtype=float),
+                                  np.asarray(z_abs, dtype=float)))
+
+    return {
+        "plane_index": int(plane_index),
+        "z_centre_um": float(z_centre_um),
+        "confidence": bool(confidence),
+        "prominence": float(prominence),
+        "reason": reason,
+        "method": method,
+        "n_planes": int(nz),
+        "z_top": int(z_top),
+        "z_bot": int(z_bot),
+        "symmetry": float(symmetry),
+        "sharpness": [float(s) for s in fn],
+        "z_abs": [float(z) for z in z_abs],
+    }
+
+
+def find_zcenter_all(records: list[SpheroidRecord], search_dir: str, *,
+                     prominence_min: float = 0.35) -> dict:
+    """Run find_zcenter_from_stack per record over <search_dir>/<id>_zstack.nd2.
+
+    A confident result writes its z_centre_um back onto the record so the next
+    capture autofocuses at that depth. A missing or unreadable stack is logged and
+    skipped, never fatal -- one bad spheroid must not abort a multi-spheroid pass.
+    Returns {spheroid_id (or rankNN): result_dict}.
+    """
+    results: dict[str, dict] = {}
+    for r in records:
+        sid = r.spheroid_id or f"rank{r.rank:02d}"
+        path = os.path.join(search_dir, f"{r.spheroid_id}_zstack.nd2")
+        if not os.path.exists(path):
+            path = os.path.join(search_dir, f"rank{r.rank:02d}_zstack.nd2")
+        if not os.path.exists(path):
+            results[sid] = {"reason": "no stack", "confidence": False}
+            continue
+        try:
+            res = find_zcenter_from_stack(path, prominence_min=prominence_min)
+        except Exception as exc:
+            print(f"[find_zcenter_all] {sid}: cannot analyze {path}: {exc}")
+            results[sid] = {"reason": f"error: {exc}", "confidence": False}
+            continue
+        if res["confidence"]:
+            r.z_centre_um = res["z_centre_um"]
+        results[sid] = res
+    return results
 
 
 # ── Step 3: Z-centre from 20X autofocus nd2 (manual fallback) ──────────────────
