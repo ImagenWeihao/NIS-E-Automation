@@ -1,5 +1,5 @@
 """
-spheroid_pa_gui.py  v1.17.3
+spheroid_pa_gui.py  v1.17.4
 NIS-E Spheroid PA Pipeline — ND2-native I/O
 
 Pipeline:  Job A ND2 → [parse metadata + detect spheroids]
@@ -598,7 +598,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("SpheroidPA  v1.17.3 — NIS-E Spheroid PA Pipeline")
+        self.title("SpheroidPA  v1.17.4 — NIS-E Spheroid PA Pipeline")
         self.geometry("1680x880")
         self.minsize(1000, 660)
         self.configure(bg=BG)
@@ -631,7 +631,7 @@ class App(tk.Tk):
     def _build_ui(self):
         hdr = tk.Frame(self, bg=BG2)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="  SpheroidPA  v1.17.3",
+        tk.Label(hdr, text="  SpheroidPA  v1.17.4",
                  bg=BG2, fg=MAUVE, font=("Segoe UI", 13, "bold"), pady=8
                  ).pack(side="left")
         tk.Label(hdr, text="Screen → Anchor → Autofocus → Capture  ",
@@ -5409,6 +5409,17 @@ class App(tk.Tk):
     PA_POINT_X_FMT = "PredefinedPoints.Positions.Positions[{i}].Position.Stage.x"
     PA_POINT_Y_FMT = "PredefinedPoints.Positions.Positions[{i}].Position.Stage.y"
     PA_POINT_Z_FMT = "PredefinedPoints.Positions.Positions[{i}].Position.z"
+    # Per-point enable -- the tick box in the job's PredefinedPoints table.
+    # Rig-confirmed 2026-08-08: unticking point #1 in the UI flipped
+    # ...Positions[0].Valid from 1 to 0 while ArraySize stayed 2, and the task header
+    # changed from "(2 points)" to "(1 point)". So the array keeps its slots and Valid
+    # decides which are used.
+    #
+    # We must SET this, not assume it. The job was found with [0].Valid = 0 after a manual
+    # untick, and the pipeline writes its coordinates into exactly that slot -- so a launch
+    # would have filled a disabled point and fired nowhere, or errored, with the log still
+    # reporting the coordinates it "sent".
+    PA_POINT_VALID_FMT = "PredefinedPoints.Positions.Positions[{i}].Valid"
     # Point-array length. In the Debug parameter tree PredefinedPoints' ArraySize renders
     # NORMAL while WellSelection's renders RED (red = read-only output), which suggests this
     # one is settable -- UNVERIFIED on the rig. Sent so the job's point count matches what we
@@ -5779,6 +5790,11 @@ class App(tk.Tk):
             params[self.PA_POINT_X_FMT.format(i=i)] = x
             params[self.PA_POINT_Y_FMT.format(i=i)] = y
             params[self.PA_POINT_Z_FMT.format(i=i)] = z
+            # Enable every slot we write. Belt and braces with ArraySize below: ArraySize
+            # trims the array to our count, and Valid guarantees what remains is switched
+            # on -- so a slot left unticked in a previous manual session cannot silently
+            # swallow a point. Neither mechanism alone covers both failure directions.
+            params[self.PA_POINT_VALID_FMT.format(i=i)] = 1
         # ArraySize is sent on EVERY launch, growing or shrinking.
         #
         # Confirmed on the rig 2026-08-08 by reading the job's own Debug parameter tree with
