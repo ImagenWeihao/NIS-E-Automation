@@ -1,0 +1,105 @@
+// ============================================================================
+// nis_macro_pa_savepath.mac -- point the ND Acquisition "Save to File" target at
+// the SpheroidPA run's pa/ folder. NOTHING ELSE.
+//
+// Why this exists as its own macro:
+//   The step3_zstack_PA JOB saves THROUGH the global ND Acquisition experiment, so
+//   whatever Path is showing in the ND Acquisition dialog is where the PA stacks
+//   land -- including a previous user's D:\ folder if that is what was last set.
+//   (2026-08-07: the dialog was pointing at D:\Images S636B\Brandon\... while the
+//   operator expected work/0807/pa/. Every GUI-created pa/ folder from 0623..0727
+//   is EMPTY for the same reason -- the delivered PA dose was un-auditable.)
+//
+//   nis_macro_pa_setup.mac already does this as its step 6, but that macro ALSO
+//   removes the interlock, selects the 850 nm activation OC, drives the dichroic
+//   out and sets the scan area. You should not have to arm the rig just to correct
+//   a folder, and you want to be able to set the path and VERIFY it in the ND
+//   dialog before anything is armed. Hence this one-job macro.
+//
+// Reads C:/SpheroidPA/session.ini -> work_dir -> pa_trigger.ini:
+//   save_dir     destination folder (GUI Step 4 "PA save folder"; created by the GUI)
+//   save_prefix  per-file name stem (optional, defaults to "PA")
+//
+// ND_DefineExperiment's first 5 args are the T/XY/Z/L dimension flags. The PA job
+// uses Time (loops), XY (imported multipoint) and Z (stack), so ALL stay TRUE --
+// we change only the destination, never the experiment shape.
+//
+// VERIFY AFTER RUNNING (once, on the rig): open ND Acquisition and confirm
+//   (a) "Save to File" Path is now the pa/ folder, and
+//   (b) the T / XY / Z dimensions are unchanged.
+// Readback is written to C:/SpheroidPA/debug/pa_savepath.txt.
+//
+// Rig dialect (verified): single main() only; CRLF + ASCII; Int_GetKeyString +
+// atof for INI values; char[] paths/names; sprintf args as one quoted name list.
+// ============================================================================
+
+#define SEC "photoactivation"
+
+int main()
+{
+    char cfg[256];
+    char work_dir[256];
+    char trigger_path[256];
+    char save_dir[256];
+    char save_prefix[128];
+    char save_stem[512];   // >= save_dir(256) + "/" + save_prefix(128), with margin
+    char msg[512];
+    char mbuf[1024];
+
+    strcpy(cfg, "C:/SpheroidPA/session.ini");
+    work_dir[0] = 0;
+    Int_GetKeyString(cfg, "paths", "work_dir", work_dir, 256);
+    if( work_dir[0] == 0 )
+    {
+        SetCommandText("session.ini has no work_dir.\nRun GUI Step 3 first.");
+        WideCharToMultiByte(mbuf, "session.ini has no work_dir.\nRun GUI Step 3 first.");
+        WriteFile("C:/SpheroidPA/debug/pa_savepath.txt", mbuf, strlen("session.ini has no work_dir.\nRun GUI Step 3 first."));
+        return FALSE;
+    }
+
+    strcpy(trigger_path, work_dir);
+    strcat(trigger_path, "/pa_trigger.ini");
+    if( ExistFile(trigger_path) != TRUE )
+    {
+        SetCommandText("pa_trigger.ini not found in work_dir.\nSet the PA save folder in GUI Step 4 first.");
+        WideCharToMultiByte(mbuf, "pa_trigger.ini not found in work_dir.\nSet the PA save folder in GUI Step 4 first.");
+        WriteFile("C:/SpheroidPA/debug/pa_savepath.txt", mbuf, strlen("pa_trigger.ini not found in work_dir.\nSet the PA save folder in GUI Step 4 first."));
+        return FALSE;
+    }
+
+    save_dir[0] = 0;
+    Int_GetKeyString(trigger_path, SEC, "save_dir", save_dir, 256);
+    if( save_dir[0] == 0 )
+    {
+        SetCommandText("pa_trigger.ini has no save_dir.\nSet the PA save folder in GUI Step 4.");
+        WideCharToMultiByte(mbuf, "pa_trigger.ini has no save_dir.\nSet the PA save folder in GUI Step 4.");
+        WriteFile("C:/SpheroidPA/debug/pa_savepath.txt", mbuf, strlen("pa_trigger.ini has no save_dir.\nSet the PA save folder in GUI Step 4."));
+        return FALSE;
+    }
+
+    save_prefix[0] = 0;
+    Int_GetKeyString(trigger_path, SEC, "save_prefix", save_prefix, 128);
+    if( save_prefix[0] == 0 )
+        strcpy(save_prefix, "PA");
+
+    // ND_DefineExperiment's 6th arg is a full FILE PATH STEM, not a directory: NIS splits
+    // it into the dialog's Path (everything up to the last separator) and Filename (the
+    // last segment + ".nd2"). Passing the bare folder ".../0807/pa" therefore produced
+    // Path ".../0807/" + Filename "pa.nd2" -- the stacks would have landed NEXT TO the
+    // pa/ folder, not inside it (rig-observed 2026-08-07). Arg 7 is NOT the filename:
+    // the dialog took "pa" from the path, not the "PA" that was passed there.
+    // So build the stem here: <save_dir>/<save_prefix> -> Path <save_dir>/, Filename
+    // <save_prefix>.nd2.
+    strcpy(save_stem, save_dir);
+    strcat(save_stem, "/");
+    strcat(save_stem, save_prefix);
+
+    ND_DefineExperiment(TRUE, TRUE, TRUE, TRUE, TRUE, save_stem, save_prefix, 0, FALSE, FALSE, FALSE);
+
+    sprintf(msg, "PA save stem set to:\n%s\n\nVERIFY in ND Acquisition: 'Save to File' Path must be the pa/ FOLDER and Filename '%s.nd2'. T/XY/Z must be unchanged.", "save_stem,save_prefix");
+    SetCommandText(msg);
+    WideCharToMultiByte(mbuf, msg);
+    WriteFile("C:/SpheroidPA/debug/pa_savepath.txt", mbuf, strlen(msg));
+    SetCommandText(0);
+    return TRUE;
+}

@@ -103,27 +103,17 @@ ZC_PROMINENCE_MIN = 0.35
 # configs are purpose-built for firing. 850 nm/30% (mGold/PAmKate) is the current
 # pipeline default; SLIM031 activated PA-JF646 at 800 nm instead -- the optimum is
 # protein/dye-specific, hence the full sweep is offered rather than one fixed value.
-PA_ACTIVATION_OC_LIST = [
-    "850 nm power loop full reso2",     # default: mGold/PAmKate 2P activation (IMPA004)
-    "750 nm power loop full reso",
-    "760 nm power loop full reso1",
-    "770 nm power loop full reso2",
-    "780 nm power loop full reso1",
-    "790 nm power loop full reso2",
-    "800 nm power loop full reso1",
-    "810 nm power loop full reso2",
-    "820 nm power loop full reso1",
-    "830 nm power loop full reso2",
-    "840 nm power loop full reso1",
-    "850 nm power loop full galvo_BT",
-    "750nm_Galvo_405nm_NDD2_PA1",
-    "750nm_Galvo_405nm_NDD2_PA_band",
-    "760nm_Galvo_405nm_NDD2_PA1",
-    "800nm_Galvo_405nm_NDD2_PA2",
-    "800nm_Galvo_488nm_NDD2_PA",
-    "800nm_Reso_405nm_NDD2_PA2",
-    "880nm_Galvo_405nm_NDD2_PA1",
-]
+PA_ACTIVATION_OC = "850 nm power loop full reso2"    # mGold/PAmKate 2P activation (IMPA004)
+
+# LOCKED TO ONE ENTRY, deliberately. This was an 19-item sweep of 2P wavelengths sitting in
+# a free-text dropdown next to the laser-firing button. On 2026-08-07 it held
+# "750 nm power loop full reso" when a PA was launched: the run went full-depth across the
+# spheroid (37 planes, 100% tissue coverage) before it could be stopped, consuming an
+# irreplaceable sample -- and the confirmation dialog said "850 nm" as hardcoded text, so it
+# actively concealed the mismatch. The other 18 entries had only ever been selected by
+# accident. To sweep wavelengths again, edit PA_ACTIVATION_OC here: a code change is the
+# right amount of friction for something that fires a laser.
+PA_ACTIVATION_OC_LIST = [PA_ACTIVATION_OC]
 
 # Visualization range (~890-1050 nm): sits above the activation band, so imaging here
 # does not trigger photoconversion. Each config targets a specific marker/channel --
@@ -1449,7 +1439,7 @@ class App(tk.Tk):
         self._pl_ref_bin     = tk.StringVar()
         # Photoactivation (Step 4) -- parameters for the NIS-E JOB step3_zstack_PA.
         self._pl_pa_job      = tk.StringVar(value="step3_zstack_PA_WC")
-        self._pl_pa_oc       = tk.StringVar(value="850 nm power loop full reso2")
+        self._pl_pa_oc       = tk.StringVar(value=PA_ACTIVATION_OC)
         self._pl_pa_power    = tk.StringVar(value="30")
         self._pl_pa_power.trace_add("write", self._pl_pa_power_clamp)
         # No separate well var: PA Setup's and Job3's Well fields both bind to
@@ -1459,6 +1449,16 @@ class App(tk.Tk):
         self._pl_pa_dichroic = tk.BooleanVar(value=True)   # True = dichroic OUT
         self._pl_pa_interlock = tk.BooleanVar(value=True)  # True = remove A1 interlock first
         self._pl_pa_a1on     = tk.BooleanVar(value=False)  # True = A1 confirmed powered ON; pa_setup/pa_validate guard aborts if unchecked
+        # Where the PA stacks land. The step3_zstack_PA JOB saves THROUGH the global ND
+        # Acquisition experiment, so the ND dialog's "Save to File" Path is the real
+        # destination -- and it persists across sessions/users. On 2026-08-07 it was still
+        # pointing at a previous user's D:\Images S636B\Brandon\... folder, which is why
+        # every GUI-created pa/ folder from 0623..0727 is EMPTY. Blank = <out_dir>/pa.
+        self._pl_pa_save_dir    = tk.StringVar(value="")
+        self._pl_pa_save_prefix = tk.StringVar(value="PA")
+        # Path last prepared by _pl_pa_prepare_save_dir (folder created + recorded in
+        # pa_trigger.ini), so the log can report where the PA output is expected.
+        self._pl_pa_savepath_applied = None
         # NIS-E JOB launch (Jobs_RunJobByName via nis_macro_run_job.mac, action 10).
         self._pl_job_project = tk.StringVar(value="IMAGEN")
         # Neither job has a StringVar / dropdown any more: each Run button passes a
@@ -1468,13 +1468,31 @@ class App(tk.Tk):
         # (IMAGEN, editable) because both jobs are launched under the same project.
         # Per-macro "include in Run Pipeline" selections.
         self._pl_pa_sel_setup    = tk.BooleanVar(value=True)
-        self._pl_pa_sel_points   = tk.BooleanVar(value=True)
+        # _pl_pa_sel_points removed with the PA Points card (2026-08-07) -- see the removal
+        # note in the Step-4 card builder.
         self._pl_dispatch_busy   = False   # one dispatcher command in flight at a time
 
         # Pre-PA card: baseline viz capture(s) before PA Setup, via the SAME
         # dispatcher z-stack action (id 2) -- one pass per checked OC, each routed
         # into its own nd2/prePA_<tag> subfolder. See SLIM025/026/031/043.
         self._pl_pa_sel_prepa   = tk.BooleanVar(value=False)   # include in Run Pipeline
+        # Run Pipeline steps that FIRE THE LASER / depend on it. Default OFF: the sequence
+        # historically stopped before the laser on purpose, so enabling these has to be a
+        # deliberate act, not an inherited default.
+        self._pl_pa_sel_pajob   = tk.BooleanVar(value=False)   # launch step3_zstack_PA_WC
+        # ON by default: post-PA is imaging only (no laser), and the pipeline already
+        # refuses to run it unless the PA genuinely produced output -- so a stray tick
+        # cannot manufacture a bogus comparison. Left OFF, a "Run All" ends silently after
+        # the PA and looks like a hang, which is how it read on 2026-08-07.
+        self._pl_pa_sel_postpa  = tk.BooleanVar(value=True)    # After-PA captures
+        # Re-centre off the pre-PA captures before firing. ON by default: the pipeline
+        # already takes those captures, they are the exact input the manual Step-3
+        # Re-center uses, and forgetting the manual click silently leaves the PA square
+        # off-target. 2026-08-07 measured 21.7 um of centring error on a run where it was
+        # skipped, versus 2.7-4.1 um on re-centred spheroids -- with a 39.8 um square
+        # half-width against an 80 um spheroid radius, that is the difference between
+        # activating the middle and clipping the rim.
+        self._pl_pa_sel_recenter = tk.BooleanVar(value=True)
         self._pl_prepa_oc_890   = tk.BooleanVar(value=False)   # mBeRFP (T-cell identity)
         self._pl_prepa_oc_940   = tk.BooleanVar(value=True)    # PAsfGFP (before readout)
         self._pl_prepa_oc_1050  = tk.BooleanVar(value=False)   # spheroid depth / faded-square
@@ -1484,6 +1502,15 @@ class App(tk.Tk):
         self._pl_postpa_oc_940  = tk.BooleanVar(value=True)
         self._pl_postpa_oc_1050 = tk.BooleanVar(value=False)
         self._pl_postpa_locate_only = tk.BooleanVar(value=False)
+        # Before/after comparability. pa_setup arms the rig for PA (dichroic OUT, zoom to
+        # the PA square) and NOTHING in the After-PA path puts it back -- that card
+        # dispatches only capture_zstack (action 2), which never touches either. On
+        # 2026-08-07 that left zoom 8 + dichroic OUT against a zoom 2 + dichroic IN
+        # baseline: a 79.5 um field vs a 318.2 um one, where the difference would read as
+        # photoactivation. ON by default: the pre-PA pass snapshots the rig's laser powers
+        # and the post-PA pass restores them along with the dichroic and zoom, so the two
+        # halves match by construction instead of by the operator remembering two numbers.
+        self._pl_lightpath_restore = tk.BooleanVar(value=True)
         # Keep each captured ND2 open in NIS-E after it is saved. OFF by default: a
         # multi-spheroid x multi-OC x z-stack run opens dozens of image windows, which
         # clutters NIS-E and can stall the acquisition itself. The GUI's "Captured
@@ -1636,6 +1663,10 @@ class App(tk.Tk):
                  bg=BG, fg=SUBTEXT, font=("Segoe UI", 8)).pack(side="left", padx=(6, 0))
         btn1 = tk.Frame(f_s1, bg=BG); btn1.pack(fill="x", padx=12, pady=(4, 0))
         self._btn(btn1, "Run Screener", self._pl_run_screener_thread, BLUE, "#1e1e2e")
+        # Steps 1-3 are re-entered from disk, not re-run: a snapshot is written after
+        # every step that changes the record set, and startup restores it automatically.
+        # This button is for restoring by hand after pointing Output dir at an older run.
+        self._btn(btn1, "Restore Session", self._pl_restore_pipeline_state, SURFACE2, TEXT)
         self._pl_screen_lbl = tk.Label(f_s1, text="No spheroids screened yet.",
                                         bg=BG, fg=SUBTEXT, font=("Segoe UI", 9), anchor="w")
         self._pl_screen_lbl.pack(fill="x", padx=12)
@@ -1925,7 +1956,7 @@ class App(tk.Tk):
         #    Each PA macro is its own card: edit params -> Reload writes them to
         #    pa_trigger.ini, Run dispatches that macro via nis_macro_dispatcher.mac;
         #    tick a card to include it in "Run Pipeline" (checked macros, in order).
-        # Scrollable container: the Step-4 cards (Validation, PA Setup, Job3, PA Points,
+        # Scrollable container: the Step-4 cards (Validation, PA Setup, Job3,
         # After-PA Validation) plus the Run Pipeline bar are taller than the pane, so the
         # lower cards sit below the fold. Wrap them in a canvas + vertical scrollbar
         # (mirrors the Config-tab pattern) so everything stays reachable at any window
@@ -2055,8 +2086,13 @@ class App(tk.Tk):
                                       self._pl_pa_sel_setup)
         r = tk.Frame(body, bg=BG2); r.pack(fill="x")
         tk.Label(r, text="Activation OC:", bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
-        ttk.Combobox(r, textvariable=self._pl_pa_oc, width=26, font=("Segoe UI", 9),
-                     values=PA_ACTIVATION_OC_LIST).pack(side="left")
+        # readonly: the list holds ONE entry, and this also blocks free-text entry -- an
+        # editable Combobox would let any OC name be typed straight into a laser-firing
+        # parameter, which is the hole the single-entry list is meant to close.
+        ttk.Combobox(r, textvariable=self._pl_pa_oc, width=30, font=("Segoe UI", 9),
+                     state="readonly", values=PA_ACTIVATION_OC_LIST).pack(side="left")
+        tk.Label(r, text="(locked)", bg=BG2, fg=SUBTEXT,
+                 font=("Segoe UI", 8)).pack(side="left", padx=(6, 0))
         r = tk.Frame(body, bg=BG2); r.pack(fill="x", pady=(2, 0))
         for lbl, var, w in [("Power %:", self._pl_pa_power, 5), ("Zoom:", self._pl_pa_zoom, 5),
                             ("Well:", self._pl_well_id, 5), ("Loops:", self._pl_pa_loops, 5)]:
@@ -2086,7 +2122,7 @@ class App(tk.Tk):
         tk.Label(hdr3, text="Job3 (step3_zstack_PA -- manual JOB run)", bg=BG2, fg=MAUVE,
                  font=("Segoe UI", 9, "bold")).pack(side="left")
         body3 = tk.Frame(job3, bg=BG2); body3.pack(fill="x", padx=24, pady=(0, 6))
-        tk.Label(body3, text="Run this JOB manually in NIS-E JOBS Explorer after PA Points. "
+        tk.Label(body3, text="Run this JOB manually in NIS-E JOBS Explorer. "
                              "Well below is the SAME working well as Job1 -- set it once in "
                              "Step 1 and every job's well field updates together.",
                  bg=BG2, fg=SUBTEXT, font=("Segoe UI", 8), justify="left",
@@ -2105,17 +2141,22 @@ class App(tk.Tk):
                                            font=("Segoe UI", 8))
         self._pl_pa_done_status.pack(side="left", padx=(8, 0))
 
-        # Card 2 -- PA Points (action 5): build the ND multipoint from ALL active
-        # Step 3 triggers -- no count of its own; Step 3's checked-row table IS the
-        # selection (its "Trigger" click clears stale triggers and writes fresh ones
-        # for exactly the checked rows each time).
-        card, body = self._pl_pa_card(pa, "PA Points  (build ND multipoint from ALL active Step 3 triggers)",
-                                      self._pl_pa_sel_points)
-        r = tk.Frame(body, bg=BG2); r.pack(fill="x")
-        tk.Label(r, text="Uses whatever af_trigger_*.ini Step 3 last wrote for its checked rows "
-                         "-- check/uncheck spheroids and click Step 3 Trigger again to change the set.",
-                 bg=BG2, fg=TEXT2, font=("Segoe UI", 9), wraplength=520, justify="left").pack(side="left")
-        self._pl_pa_card_buttons(card, "pa_points", 5)
+        # PA Points card REMOVED 2026-08-07 -- discontinued, not merely hidden.
+        #
+        # It built an ND multipoint (ND_ResetMultipointExp / ND_AppendMultipointPoint) for
+        # step3_zstack_PA to "Import Point Set from ND". That route is gone: the job's
+        # NDToPointSet task was deleted, and the PA point now comes from PredefinedPoints
+        # set by Jobs_RunJobInitParam at launch (see _pl_pa_point_params). The job's POINT
+        # LOOP iterates PredefinedPoints.Positions and never consults the ND multipoint,
+        # so the card had no effect on where the laser fires.
+        #
+        # It was also actively dangerous to leave: its completion popup told the operator
+        # "In step3_zstack_PA: Import Point Set from ND, then Run" -- and following that
+        # instruction OVERWRITES the parameterised point with the ND list, which is exactly
+        # the failure deleting NDToPointSet was meant to prevent.
+        #
+        # nis_macro_pa_points.mac and dispatcher action 5 are left in place (harmless, and
+        # still useful for a manual ND multipoint), but nothing in the GUI dispatches them.
 
         # Photoactivation JOB launch (Jobs_RunJobByName via nis_macro_run_job.mac,
         # action 10): fires the 850 nm PA activation laser, so it is gated on the A1
@@ -2123,27 +2164,55 @@ class App(tk.Tk):
         # Run Pipeline sequence, which deliberately stops before the laser fires).
         paj = tk.Frame(pa, bg=BG2, bd=1, relief="solid"); paj.pack(fill="x", padx=4, pady=3)
         hdrj = tk.Frame(paj, bg=BG2); hdrj.pack(fill="x", padx=6, pady=(3, 0))
-        tk.Label(hdrj, text="Photoactivation JOB  (launch step3_zstack_PA_WC - FIRES 850 nm LASER)",
-                 bg=BG2, fg=MAUVE, font=("Segoe UI", 9, "bold")).pack(side="left")
+        # Header checkbox = "include in Run Pipeline", same placement as every other
+        # Step-4 card (see _pl_pa_card): the title IS the tick, top-left of the card.
+        # RED rather than MAUVE because ticking this one puts the laser in the sequence.
+        tk.Checkbutton(hdrj, text="Photoactivation JOB  (launch step3_zstack_PA_WC - FIRES 850 nm LASER)",
+                       variable=self._pl_pa_sel_pajob, bg=BG2, fg=RED,
+                       selectcolor=SURFACE, activebackground=BG2, activeforeground=TEXT,
+                       font=("Segoe UI", 9, "bold")).pack(side="left")
         bodyj = tk.Frame(paj, bg=BG2); bodyj.pack(fill="x", padx=24, pady=(0, 6))
-        tk.Label(bodyj, text="Fires the PA activation laser. Requires 'A1 powered ON' + a confirm "
-                             "click; run PA Points first so the ND multipoint is loaded.",
-                 bg=BG2, fg=RED, font=("Segoe UI", 8), justify="left",
-                 wraplength=460).pack(anchor="w")
-        # Job3 is HARD-WIRED to step3_zstack_PA_WC (the ONLY job this card may launch).
-        # There is deliberately NO dropdown: a selectable list could point this GATED,
-        # laser-firing button at a different/unintended job. Passing the literal name
-        # (not a mutable StringVar) guarantees this button launches exactly
-        # step3_zstack_PA_WC. Firing stays gated -- _pl_run_job(..., True) requires
-        # 'A1 powered ON' + an explicit confirm click before the 850 nm laser fires.
-        rj = tk.Frame(bodyj, bg=BG2); rj.pack(fill="x", pady=(2, 0))
-        tk.Label(rj, text="Job: step3_zstack_PA_WC  (fixed -- the only PA job this button fires)",
-                 bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
-        # The PA job's point + well are now set DIRECTLY at launch (Jobs_RunJobInitParam) from the
-        # current spheroid trigger -- see _pl_run_pa_job / _pl_pa_point_params -- so it fires on the
-        # EXACT supplied point, not the job's stale in-job PredefinedPoint. Well comes from the
-        # shared _pl_well_id (Step 1's, editable on this card).
-        rjb = tk.Frame(bodyj, bg=BG2); rjb.pack(fill="x", pady=(4, 0))
+        self._info(
+            bodyj,
+            "Fires the 850 nm laser at Step 3's trigger point. Needs 'A1 powered ON'.",
+            "Job is hard-wired to step3_zstack_PA_WC -- there is deliberately no dropdown, so "
+            "this gated button can never be pointed at a different job.\n\n"
+            "The point and well are set at launch via Jobs_RunJobInitParam from the current "
+            "af_trigger, so it fires on exactly the supplied coordinates rather than whatever "
+            "PredefinedPoint the job has stored (which has been seen 15 mm off target, on "
+            "plastic between wells).\n\n"
+            "Firing is gated twice: 'A1 powered ON' must be ticked, and a confirm dialog "
+            "shows the optical config and point before anything happens.",
+            fg=RED)
+
+        # ── PA save folder ────────────────────────────────────────────────────
+        rsd = tk.Frame(bodyj, bg=BG2); rsd.pack(fill="x", pady=(6, 0))
+        tk.Label(rsd, text="PA folder:", bg=BG2, fg=TEXT2,
+                 font=("Segoe UI", 9)).pack(side="left", padx=(0, 4))
+        tk.Entry(rsd, textvariable=self._pl_pa_save_dir, bg=SURFACE, fg=TEXT,
+                 insertbackground=TEXT, relief="flat", font=("Segoe UI", 9)
+                 ).pack(side="left", fill="x", expand=True, padx=(0, 6))
+        self._btn(rsd, "Browse", lambda: self._pl_browse_dir(self._pl_pa_save_dir),
+                  SURFACE2, TEXT, side="left")
+        self._info(
+            bodyj,
+            "Defaults to <Output directory>/pa, created automatically and sent to the job.",
+            "The folder is created if missing and follows the Output directory, so it moves "
+            "with the run folder. A path you type yourself is never overwritten.\n\n"
+            "It is sent to the JOB at launch as StoreToFsOnly.Folder -- the 'Alternative "
+            "Storage Location' task -- so this box IS the destination; there is no second "
+            "place to keep in sync. Previously that path lived only on the job and kept "
+            "whatever the last session set, which is how PA output once landed in another "
+            "user's folder.\n\n"
+            "Note this is NOT NIS-E's ND 'Save to File'. The JOB ignores that dialog; an "
+            "earlier build pushed the path there and merely made every validation capture "
+            "drop a duplicate copy into pa/.")
+        self._pl_pa_save_lbl = tk.Label(bodyj, text="", bg=BG2, fg=YELLOW,
+                                        font=("Segoe UI", 8), anchor="w",
+                                        justify="left", wraplength=460)
+        self._pl_pa_save_lbl.pack(fill="x")
+
+        rjb = tk.Frame(bodyj, bg=BG2); rjb.pack(fill="x", pady=(6, 0))
         self._btn(rjb, "Run Photoactivation",
                   self._pl_run_pa_job, RED, "#1e1e2e", side="left")
 
@@ -2155,8 +2224,10 @@ class App(tk.Tk):
         # Run Pipeline sequence, which stops before the laser fires).
         apa = tk.Frame(pa, bg=BG2, bd=1, relief="solid"); apa.pack(fill="x", padx=4, pady=3)
         hdra = tk.Frame(apa, bg=BG2); hdra.pack(fill="x", padx=6, pady=(3, 0))
-        tk.Label(hdra, text="After-PA Validation  (post-Job capture -> nd2/postPA_<tag>)",
-                 bg=BG2, fg=MAUVE, font=("Segoe UI", 9, "bold")).pack(side="left")
+        tk.Checkbutton(hdra, text="After-PA Validation  (post-Job capture -> nd2/postPA_<tag>)",
+                       variable=self._pl_pa_sel_postpa, bg=BG2, fg=MAUVE,
+                       selectcolor=SURFACE, activebackground=BG2, activeforeground=TEXT,
+                       font=("Segoe UI", 9, "bold")).pack(side="left")
         bodya = tk.Frame(apa, bg=BG2); bodya.pack(fill="x", padx=24, pady=(0, 4))
         tk.Label(bodya, text="Run AFTER the step3_zstack_PA JOB. Same positions/Z as the before-PA "
                              "Validation (from Step 3's checked rows), saved to nd2/postPA_<tag> so "
@@ -2179,6 +2250,19 @@ class App(tk.Tk):
         tk.Checkbutton(btn_apa, text="Locate only (1 plane)", variable=self._pl_postpa_locate_only,
                        bg=BG2, fg=TEXT2, selectcolor=SURFACE, activebackground=BG2,
                        activeforeground=TEXT, font=("Segoe UI", 8)).pack(side="left", padx=(8, 0))
+        # "include in Run Pipeline" for this card lives in its header (top-left), matching
+        # every other Step-4 card. In a pipeline these captures run ONLY if the PA job
+        # actually produced output -- a post-PA set with no PA in between is a mislabelled
+        # copy of the baseline.
+        # Default ON. Leave it on unless you have a reason: with it off, the post-PA set
+        # is captured through whatever optics pa_setup left (dichroic OUT, PA zoom), and
+        # the mismatch is invisible in the images -- it just looks like signal change.
+        rlp = tk.Frame(apa, bg=BG2); rlp.pack(fill="x", padx=24, pady=(0, 6))
+        tk.Checkbutton(rlp, text="Restore pre-PA light path before capture "
+                               "(dichroic IN + zoom + laser powers)",
+                       variable=self._pl_lightpath_restore,
+                       bg=BG2, fg=GREEN, selectcolor=SURFACE, activebackground=BG2,
+                       activeforeground=TEXT, font=("Segoe UI", 8)).pack(anchor="w")
 
         # Bottom bar: run the checked cards in order.
         bottom = tk.Frame(pa, bg=BG); bottom.pack(fill="x", padx=8, pady=(4, 4))
@@ -2206,6 +2290,18 @@ class App(tk.Tk):
         # Set the initial dividers, then scan for any already-captured ND2s.
         self.after(150, self._pl_init_sash)
         self.after(220, self._pl_zv_refresh)
+        # Resume the previous session's Steps 1-3 if this run folder has a snapshot.
+        # Deferred so the log/table widgets exist; quiet=True so a first-ever launch
+        # (no state file anywhere) doesn't open with a scary "nothing found" line.
+        self.after(300, lambda: self._pl_restore_pipeline_state(quiet=True))
+        # Confirm on close, and hold the window open until any in-flight macro reports
+        # back -- closing mid-macro abandons a running capture (or a firing PA laser)
+        # with nothing polling for its result. See _pl_on_close.
+        self.protocol("WM_DELETE_WINDOW", self._pl_on_close)
+        # Keep the PA folder tracking the Output directory, and create it. Deferred so the
+        # log widget exists; the trace then follows every later change of run folder.
+        self.after(320, self._pl_pa_sync_save_dir)
+        self._pl_out_dir.trace_add("write", self._pl_pa_sync_save_dir)
 
     def _pl_init_sash(self):
         """Place the paned-window divider so the merged table pane gets the bulk of
@@ -2941,6 +3037,232 @@ class App(tk.Tk):
     def _pl_run_screener_thread(self):
         threading.Thread(target=self._pl_run_screener, daemon=True).start()
 
+    # ── Session persistence ───────────────────────────────────────────────────
+    # Steps 1-3 are expensive (a 121-tile mosaic + screening + anchoring), and closing
+    # the GUI -- deliberately or by a crash mid-troubleshooting -- used to throw all of
+    # it away because _pl_records lived only in memory. save_state/load_state already
+    # existed in spheroid_pipeline but nothing ever called them. Now every step that
+    # changes the record set writes pipeline_state.json into the Output dir, and startup
+    # restores it, so a restart resumes at Step 4 instead of re-imaging the plate.
+
+    # ── Safe shutdown ─────────────────────────────────────────────────────────
+    # Closing mid-macro is not a clean no-op: the NIS-E side keeps running, so the GUI
+    # stops polling cmd_done, the af_trigger/cmd handshake is left half-consumed, and a
+    # capture or PA can complete with nothing recording where it went. Worse, closing
+    # during a step3_zstack_PA run abandons a firing 850 nm laser with no watcher.
+
+    CLOSE_WAIT_TIMEOUT_S = 1800        # re-ask after 30 min rather than wait forever
+
+    def _pl_inflight_macro(self):
+        """Describe the macro currently in flight, or None if the rig is idle.
+
+        Two independent signals, because either alone can miss one:
+          - _pl_dispatch_busy: the GUI's own single-in-flight lock. Misses a macro whose
+            cmd_done poller thread died (then the flag is stuck False or True wrongly).
+          - cmd.ini present on disk with no cmd_done.ini beside it: the dispatcher has
+            been handed work and has not reported finishing. Survives GUI-side thread
+            death, and is what actually reflects NIS-E's state.
+
+        The always-on nis_macro_dispatcher.mac is deliberately NOT counted -- it idles
+        waiting for cmd.ini and never "finishes", so waiting on it would hang forever."""
+        import configparser, spheroid_pipeline as _pl
+        work = ""
+        try:
+            cp = configparser.ConfigParser()
+            if _pl.SESSION_INI.exists():
+                cp.read(_pl.SESSION_INI)
+            work = cp.get("paths", "work_dir", fallback="").strip()
+        except Exception:
+            pass
+        if not work:
+            work = self._pl_trigger_dir.get().strip()
+        action = None
+        if work:
+            wd = Path(work)
+            cmd, done = wd / "cmd.ini", wd / "cmd_done.ini"
+            try:
+                if cmd.exists() and not done.exists():
+                    cp = configparser.ConfigParser()
+                    cp.read(cmd)
+                    action = cp.get("command", "action", fallback="a macro")
+            except Exception:
+                action = "a macro"
+        if action is None and getattr(self, "_pl_dispatch_busy", False):
+            action = "a macro (GUI dispatcher lock held)"
+        return action
+
+    def _pl_on_close(self):
+        """WM_DELETE_WINDOW handler: confirm, and hold the window open until any in-flight
+        macro reports back. Never force-closes silently."""
+        busy = self._pl_inflight_macro()
+        if busy is None:
+            if messagebox.askyesno("Close SpheroidPA",
+                                   "Close SpheroidPA?\n\nNo macro is currently running."):
+                self._pl_shutdown()
+            return
+        if not messagebox.askyesno(
+                "Macro still running",
+                f"'{busy}' is still running in NIS-E.\n\n"
+                f"Closing now would stop the GUI polling for its result: the macro keeps "
+                f"running on the rig, and nothing records where its output went.\n\n"
+                f"Yes  — wait for it to finish, then close (recommended)\n"
+                f"No   — stay open, do not close"):
+            return
+        self._pl_log(f"Shutdown: waiting for '{busy}' to finish before closing...")
+        self._pl_wait_then_close(busy, 0)
+
+    def _pl_wait_then_close(self, busy, waited):
+        """Poll once a second until the macro reports back, then close. Re-asks rather than
+        waiting unboundedly, so a macro that never reports cannot wedge the window shut."""
+        still = self._pl_inflight_macro()
+        if still is None:
+            self._pl_log("Shutdown: macro finished — closing.")
+            self._pl_shutdown()
+            return
+        if waited and waited % 15 == 0:
+            try:
+                self._pl_dispatch_status.configure(
+                    text=f"Closing after '{still}' finishes… {waited}s", fg=YELLOW)
+            except Exception:
+                pass
+        if waited >= self.CLOSE_WAIT_TIMEOUT_S:
+            if messagebox.askyesno(
+                    "Still running",
+                    f"'{still}' has not reported back after "
+                    f"{self.CLOSE_WAIT_TIMEOUT_S // 60} minutes.\n\n"
+                    f"Yes — close anyway (the macro keeps running in NIS-E)\n"
+                    f"No  — keep waiting"):
+                self._pl_log(f"Shutdown: closing with '{still}' still unreported "
+                             f"(operator override).")
+                self._pl_shutdown()
+                return
+            waited = 0
+        self.after(1000, lambda: self._pl_wait_then_close(busy, waited + 1))
+
+    def _pl_shutdown(self):
+        """Persist the session, then tear the window down. The state save is best-effort:
+        losing it costs a re-run of Steps 1-3, whereas raising here would leave the window
+        un-closable."""
+        try:
+            self._pl_save_pipeline_state()
+        except Exception as e:
+            self._pl_log(f"Shutdown: session save failed ({e}) — closing anyway.")
+        try:
+            self.destroy()
+        except Exception:
+            pass
+
+    def _pl_save_pipeline_state(self):
+        """Persist records + the Step 1-3 UI state to <out_dir>/pipeline_state.json.
+        Best-effort: this must never break a pipeline step, so all failures are logged
+        and swallowed (a lost snapshot costs a re-run; a raised exception here would
+        abort the step that just succeeded)."""
+        try:
+            import spheroid_pipeline as _pl
+            out = self._pl_out_dir.get().strip()
+            if not out or not self._pl_records:
+                return
+            def _f(var, default=0.0):
+                try:
+                    return float(var.get())
+                except (ValueError, AttributeError):
+                    return default
+            st = _pl.PipelineState(
+                well_id     = self._pl_well_id.get().strip(),
+                mosaic_nd2  = self._pl_mosaic_path.get().strip(),
+                out_dir     = out,
+                trigger_dir = self._pl_trigger_dir.get().strip(),
+                nd2_out_dir = self._pl_nd2_out_dir.get().strip(),
+                records     = self._pl_records,
+                excluded_ranks = sorted(getattr(self, "_pl_excluded", set())),
+                z_centre    = _f(self._pl_z_centre),
+                z_half      = _f(self._pl_z_half),
+                z_step      = _f(self._pl_z_step),
+            )
+            _pl.save_state(st)
+            self._pl_state = st
+        except Exception as e:
+            self._pl_log(f"Session save failed (continuing): {e}")
+
+    def _pl_restore_pipeline_state(self, out_dir=None, quiet=False):
+        """Restore a previous session's Steps 1-3 from <out_dir>/pipeline_state.json.
+
+        out_dir defaults to the GUI's Output dir, falling back to the parent of
+        session.ini's work_dir -- which is the run folder the dispatcher is already
+        pointed at, so a fresh GUI (whose Output dir is still the generic default)
+        finds the session that was actually in progress. Returns True if restored."""
+        try:
+            import spheroid_pipeline as _pl, configparser
+            cand = []
+            if out_dir:
+                cand.append(Path(out_dir))
+            cur = self._pl_out_dir.get().strip()
+            if cur:
+                cand.append(Path(cur))
+            try:
+                cp = configparser.ConfigParser()
+                if _pl.SESSION_INI.exists():
+                    cp.read(_pl.SESSION_INI)
+                wd = cp.get("paths", "work_dir", fallback="").strip()
+                if wd:
+                    cand.append(Path(wd).parent)
+            except Exception:
+                pass
+            st = None
+            for c in cand:
+                try:
+                    st = _pl.load_state(c)
+                except Exception as e:
+                    self._pl_log(f"Session restore: {c} unreadable ({e})")
+                    continue
+                if st and st.records:
+                    break
+                st = None
+            if st is None:
+                if not quiet:
+                    self._pl_log("Session restore: no pipeline_state.json with records found.")
+                return False
+
+            self._pl_state   = st
+            self._pl_records = st.records
+            self._pl_excluded = set(st.excluded_ranks or [])
+            for var, val in ((self._pl_well_id, st.well_id),
+                             (self._pl_mosaic_path, st.mosaic_nd2),
+                             (self._pl_out_dir, st.out_dir),
+                             (self._pl_trigger_dir, st.trigger_dir),
+                             (self._pl_nd2_out_dir, st.nd2_out_dir)):
+                if val:
+                    var.set(val)
+            for var, val in ((self._pl_z_centre, st.z_centre),
+                             (self._pl_z_half, st.z_half),
+                             (self._pl_z_step, st.z_step)):
+                if val:
+                    var.set(str(val))
+            ranks = [str(r.rank) for r in st.records]
+            try:
+                self._pl_z_rank_combo.configure(values=ranks)
+                if ranks and not self._pl_z_rank.get().strip():
+                    self._pl_z_rank.set(ranks[0])
+            except Exception:
+                pass
+            self._pl_update_table()
+            self._pl_refresh_dashboard()
+            self._pl_update_step_dots()
+            n_ex = len(self._pl_excluded)
+            msg = (f"Session restored: {len(st.records)} spheroid(s) for well "
+                   f"{st.well_id or '?'}"
+                   + (f", {n_ex} excluded" if n_ex else "")
+                   + f" (from {Path(st.out_dir).as_posix()}). Steps 1-3 do NOT need re-running.")
+            self._pl_log(msg)
+            try:
+                self._pl_screen_lbl.configure(text=msg, fg=GREEN)
+            except Exception:
+                pass
+            return True
+        except Exception as e:
+            self._pl_log(f"Session restore failed: {e}")
+            return False
+
     def _pl_run_screener(self):
         try:
             import spheroid_pipeline as _pl
@@ -2984,6 +3306,7 @@ class App(tk.Tk):
                 text=msg, fg=GREEN))
             self._pl_log(msg)
             self._pl_update_step_dots()
+            self._pl_save_pipeline_state()
         except Exception as exc:
             self.after(0, lambda: self._pl_screen_lbl.configure(
                 text=f"Error: {exc}", fg=RED))
@@ -3077,6 +3400,7 @@ class App(tk.Tk):
         self.after(0, lambda m=msg: self._pl_offset_lbl.configure(text=m, fg=GREEN))
         self._pl_log(msg)
         self._pl_update_step_dots()
+        self._pl_save_pipeline_state()
 
     # ── Step 3 handlers ───────────────────────────────────────────────────────
 
@@ -3161,6 +3485,7 @@ class App(tk.Tk):
         self._pl_log(f"Step 3: {n} {mode} triggers written to autofocus/ (centre={z_centre}){extra}")
         self.after(0, lambda m=mode, e=extra: self._pl_af_status_lbl.configure(
             text=f"{n} {m} triggers written{e}.", fg=YELLOW))
+        self._pl_save_pipeline_state()
         return True
 
     def _pl_poll_af_thread(self):
@@ -3450,6 +3775,13 @@ class App(tk.Tk):
                                          fallback=cp2.get("spheroid", "status", fallback="?"))
                     except Exception:
                         time.sleep(1.0); continue
+                    if status == "?":
+                        # cmd_done.ini is built key-by-key with status written LAST, so a
+                        # file that parses without one is still being written -- not a
+                        # finished run with an unknown result. Breaking here reported "?"
+                        # and aborted a post-PA sequence whose capture had actually
+                        # succeeded (2026-08-07, cost the 1050 nm pass).
+                        time.sleep(1.0); continue
                     break
                 if self._pl_abort_requested(wd):
                     status = "aborted"; break
@@ -3639,6 +3971,35 @@ class App(tk.Tk):
 
     # ── Step 4 handlers ───────────────────────────────────────────────────────
 
+    def _info(self, parent, short, detail, bg=None, fg=None, wrap=460):
+        """A one-line label plus a clickable (i) that toggles the full explanation below it.
+
+        Cards accumulate caveats -- which job fires, why a folder matters, what a failure
+        means -- and printing all of it permanently turns the panel into a wall of small
+        text that gets skimmed and then ignored. Keep the operating line visible, put the
+        reasoning one click away. Nothing is deleted, only folded."""
+        bg = bg or BG2
+        row = tk.Frame(parent, bg=bg); row.pack(fill="x", anchor="w")
+        tk.Label(row, text=short, bg=bg, fg=fg or SUBTEXT, font=("Segoe UI", 8),
+                 justify="left", wraplength=wrap).pack(side="left")
+        btn = tk.Label(row, text=" ⓘ", bg=bg, fg=BLUE,
+                       font=("Segoe UI", 10, "bold"), cursor="hand2")
+        btn.pack(side="left")
+        det = tk.Label(parent, text=detail, bg=bg, fg=SUBTEXT, font=("Segoe UI", 8),
+                       justify="left", wraplength=wrap, anchor="w")
+
+        def toggle(_=None):
+            if det.winfo_ismapped():
+                det.pack_forget()
+                btn.configure(fg=BLUE)
+            else:
+                # after=row keeps the detail attached to ITS line; without it Tk appends
+                # to the end of the parent and the text lands under an unrelated widget.
+                det.pack(fill="x", anchor="w", padx=(14, 0), after=row)
+                btn.configure(fg=YELLOW)
+        btn.bind("<Button-1>", toggle)
+        return row
+
     def _pl_pa_card(self, parent, title, sel_var):
         """One PA-macro card: a [select] checkbox header + a body frame for params.
         Returns (card, body); the caller fills `body` then calls _pl_pa_card_buttons."""
@@ -3674,13 +4035,87 @@ class App(tk.Tk):
         if v > MAX_PA_ACTIVATION_POWER_PCT:
             self._pl_pa_power.set(str(MAX_PA_ACTIVATION_POWER_PCT))
 
+    def _pl_pa_sync_save_dir(self, *_):
+        """Keep the PA folder pointed at <Output directory>/pa and make sure it exists.
+
+        Auto-fills whenever the box is empty or still holds a previous run's auto value,
+        so moving to a new run folder carries the PA folder with it -- the 0807/pa vs
+        0807_2/pa mismatch on 2026-08-07 came from a stale hand-set path. A path the
+        operator typed themselves is left alone: `_pl_pa_save_dir_auto` records what this
+        method last set, so anything else is treated as deliberate."""
+        out = self._pl_out_dir.get().strip()
+        if not out:
+            return
+        want = (Path(out) / "pa")
+        cur = self._pl_pa_save_dir.get().strip()
+        auto = getattr(self, "_pl_pa_save_dir_auto", "")
+        if cur and cur != auto:
+            return                      # operator-chosen -- do not overwrite
+        self._pl_pa_save_dir.set(want.as_posix())
+        self._pl_pa_save_dir_auto = want.as_posix()
+        try:
+            want.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            self._pl_log(f"PA folder: could not create {want.as_posix()} ({e})")
+
+    def _pl_pa_effective_save_dir(self):
+        """The folder the PA stacks should land in: the Step 4 'PA save folder' box when
+        set, else <out_dir>/pa. Returns a Path, or None when neither is available."""
+        explicit = self._pl_pa_save_dir.get().strip()
+        if explicit:
+            return Path(explicit)
+        base = self._pl_out_dir.get().strip()
+        return (Path(base) / "pa") if base else None
+
+    def _pl_pa_prepare_save_dir(self, quiet=True):
+        """Ensure the PA folder exists and is recorded in pa_trigger.ini.
+
+        Called automatically before every PA launch -- there is no button for it. It used
+        to be a manual 'Prepare folder' click, which meant the one run where it was
+        forgotten wrote into a stale path from a previous session.
+
+        It DELIBERATELY does not re-point NIS-E's ND Acquisition 'Save to File' (an earlier
+        build dispatched action 11 to do that). The step3_zstack_PA JOB writes via its own
+        'Alternative Storage Location' task and ignores the ND dialog, so pointing the ND
+        target at pa/ achieved nothing for the JOB while making EVERY ND acquisition drop a
+        second copy there -- on 2026-08-07 each validation capture left a byte-identical
+        duplicate as PA.nd2, PA001.nd2, ... in the PA output folder.
+
+        Returns True when the folder is ready."""
+        save_dir = self._pl_pa_effective_save_dir()
+        if save_dir is None:
+            if not quiet:
+                messagebox.showwarning("PA folder",
+                                       "Set an Output directory in Step 1 first.")
+            self._pl_log("PA folder: no Output directory -- cannot prepare the pa/ folder.")
+            return False
+        try:
+            save_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            self._pl_log(f"PA folder: could not create {save_dir.as_posix()} ({exc})")
+            if not quiet:
+                messagebox.showerror("PA folder", f"Could not create {save_dir}:\n{exc}")
+            return False
+        if self._pl_pa_write_trigger() is None:      # records save_dir/save_prefix
+            return False
+        self._pl_pa_savepath_applied = save_dir.as_posix()
+        try:
+            self._pl_pa_save_lbl.configure(
+                text=f"Folder ready: {save_dir.as_posix()}   "
+                     f"(set the SAME path on the job's 'Alternative Storage Location')",
+                fg=GREEN)
+        except Exception:
+            pass
+        self._pl_log(f"PA folder ready: {save_dir.as_posix()} "
+                     f"(prefix '{self._pl_pa_save_prefix.get().strip() or 'PA'}')")
+        return True
+
     def _pl_pa_write_trigger(self):
         """Write pa_trigger.ini (all PA-macro params) into the session work dir and
         refresh session.ini (work_dir + macro_dir for the dispatcher). Returns the
         work_dir Path, or None on error (after showing a message)."""
         import configparser, spheroid_pipeline as _pl
-        base = self._pl_out_dir.get().strip()
-        save_dir = (Path(base) / "pa") if base else None
+        save_dir = self._pl_pa_effective_save_dir()
         cp0 = configparser.ConfigParser()
         try:
             if _pl.SESSION_INI.exists():
@@ -3712,6 +4147,7 @@ class App(tk.Tk):
             f"remove_interlock={'1' if self._pl_pa_interlock.get() else '0'}",
             f"a1_on={'1' if self._pl_pa_a1on.get() else '0'}",
             f"save_dir={save_dir.as_posix() if save_dir else ''}",
+            f"save_prefix={self._pl_pa_save_prefix.get().strip() or 'PA'}",
         ]
         try:
             _pl._atomic_write_crlf(wd / "pa_trigger.ini", pa_lines)
@@ -3998,6 +4434,14 @@ class App(tk.Tk):
         # bad rank) the daemon thread dies and nd2_dir would stay pointed at
         # nd2/<phase>_<tag>/ -- silently poisoning every later capture. Always restore.
         try:
+            # Light path FIRST, before any capture: snapshot on the pre-PA pass so the
+            # baseline laser powers are read off the rig; restore on the post-PA pass so
+            # the dichroic/zoom pa_setup changed are put back. Without this the two halves
+            # of the comparison can be acquired through different optics -- see
+            # _pl_lightpath_step.
+            if self._pl_lightpath_restore.get():
+                self._pl_lightpath_step(wd, "snapshot" if phase == "prePA" else "restore",
+                                        plabel)
             for oc_name, tag in ocs:
                 if self._pl_abort_requested(wd):
                     self._pl_log(f"{plabel}: ABORT requested -- stopping before '{tag}'")
@@ -4040,6 +4484,13 @@ class App(tk.Tk):
                             status = cp.get("command", "status",
                                             fallback=cp.get("spheroid", "status", fallback="?"))
                         except Exception:
+                            time.sleep(1.0); continue
+                        if status == "?":
+                            # cmd_done.ini is built key-by-key with status written LAST, so a
+                            # file that parses without one is still being written -- not a
+                            # finished run with an unknown result. Breaking here reported "?"
+                            # and aborted a post-PA sequence whose capture had actually
+                            # succeeded (2026-08-07, cost the 1050 nm pass).
                             time.sleep(1.0); continue
                         break
                     if self._pl_abort_requested(wd):
@@ -4110,16 +4561,272 @@ class App(tk.Tk):
         self._pl_dispatch_busy = True
         threading.Thread(target=lambda: self._pl_prepa_run(phase), daemon=True).start()
 
+    # Zoom used for the validation captures. The pre-PA baseline is acquired at the Init
+    # card's confocal zoom; the post-PA restore must reproduce THAT, not whatever zoom
+    # pa_setup left behind for the PA square.
+    LIGHTPATH_ZOOM_FALLBACK = 2.0
+
+    def _pl_lightpath_step(self, wd, mode, plabel):
+        """Snapshot (pre-PA) or restore (post-PA) the imaging light path via dispatcher
+        action 12. Returns True to continue.
+
+        Restore is what makes a before/after comparison mean anything: pa_setup extracts
+        the dichroic and drives the zoom to the PA square, and the capture path (action 2)
+        never puts either back. Snapshot runs on the pre-PA pass so the laser powers come
+        off the rig rather than being assumed.
+
+        A failure here is NOT fatal to the capture -- it is reported loudly and the caller
+        proceeds, because aborting a post-PA run (which cannot be repeated on that sample)
+        over a restore hiccup is worse than capturing with a warning attached."""
+        import configparser, time, spheroid_pipeline as _pl
+        try:
+            zoom = float(self._pl_init_zoom.get())
+        except (ValueError, AttributeError):
+            zoom = self.LIGHTPATH_ZOOM_FALLBACK
+        state = (Path(wd) / "lightpath_state.ini").as_posix()
+        lines = ["[lightpath]", f"mode={mode}",
+                 f"dichroic_in={'1' if mode == 'restore' else '0'}",
+                 f"zoom={zoom if mode == 'restore' else 0.0}",
+                 f"a1_on={'1' if self._pl_pa_a1on.get() else '0'}",
+                 f"state={state}"]
+        try:
+            _pl._atomic_write_crlf(Path(wd) / "lightpath_trigger.ini", lines)
+        except Exception as e:
+            self._pl_log(f"{plabel}: light-path {mode} SKIPPED (could not write trigger: {e})")
+            return True
+        done = Path(wd) / "cmd_done.ini"
+        try:
+            done.unlink()
+        except FileNotFoundError:
+            pass
+        _pl._atomic_write_crlf(Path(wd) / "cmd.ini",
+                               ["[command]", f"action=lightpath_{mode}", "action_id=12"])
+        if mode == "restore":
+            self._pl_log(f"{plabel}: restoring pre-PA light path (dichroic IN, zoom {zoom:g}, "
+                         f"laser powers from {Path(state).name}) before capture")
+        else:
+            self._pl_log(f"{plabel}: snapshotting laser powers -> {Path(state).name}")
+        status = None
+        for _ in range(180):                       # 3 min; this is a fast macro
+            if done.exists():
+                cp = configparser.ConfigParser()
+                try:
+                    cp.read(done)
+                    status = cp.get("command", "status",
+                                    fallback=cp.get("spheroid", "status", fallback="?"))
+                except Exception:
+                    time.sleep(1.0); continue
+                if status == "?":
+                    # cmd_done.ini is built key-by-key with status written LAST, so a
+                    # file that parses without one is still being written -- not a
+                    # finished run with an unknown result. Breaking here reported "?"
+                    # and aborted a post-PA sequence whose capture had actually
+                    # succeeded (2026-08-07, cost the 1050 nm pass).
+                    time.sleep(1.0); continue
+                break
+            time.sleep(1.0)
+        if status != "ok":
+            # Loud, and surfaced in the UI: a post-PA set captured without the restore is
+            # not comparable to its baseline, and that is invisible in the images.
+            self._pl_log(f"{plabel}: light-path {mode} -> {status or 'timeout'} "
+                         f"-- CHECK the dichroic/zoom by hand before trusting this data.")
+            self.after(0, lambda: self._pl_pa_status.configure(
+                text=f"{plabel}: light-path {mode} FAILED — verify dichroic IN and zoom "
+                     f"{zoom:g} manually.", fg=RED))
+        return True
+
     def _pl_prepa_run(self, phase="prePA"):
         try:
             self._pl_prepa_capture_ocs(phase)
         finally:
             self._pl_dispatch_busy = False
 
+    # Waiting on the PA JOB. The job is asynchronous: cmd_done returns when the LAUNCH
+    # MACRO returns, not when the job finishes, and the dispatcher writes status=ok
+    # unconditionally -- so neither proves the laser fired. New nd2 files appearing is the
+    # only real evidence, and the run is over when they stop appearing.
+    # Only files the PA JOB itself produces count as evidence it fired. The job names its
+    # output "<timestamp>__Point0000_ZStack00NN_Channel...nd2"; anything else in that folder
+    # is not PA output. This matters because NIS-E's ND "Save to File" has repeatedly dumped
+    # copies of the VALIDATION captures into the same folder (PA.nd2, PA001.nd2, ...), and
+    # counting those made the gate below report success for a laser that never fired --
+    # which would then wave the run on to post-PA on an unactivated spheroid
+    # (2026-08-07: three such duplicates sat in work/0807_4/pa with no PA run at all).
+    PA_OUTPUT_GLOB = "*ZStack*.nd2"
+    PA_JOB_LAUNCH_TIMEOUT_S = 300     # no output at all by now -> the job never started
+    PA_JOB_QUIET_S          = 90      # output stopped growing this long -> finished
+    PA_JOB_MAX_S            = 5400    # hard cap so the pipeline can never hang forever
+
+    def _pl_pa_output_dirs(self):
+        """Folders a PA run might write into. The JOB's destination lives on its own
+        'Alternative Storage Location' task, which this GUI cannot read -- so watch the
+        folder the operator configured AND the shared work/PA that the job has actually
+        been writing to. Whichever fills is reported."""
+        dirs = []
+        d = self._pl_pa_effective_save_dir()
+        if d:
+            dirs.append(Path(d))
+        try:
+            base = Path(self._pl_out_dir.get().strip()).parent / "PA"
+            if base not in dirs:
+                dirs.append(base)
+        except Exception:
+            pass
+        return [x for x in dirs if x]
+
+    def _pl_pa_wait_for_job(self, before, work_dir=None):
+        """Block until the PA job has produced output and gone quiet.
+
+        Returns (ok, message). ok=False means NO output ever appeared -- the job did not
+        start -- and the caller must NOT go on to post-PA validation: a post-PA set with no
+        PA in between is not a control, it is a mislabelled duplicate of the baseline.
+
+        work_dir is where abort.ini lives. It must be the WORK DIR: the first version
+        derived it from `before`, which is a set of nd2 FILE paths, so the abort check
+        looked for the flag next to an image and could never fire (found 2026-08-07 on the
+        first real pipeline run -- the operator's Abort All was ignored by this loop)."""
+        import time
+        dirs = self._pl_pa_output_dirs()
+        t0 = time.time()
+        seen = 0
+        last_change = None
+        while time.time() - t0 < self.PA_JOB_MAX_S:
+            if self._pl_abort_requested(work_dir):
+                return False, "aborted by operator"
+            now = 0
+            for d in dirs:
+                try:
+                    now += sum(1 for p in d.glob(self.PA_OUTPUT_GLOB)
+                               if str(p) not in before)
+                except Exception:
+                    pass
+            if now != seen:
+                seen, last_change = now, time.time()
+                self._pl_log(f"PA job: {seen} output file(s) so far")
+            if seen == 0:
+                if time.time() - t0 > self.PA_JOB_LAUNCH_TIMEOUT_S:
+                    return False, (f"no PA output after "
+                                   f"{self.PA_JOB_LAUNCH_TIMEOUT_S // 60} min in "
+                                   f"{', '.join(d.as_posix() for d in dirs)} -- the job did "
+                                   f"not start (check its Alternative Storage Location, and "
+                                   f"that it validates)")
+            elif last_change and time.time() - last_change > self.PA_JOB_QUIET_S:
+                return True, f"{seen} file(s), output quiet for {self.PA_JOB_QUIET_S}s"
+            time.sleep(5)
+        return False, f"PA job still writing after {self.PA_JOB_MAX_S // 60} min -- gave up waiting"
+
+    # Preference order for which pre-PA capture to re-centre from: the structural /
+    # brightest channel first. 890 mBeRFP is routinely near the noise floor on these
+    # samples (p99.9 of 62-79 counts), so segmenting it is the least reliable option and
+    # is only used when nothing better was captured.
+    RECENTER_TAG_ORDER = ["1050nm_depth", "940nm_PAsfGFP", "890nm_mBeRFP"]
+
+    def _pl_pipeline_recenter(self):
+        """Re-centre the triggers off the pre-PA captures this pipeline just took, then
+        rewrite them so the PA fires on the corrected coordinates.
+
+        Returns True to continue regardless of outcome: a failed re-centre leaves the
+        pre-existing (anchored) coordinates in place, which is exactly what a run without
+        re-centring would have used anyway. Aborting the sequence over it would be a
+        bigger loss than proceeding slightly off-centre."""
+        import configparser, spheroid_pipeline as _pl
+        if not self._pl_records:
+            return True
+        cp = configparser.ConfigParser()
+        try:
+            if _pl.SESSION_INI.exists():
+                cp.read(_pl.SESSION_INI)
+        except Exception:
+            pass
+        base = cp.get("paths", "nd2_dir", fallback="").strip()
+        if not base:
+            self._pl_log("Pipeline re-center: no nd2_dir -- SKIPPED (triggers unchanged).")
+            return True
+        # A single-plane ("Locate only") capture is NOT a valid re-centre input: the
+        # centroid is measured on whatever one plane happened to be taken, so the nudge
+        # comes out near zero and looks like "already centred". 2026-08-07: a locate-only
+        # run produced +0.3/-0.8 um on a spheroid the operator's manual pass had corrected
+        # by 36.4 um. Refuse loudly rather than return a meaningless correction.
+        MIN_PLANES = 5
+        src, thin = None, []
+        for tag in self.RECENTER_TAG_ORDER:
+            d = Path(base) / f"prePA_{tag}"
+            if not (d.is_dir() and any(d.glob("*_zstack.nd2"))):
+                continue
+            try:
+                import nd2 as _nd2
+                with _nd2.ND2File(str(next(d.glob("*_zstack.nd2")))) as f:
+                    nz = f.sizes.get("Z", 1)
+            except Exception:
+                nz = 0
+            if nz >= MIN_PLANES:
+                src = d
+                break
+            thin.append(f"{tag}({nz}p)")
+        if src is None:
+            why = (f"only single/thin stacks {thin} -- 'Locate only' is on, or z_half=0"
+                   if thin else "no prePA_* captures found")
+            self._pl_log(f"Pipeline re-center: SKIPPED -- {why}. Triggers UNCHANGED; the PA "
+                         f"will fire on the un-recentred coordinates.")
+            self.after(0, lambda w=why: self._pl_pa_status.configure(
+                text=f"Re-center SKIPPED — {w}", fg=RED))
+            return True
+        excl = getattr(self, "_pl_excluded", set())
+        targets = sorted((r for r in self._pl_records if r.rank not in excl),
+                         key=lambda r: r.rank)
+        try:
+            res, skipped = _pl.recenter_from_captures(
+                targets, src,
+                flip_x=self._pl_recenter_flipx.get(),
+                flip_y=self._pl_recenter_flipy.get())
+        except Exception as e:
+            self._pl_log(f"Pipeline re-center: FAILED ({e}) -- triggers unchanged, "
+                         f"continuing on the anchored coordinates.")
+            return True
+        if not res and not skipped:
+            self._pl_log(f"Pipeline re-center: nothing measurable in {src.name} -- "
+                         f"triggers unchanged.")
+            return True
+        self._pl_recentered = {rank: (dx, dy) for rank, dcol, drow, dx, dy in res}
+        self._pl_log(f"Pipeline re-center: from {src.name}")
+        for rank, dcol, drow, dx, dy in res:
+            self._pl_log(f"   rank {rank}: nudge ({dx:+.1f}, {dy:+.1f}) um")
+        # Skipped ranks keep their PRE-recenter coords -- say so, since silently leaving
+        # them uncorrected is the failure this whole step exists to prevent.
+        for rank, reason in skipped:
+            self._pl_log(f"   rank {rank}: NOT corrected -- {reason}")
+        self.after(0, self._pl_update_table)
+        self.after(0, self._pl_refresh_dashboard)
+        self._pl_regen_triggers()      # write the corrected coords for the PA launch
+        return True
+
     def _pl_pa_run_pipeline_thread(self):
         if getattr(self, "_pl_dispatch_busy", False):
             messagebox.showinfo("Dispatcher busy",
                                 "A macro is already running via the dispatcher — wait for it to finish."); return
+        # Gate the laser HERE, on the main thread, before the worker starts. Tk modals are
+        # not thread-safe, and an unattended sequence must not stop halfway waiting for a
+        # dialog nobody is watching. Once confirmed, the run proceeds without prompting.
+        if self._pl_pa_sel_pajob.get():
+            if not self._pl_pa_a1on.get():
+                messagebox.showwarning("A1 not confirmed",
+                                       "Tick 'A1 powered ON' before running a pipeline that "
+                                       "fires the PA laser."); return
+            pts, _ = self._pl_pa_points_from_triggers()
+            n = len(pts) if pts else 0
+            oc = self._pl_pa_oc.get().strip()
+            listing = "\n".join(f"   [{i}] ({x:.1f}, {y:.1f}) um  z={z:.1f}"
+                                for i, (_n, x, y, z) in enumerate(pts or []))
+            if not messagebox.askyesno(
+                    "Run Pipeline will FIRE THE PA LASER",
+                    f"This pipeline includes the photoactivation JOB.\n\n"
+                    f"Optical config : {oc}\n"
+                    f"Points ({n}):\n{listing or '   (none — job would use its STORED point)'}\n\n"
+                    f"Post-PA captures will run only if the PA actually produces output.\n\n"
+                    f"Proceed?"):
+                self._pl_log("Pipeline: cancelled at the PA-laser confirmation.")
+                return
+            self._pl_log(f"Pipeline: PA laser confirmed by operator (OC '{oc}', {n} point(s)).")
         self._pl_abort_clear()       # a stale flag must not kill the run we're starting
         self._pl_dispatch_busy = True
         threading.Thread(target=self._pl_pa_run_pipeline, daemon=True).start()
@@ -4132,10 +4839,41 @@ class App(tk.Tk):
         try:
             if not self._pl_regen_triggers():
                 return
+            # Declare the plan before executing it. Without this there is no way to tell,
+            # from the log alone, whether a step was SKIPPED because it was unticked or
+            # because something failed -- which is exactly the ambiguity that made the
+            # 2026-08-07 run unreadable.
+            self._pl_log(
+                "PA pipeline: selected -> "
+                f"pre-PA={self._pl_pa_sel_prepa.get()} "
+                f"(ocs={[t for _, t in self._pl_prepa_checked_ocs()]}), "
+                f"recenter={self._pl_pa_sel_recenter.get()}, "
+                f"setup={self._pl_pa_sel_setup.get()}, "
+                f"PA-job={self._pl_pa_sel_pajob.get()}, "
+                f"post-PA={self._pl_pa_sel_postpa.get()} "
+                f"(ocs={[t for _, t in self._pl_prepa_checked_ocs('postPA')]})")
+            # Z geometry and the locate-only flags, because THOSE decide whether the
+            # baseline is a usable stack or a single plane -- and a single-plane baseline
+            # makes the whole before/after run worthless while every step still reports ok.
+            _lo_pre = self._pl_prepa_locate_only.get()
+            _lo_post = self._pl_postpa_locate_only.get()
+            self._pl_log(
+                f"PA pipeline: Z -> centre={self._pl_z_centre.get()} "
+                f"half={self._pl_z_half.get()} step={self._pl_z_step.get()}   "
+                f"locate-only: pre-PA={_lo_pre} post-PA={_lo_post}")
+            if _lo_pre or _lo_post or str(self._pl_z_half.get()).strip() in ("0", "0.0", ""):
+                self._pl_log("PA pipeline: *** WARNING -- captures will be SINGLE-PLANE. "
+                             "The before/after comparison needs a z-stack; untick "
+                             "'Locate only' and set a non-zero z_half. ***")
+                self.after(0, lambda: self._pl_pa_status.configure(
+                    text="WARNING: locate-only / z_half=0 — captures will be single-plane",
+                    fg=RED))
             do_prepa = self._pl_pa_sel_prepa.get() and bool(self._pl_prepa_checked_ocs())
             seq = []
             if self._pl_pa_sel_setup.get():    seq.append(("pa_setup", 4))
-            if self._pl_pa_sel_points.get():   seq.append(("pa_points", 5))
+            # pa_points deliberately NOT sequenced -- the card is gone and the ND
+            # multipoint it built is not what positions the PA. See the removal note in
+            # the Step-4 card builder.
             if not seq and not do_prepa:
                 self.after(0, lambda: self._pl_pa_status.configure(
                     text="Pipeline: no macros checked.", fg=RED)); return
@@ -4143,7 +4881,14 @@ class App(tk.Tk):
                 self._pl_log("PA pipeline: Pre-PA viz capture(s) first")
                 if not self._pl_prepa_capture_ocs():
                     return   # status already shown by the helper
-            if not seq:
+                # Re-centre off those captures BEFORE anything downstream uses the
+                # coordinates. The manual Step-3 Re-center is easy to forget, and the
+                # pipeline has the exact same input sitting on disk by this point.
+                if self._pl_pa_sel_recenter.get():
+                    self.after(0, lambda: self._pl_pa_status.configure(
+                        text="Pipeline: re-centering from the pre-PA captures...", fg=YELLOW))
+                    self._pl_pipeline_recenter()
+            if not seq and not (self._pl_pa_sel_pajob.get() or self._pl_pa_sel_postpa.get()):
                 self.after(0, lambda: self._pl_pa_status.configure(
                     text="Pipeline complete: Pre-PA only.", fg=GREEN)); return
             wd = self._pl_pa_write_trigger()
@@ -4174,6 +4919,13 @@ class App(tk.Tk):
                                 fallback=cp.get("spheroid", "status", fallback="?"))
                         except Exception:
                             time.sleep(1.0); continue
+                        if status == "?":
+                            # cmd_done.ini is built key-by-key with status written LAST, so a
+                            # file that parses without one is still being written -- not a
+                            # finished run with an unknown result. Breaking here reported "?"
+                            # and aborted a post-PA sequence whose capture had actually
+                            # succeeded (2026-08-07, cost the 1050 nm pass).
+                            time.sleep(1.0); continue
                         break
                     if self._pl_abort_requested(wd):
                         status = "aborted"
@@ -4184,8 +4936,116 @@ class App(tk.Tk):
                     msg = (f"Pipeline stopped at '{action}' -> {status}" if status
                            else f"Pipeline: '{action}' timed out (is nis_macro_dispatcher.mac running?)")
                     self.after(0, lambda m=msg: self._pl_pa_status.configure(text=m, fg=RED)); return
-            self.after(0, lambda n=len(seq): self._pl_pa_status.configure(
-                text=f"Pipeline complete: {n} macro(s) ok.", fg=GREEN))
+            # ── PA JOB (fires the 850 nm laser) ───────────────────────────────
+            # Confirmed up front on the main thread in _pl_pa_run_pipeline_thread, so no
+            # modal here: an unattended sequence must not stall on a dialog nobody sees.
+            pa_ran = False
+            if self._pl_pa_sel_pajob.get():
+                if self._pl_abort_requested(wd):
+                    self.after(0, lambda: self._pl_pa_status.configure(
+                        text="Pipeline: aborted before the PA job.", fg=RED)); return
+                before = set()
+                for d in self._pl_pa_output_dirs():
+                    try:
+                        before |= {str(p) for p in d.glob("*.nd2")}
+                    except Exception:
+                        pass
+                self.after(0, lambda: self._pl_pa_status.configure(
+                    text="Pipeline: PA JOB running (850 nm)...", fg=RED))
+                # Same automatic folder prep as the standalone button.
+                self._pl_pa_sync_save_dir()
+                self._pl_pa_prepare_save_dir()
+                self._pl_log("PA pipeline: launching step3_zstack_PA_WC (laser)")
+                # Dispatch DIRECTLY, exactly as this pipeline dispatches its macro steps.
+                # It must NOT go through _pl_run_job -> _pl_send_command: that path's first
+                # act is to refuse when _pl_dispatch_busy is set, and this pipeline holds
+                # that lock for its whole sequence. The result was a "Dispatcher busy"
+                # modal on a worker thread and a PA that never launched, while
+                # _pl_run_job still logged "launched" because it logs after dispatching
+                # regardless of outcome (2026-08-07: three runs lost to this).
+                pa_params = self._pl_pa_point_params()
+                if not self._pl_pa_a1on.get():
+                    self._pl_log("PA pipeline: A1 not confirmed -- PA step SKIPPED.")
+                    self.after(0, lambda: self._pl_pa_status.configure(
+                        text="Pipeline: A1 not confirmed — PA skipped.", fg=RED)); return
+                try:
+                    _pl._atomic_write_crlf(wd / "job_trigger.ini", [
+                        "[job]", f"project={self._pl_job_project.get().strip()}",
+                        "name=step3_zstack_PA_WC"])
+                    pj = wd / "job_params.json"
+                    if pa_params:
+                        import json as _json
+                        pj.write_text(_json.dumps(pa_params, ensure_ascii=False),
+                                      encoding="utf-16")
+                    else:
+                        pj.unlink(missing_ok=True)
+                    (wd / "cmd_done.ini").unlink(missing_ok=True)
+                    _pl._atomic_write_crlf(wd / "cmd.ini",
+                                           ["[command]", "action=run_job", "action_id=10"])
+                except Exception as exc:
+                    self._pl_log(f"PA pipeline: could not write the PA launch files ({exc})")
+                    self.after(0, lambda e=exc: self._pl_pa_status.configure(
+                        text=f"Pipeline: PA launch write failed — {e}", fg=RED)); return
+                self._pl_log(f"PA pipeline: dispatched run_job (id 10) for "
+                             f"step3_zstack_PA_WC with {len(pa_params or {})} param(s)")
+                ok, why = self._pl_pa_wait_for_job(before, wd)
+                pa_ran = ok
+                self._pl_log(f"PA pipeline: PA job -> {'complete' if ok else 'NOT RUN'} ({why})")
+                if not ok:
+                    # Hard stop. A post-PA set with no PA in between is not a control -- it
+                    # is a mislabelled second copy of the baseline, and it silently corrupts
+                    # the comparison. The operator explicitly asked for this behaviour.
+                    self.after(0, lambda w=why: self._pl_pa_status.configure(
+                        text=f"Pipeline STOPPED: PA did not run ({w}). Post-PA SKIPPED.",
+                        fg=RED))
+                    messagebox.showerror(
+                        "PA did not run — post-PA skipped",
+                        f"The photoactivation job produced no output:\n\n{why}\n\n"
+                        f"After-PA captures were NOT run: without a PA in between they "
+                        f"would just duplicate the baseline and corrupt the comparison.")
+                    return
+
+            # ── Post-PA validation (only reachable if the PA actually ran) ────
+            if not self._pl_pa_sel_postpa.get():
+                # Say so. Ending the sequence silently after a successful PA looks
+                # identical to the pipeline hanging, which is exactly how it read on
+                # 2026-08-07: the PA finished, nothing followed, and there was no line
+                # explaining that post-PA was simply not selected.
+                self._pl_log("PA pipeline: post-PA NOT selected -- stopping here. Tick "
+                             "'include in Run Pipeline' on the After-PA card, or click "
+                             "'Run After-PA Captures' now.")
+            if self._pl_pa_sel_postpa.get():
+                if self._pl_pa_sel_pajob.get() and not pa_ran:
+                    return                                   # unreachable, kept explicit
+                if not self._pl_pa_sel_pajob.get():
+                    self._pl_log("PA pipeline: post-PA requested WITHOUT the PA job in this "
+                                 "run -- assuming the PA was fired separately.")
+                self.after(0, lambda: self._pl_pa_status.configure(
+                    text="Pipeline: After-PA captures...", fg=YELLOW))
+                self._pl_log("PA pipeline: After-PA viz capture(s)")
+                if not self._pl_prepa_capture_ocs("postPA"):
+                    return                                   # helper showed the status
+            done_bits = [f"{len(seq)} macro(s)"]
+            if self._pl_pa_sel_pajob.get():
+                done_bits.append("PA job")
+            if self._pl_pa_sel_postpa.get():
+                done_bits.append("post-PA")
+            self._pl_log(f"PA pipeline: COMPLETE -- {', '.join(done_bits)}")
+            self.after(0, lambda b=", ".join(done_bits): self._pl_pa_status.configure(
+                text=f"Pipeline complete: {b}.", fg=GREEN))
+        except Exception as exc:
+            # This runs on a daemon thread. Without this handler an exception unwinds out
+            # of the thread and is DISCARDED -- no console, no log, no dialog: the sequence
+            # simply stops mid-run and looks like a hang. On 2026-08-07 a Run All ended
+            # after the PA with no post-PA and no error line, and there was no way to tell
+            # a crash from a skipped step. Log the full traceback so there is always
+            # something to read.
+            import traceback
+            self._pl_log(f"PA pipeline: CRASHED -- {type(exc).__name__}: {exc}")
+            for ln in traceback.format_exc().splitlines():
+                self._pl_log(f"    {ln}")
+            self.after(0, lambda e=exc: self._pl_pa_status.configure(
+                text=f"Pipeline CRASHED — {type(e).__name__}: {e} (see log)", fg=RED))
         finally:
             self._pl_dispatch_busy = False
 
@@ -4362,6 +5222,33 @@ class App(tk.Tk):
     PA_POINT_X_KEY = "PredefinedPoints.Positions.Positions[0].Position.Stage.x"
     PA_POINT_Y_KEY = "PredefinedPoints.Positions.Positions[0].Position.Stage.y"
     PA_POINT_Z_KEY = "PredefinedPoints.Positions.Positions[0].Position.z"
+    # Per-point templates for multi-spheroid PA -- the [0] constants above are these at i=0.
+    # Note z is Position.z, a SIBLING of Position.Stage, NOT Position.Stage.z: rig-confirmed
+    # 2026-08-07 off the Debug task's parameter tree ('.Stage.z' throws Invalid Expression).
+    PA_POINT_X_FMT = "PredefinedPoints.Positions.Positions[{i}].Position.Stage.x"
+    PA_POINT_Y_FMT = "PredefinedPoints.Positions.Positions[{i}].Position.Stage.y"
+    PA_POINT_Z_FMT = "PredefinedPoints.Positions.Positions[{i}].Position.z"
+    # Point-array length. In the Debug parameter tree PredefinedPoints' ArraySize renders
+    # NORMAL while WellSelection's renders RED (red = read-only output), which suggests this
+    # one is settable -- UNVERIFIED on the rig. Sent so the job's point count matches what we
+    # parameterize. If NIS ignores it, the job keeps whatever count is defined by hand, and
+    # any surplus points fire the 850 nm laser at their STORED coordinates -- which is why
+    # _pl_run_pa_job hard-confirms the count with the operator before firing.
+    PA_POINT_COUNT_KEY = "PredefinedPoints.Positions.Positions.ArraySize"
+    # Where the JOB writes its output. Read off the Debug task's parameter tree as
+    # Job.StoreToFsOnly.Folder (the 'Alternative Storage Location' task); the Job. prefix is
+    # dropped for Jobs_RunJobInitParam, exactly like the PredefinedPoints keys.
+    #
+    # This closes the last stale-path hole. The folder used to live ONLY on the job, so it
+    # silently kept whatever the previous session set: PA output landed in another user's
+    # D:\Images S636B\Brandon\... folder on 2026-08-07, and later in a shared work/PA while
+    # the GUI said work/0807_4/pa. Sending it per run means the GUI's folder IS the
+    # destination, with no second place to keep in sync.
+    #
+    # Kept on C: is NOT an option -- removing the storage task entirely would send ~11 GB
+    # per run to C:\ProgramData\...\jobsdb (180 GB free, already 17 GB of Step1 mosaics),
+    # versus 14 TB on the share.
+    PA_STORE_FOLDER_KEY = "StoreToFsOnly.Folder"
 
     def _pl_well_param_value(self, well):
         """Format the GUI well id into the value WellSelection Wells[0].Name expects. The plate
@@ -4655,14 +5542,13 @@ class App(tk.Tk):
             return {key: self._pl_well_param_value(well)}
         return None
 
-    def _pl_pa_point_params(self):
-        """Build the JOB parameters that set step3_zstack_PA's PredefinedPoint[0] (and well) to
-        the CURRENT spheroid, so the 850 nm PA fires on the exact supplied point instead of the
-        job's stale in-job point. Reads coords from the current af_trigger_*.ini (the checked
-        spheroids, written by _pl_regen_triggers). SINGLE point for now: uses the first trigger and
-        logs a warning if >1 spheroid is checked (the job has ONE PredefinedPoint -- multi-spheroid
-        PA needs the point array grown). Returns the params dict, or None (then the job launches
-        un-parameterized on its in-job point -- surfaced loudly in the log)."""
+    def _pl_pa_points_from_triggers(self):
+        """Read EVERY af_trigger_*.ini into [(name, x, y, z)], ordered by rank.
+
+        Split out from _pl_pa_point_params so the point list can be counted and shown to the
+        operator (and unit-tested) without building the param dict. Triggers with unreadable
+        coords are DROPPED with a log line rather than defaulting to 0 -- a 0 would be stage
+        origin, i.e. the centre of the plate."""
         import configparser, spheroid_pipeline as _pl
         cp0 = configparser.ConfigParser()
         try:
@@ -4672,33 +5558,79 @@ class App(tk.Tk):
             pass
         work = cp0.get("paths", "work_dir", fallback="").strip() or self._pl_trigger_dir.get().strip()
         if not work:
-            self._pl_log("PA: no work dir -- launching WITHOUT a point param (uses in-job point).")
+            return None, "no work dir"
+        pts = []
+        for t in sorted(Path(work).glob("af_trigger_*.ini")):
+            cp = configparser.ConfigParser()
+            try:
+                cp.read(t)
+                pts.append((t.name,
+                            float(cp.get("spheroid", "stage_x")),
+                            float(cp.get("spheroid", "stage_y")),
+                            float(cp.get("spheroid", "z_centre"))))
+            except Exception as e:
+                self._pl_log(f"PA: SKIPPING {t.name} -- unreadable coords ({e}).")
+        if not pts:
+            return None, "no readable af_trigger_*.ini"
+        return pts, None
+
+    def _pl_pa_point_params(self):
+        """Build the JOB parameters that set step3_zstack_PA_WC's PredefinedPoints to the
+        CURRENT spheroid selection, so the 850 nm PA fires on exactly the supplied points
+        instead of the job's stale stored ones.
+
+        MULTI-POINT: every af_trigger_*.ini becomes Positions[i], each carrying its own
+        Stage.x/y AND its own z. Per-point z matters because ZStackDefinition is
+        Relative-to-Home and 'Move to Point' (Move to Z ticked) re-anchors Home at each
+        point -- so every spheroid gets its stack centred on its own depth. Today all
+        triggers carry the same z_centre; they diverge once Step 3 writes per-record depths
+        (trigger_autofocus_all(per_record_z=True)), and this code needs no change then.
+
+        Returns the params dict, or None -- and None means the job runs on its STORED points,
+        which is why the caller confirms before firing."""
+        pts, err = self._pl_pa_points_from_triggers()
+        if pts is None:
+            self._pl_log(f"PA: {err} -- launching WITHOUT point params (the job fires on its "
+                         f"STORED PredefinedPoints, which may be stale).")
             return None
-        trigs = sorted(Path(work).glob("af_trigger_*.ini"))
-        if not trigs:
-            self._pl_log("PA: no af_trigger_*.ini found -- launching WITHOUT a point param "
-                         "(the job images its in-job PredefinedPoint, which may be STALE).")
-            return None
-        if len(trigs) > 1:
-            self._pl_log(f"PA WARNING: {len(trigs)} spheroids checked but step3_zstack_PA has ONE "
-                         f"PredefinedPoint -- parameterizing only {trigs[0].name}. Multi-spheroid PA "
-                         f"needs the job's point array extended (Positions[0..N]).")
-        cp = configparser.ConfigParser()
-        try:
-            cp.read(trigs[0])
-            x = float(cp.get("spheroid", "stage_x"))
-            y = float(cp.get("spheroid", "stage_y"))
-            z = float(cp.get("spheroid", "z_centre"))
-        except Exception as e:
-            self._pl_log(f"PA: could not read coords from {trigs[0].name} ({e}) -- launching "
-                         f"WITHOUT a point param (uses in-job point).")
-            return None
-        params = {self.PA_POINT_X_KEY: x, self.PA_POINT_Y_KEY: y, self.PA_POINT_Z_KEY: z}
+        params = {}
+        for i, (name, x, y, z) in enumerate(pts):
+            params[self.PA_POINT_X_FMT.format(i=i)] = x
+            params[self.PA_POINT_Y_FMT.format(i=i)] = y
+            params[self.PA_POINT_Z_FMT.format(i=i)] = z
+        # ArraySize is sent ONLY when growing the array beyond the single point the job
+        # already holds. Rig evidence 2026-08-07: three launches sending x/y/z + well all
+        # produced output; the two that additionally sent ArraySize produced NOTHING -- a
+        # silent no-op, no jobrun, no nd2, while cmd_done still said ok. An unrecognised key
+        # appears to make Jobs_RunJobInitParam reject the WHOLE parameter set, which then
+        # falls back to the job's stored point. So for the single-point case (the norm) send
+        # exactly the payload that is proven to work, and accept the extra risk only when
+        # multi-point genuinely needs the array grown.
+        if len(pts) > 1:
+            params[self.PA_POINT_COUNT_KEY] = len(pts)
+            self._pl_log(f"PA: sending {self.PA_POINT_COUNT_KEY}={len(pts)} -- UNPROVEN key; "
+                         f"if the job produces no output, this is the first thing to drop.")
         well = self._pl_well_id.get().strip()
         if well:
             params[self.WELL_PARAM_KEY] = self._pl_well_param_value(well)
-        self._pl_log(f"PA point param <- {trigs[0].name}: Stage.x/y=({x:.1f},{y:.1f}) um, z={z:.1f} um, "
-                     f"well={well or '(none)'}  [verify in sim: if the nd2 lands ~1000x off, Stage is mm]")
+
+        # Drive the JOB's output folder from the GUI. Sent as a NATIVE Windows path
+        # (backslashes) to match what the job's own dialog shows -- the value goes straight
+        # into a NIS-E path field, not through Python.
+        store = self._pl_pa_effective_save_dir()
+        if store is not None:
+            params[self.PA_STORE_FOLDER_KEY] = str(Path(store))
+
+        # Log EVERY point, not just a count: this is the last human-readable record of what
+        # the laser was told to hit, and the Debug breakpoint that used to show it is gone.
+        self._pl_log(f"PA point params: {len(pts)} point(s), well={well or '(none)'}, "
+                     f"store={str(Path(store)) if store else '(job default)'}")
+        for i, (name, x, y, z) in enumerate(pts):
+            self._pl_log(f"   [{i}] {name}: Stage.x/y=({x:.1f}, {y:.1f}) um  z={z:.1f} um")
+        if len({round(p[3], 1) for p in pts}) == 1 and len(pts) > 1:
+            self._pl_log(f"   NOTE: all {len(pts)} points share z={pts[0][3]:.1f} um. Enable "
+                         f"per-record Z (trigger_autofocus_all(per_record_z=True)) once the "
+                         f"auto z-plane is validated, or every stack is centred on one depth.")
         return params
 
     def _pl_run_pa_job(self):
@@ -4708,11 +5640,46 @@ class App(tk.Tk):
         stale in-job point. Still gated (A1 confirm + fire-confirm) inside _pl_run_job."""
         if not self._pl_regen_triggers():
             return
-        self._pl_run_job("step3_zstack_PA_WC", True, params=self._pl_pa_point_params())
+        # Prepare the PA folder automatically -- no button, no click to forget. Creates
+        # <Output directory>/pa if absent and records it in pa_trigger.ini for the macros.
+        self._pl_pa_sync_save_dir()
+        self._pl_pa_prepare_save_dir()
+        params = self._pl_pa_point_params()
+        # Multi-point confirmation. We cannot read the job's PredefinedPoints count back, and
+        # the mismatch is dangerous in one direction: if the job holds MORE points than we
+        # parameterise, the surplus keep their STORED coordinates and the 850 nm laser fires
+        # at them too -- off-target, on a sample that cannot be re-run. ArraySize is sent to
+        # size the array, but that key is unverified, so a human confirms the count.
+        pts, _ = self._pl_pa_points_from_triggers()
+        n = len(pts) if pts else 0
+        if n > 1:
+            lines = "\n".join(f"   [{i}] ({x:.1f}, {y:.1f}) um   z={z:.1f}"
+                              for i, (_nm, x, y, z) in enumerate(pts))
+            if not messagebox.askyesno(
+                    "Multi-spheroid PA",
+                    f"This will photoactivate {n} points:\n\n{lines}\n\n"
+                    f"step3_zstack_PA_WC's PredefinedPoints task must hold EXACTLY {n} "
+                    f"point(s).\n\nIf the job holds more, the extra ones fire at their STORED "
+                    f"coordinates — off target, and not repeatable on this sample.\n\n"
+                    f"Confirmed the job has {n} point(s)?"):
+                self._pl_log(f"PA: launch cancelled -- operator did not confirm the "
+                             f"{n}-point job configuration.")
+                return
+        self._pl_run_job("step3_zstack_PA_WC", True, params=params)
 
     # Where the Step1_Locate_via_scan_WC JOB writes its mosaic -- a NEW timestamped folder per run,
     # under the NIS-E jobs DB (NOT the pipeline nd2_dir). See the [[nise-step1-locate-scan-save-path]] note.
     MOSAIC_JOB_DIR = r"C:/ProgramData/Laboratory Imaging/Jobs/jobsdb Projects/IMAGEN/Step1_Locate_via_scan_WC"
+
+    # The widefield optical config the Step-1 mosaic must be taken on. Selected explicitly
+    # before every Run Job1 so the mosaic is correct from ANY starting state -- brightfield,
+    # 2-photon, whatever the previous step left behind. The job's own CaptureDefinition
+    # names this OC, but it does NOT switch to it: on 2026-08-07 a mosaic fired straight
+    # after a 1050 nm 2P capture came back unilluminated (max 356 vs 7287, and the nd2 had
+    # no MultiLaser(EPI) entry at all), because the 555 line was never turned on. The
+    # 18:11 mosaic on the same job worked purely because the rig happened to already be on
+    # widefield. Asserting the OC here removes that dependency on prior state.
+    MOSAIC_OC = "Flash 4.0 - EPI + Tucam(In) + Twincam(Out):Spectra3_555"
 
     def _pl_run_job1_at_well(self):
         """Step 1 'Run Job1': launch Step1_Locate_via_scan_WC at the GUI Well ID. WellSelection
@@ -4740,6 +5707,64 @@ class App(tk.Tk):
             self._pl_log(f"Run Job1: NO plate calibration -- launching UN-PARAMETERIZED. The "
                          f"mosaic will image the job's STORED PredefinedPoint, NOT well "
                          f"{well or '(none)'}. Calibrate the plate to enable coordinate drive.")
+        # Put the rig on the widefield mosaic OC FIRST. Run Job1 has to work from any
+        # starting state -- brightfield, 2-photon, mid-PA-sequence -- and the job does not
+        # switch to its own CaptureDefinition OC on its own (see MOSAIC_OC). Dispatched
+        # synchronously on a worker so the job launch waits for it; the launch still
+        # happens if the OC select fails, with the failure logged loudly, because an
+        # unilluminated mosaic is obvious on inspection whereas a silently skipped Run
+        # Job1 is not.
+        threading.Thread(target=self._pl_run_job1_after_oc, args=(params,),
+                         daemon=True).start()
+
+    def _pl_run_job1_after_oc(self, params):
+        import configparser, time, spheroid_pipeline as _pl
+        cp = configparser.ConfigParser()
+        try:
+            if _pl.SESSION_INI.exists():
+                cp.read(_pl.SESSION_INI)
+        except Exception:
+            pass
+        work = cp.get("paths", "work_dir", fallback="").strip() or self._pl_trigger_dir.get().strip()
+        if work:
+            wd = Path(work)
+            try:
+                # state= points at a file that does not exist ON PURPOSE: selecting the OC
+                # already sets the light source and its powers, and replaying the snapshot
+                # over the top would undo exactly what we just asked for.
+                _pl._atomic_write_crlf(wd / "lightpath_trigger.ini", [
+                    "[lightpath]", "mode=restore", "dichroic_in=0", "zoom=0.0",
+                    f"a1_on={'1' if self._pl_pa_a1on.get() else '0'}",
+                    f"oc={self.MOSAIC_OC}",
+                    f"state={(wd / '_no_such_state.ini').as_posix()}"])
+                (wd / "cmd_done.ini").unlink(missing_ok=True)
+                _pl._atomic_write_crlf(wd / "cmd.ini",
+                                       ["[command]", "action=mosaic_oc", "action_id=12"])
+                self._pl_log(f"Run Job1: selecting mosaic OC '{self.MOSAIC_OC}'")
+                done, status = wd / "cmd_done.ini", None
+                for _ in range(120):
+                    if done.exists():
+                        c = configparser.ConfigParser()
+                        try:
+                            c.read(done)
+                            status = c.get("command", "status", fallback="?")
+                        except Exception:
+                            time.sleep(1.0); continue
+                        if status == "?":
+                            # cmd_done.ini is built key-by-key with status written LAST, so a
+                            # file that parses without one is still being written -- not a
+                            # finished run with an unknown result. Breaking here reported "?"
+                            # and aborted a post-PA sequence whose capture had actually
+                            # succeeded (2026-08-07, cost the 1050 nm pass).
+                            time.sleep(1.0); continue
+                        break
+                    time.sleep(1.0)
+                if status != "ok":
+                    self._pl_log(f"Run Job1: mosaic OC select -> {status or 'timeout'} "
+                                 f"-- the mosaic may come back UNILLUMINATED; check the nd2 "
+                                 f"has a MultiLaser(EPI) 555 entry.")
+            except Exception as e:
+                self._pl_log(f"Run Job1: could not select the mosaic OC ({e}) -- continuing.")
         self._pl_run_job("Step1_Locate_via_scan_WC", False, params=params)
         # Snapshot existing run folders BEFORE the job creates its new one, so the watcher
         # picks only the folder generated by THIS click.
@@ -4790,7 +5815,7 @@ class App(tk.Tk):
             text="Mosaic auto-load timed out — Browse to the nd2 manually.", fg=YELLOW))
         self._pl_log("Run Job1: mosaic auto-load watcher timed out (no new nd2) — Browse manually.")
 
-    def _pl_run_job(self, name_var, gated, params=None):
+    def _pl_run_job(self, name_var, gated, params=None, preconfirmed=False):
         """Launch a NIS-E JOB (nis_macro_run_job.mac, action 10). Writes job_trigger.ini,
         then dispatches. When gated, requires the A1-powered confirmation AND an explicit
         confirm click (the JOB fires the 850 nm PA activation laser).
@@ -4823,10 +5848,17 @@ class App(tk.Tk):
             if not self._pl_pa_a1on.get():
                 messagebox.showwarning("A1 not confirmed",
                                        "Tick 'A1 powered ON' before firing the PA laser."); return
-            if not messagebox.askyesno(
+            # preconfirmed: Run Pipeline already took BOTH gates on the main thread before
+            # spawning its worker (Tk modals are not thread-safe, and an unattended run must
+            # not stall on a dialog nobody is watching). The A1 check above still applies.
+            if preconfirmed:
+                self._pl_log(f"Run Job: '{name_var if isinstance(name_var, str) else ''}' "
+                             f"firing under a pipeline pre-confirmation.")
+            if not preconfirmed and not messagebox.askyesno(
                     "Fire PA laser?",
-                    f"This launches the '{name}' JOB, which FIRES THE 850 nm PA activation laser.\n\n"
-                    f"A1 confirmed ON. Make sure PA Points (the ND multipoint import) has run.\n\n"
+                    f"This launches the '{name}' JOB, which FIRES the PA activation laser.\n\n"
+                    f"Optical config: {self._pl_pa_oc.get().strip() or '(unset)'}\n"
+                    f"A1 confirmed ON.\n\n"
                     f"Proceed?"):
                 return
         project = self._pl_job_project.get().strip()
@@ -4918,6 +5950,11 @@ class App(tk.Tk):
                         message = cp.get("command", "message",
                                          fallback=cp.get("spheroid", "message", fallback=""))
                     except Exception:
+                        time.sleep(1.0); continue
+                    if status == "?":
+                        # Still being written -- the macro sets status LAST. Reporting "?"
+                        # here would show the operator a failed-looking result for a run
+                        # that is merely a fraction of a second from succeeding.
                         time.sleep(1.0); continue
                     fg = GREEN if status == "ok" else RED
                     self.after(0, lambda s=status, a=action: self._pl_dispatch_status.configure(

@@ -46,3 +46,9 @@ nise*_figures/
 # Secrets (never commit)
 ConfluenceAPI.txt
 *.token
+
+# Vendor SDK (Nikon, 212 MB, redistributed separately)
+Driver/
+
+# Windows shortcuts
+*.lnk

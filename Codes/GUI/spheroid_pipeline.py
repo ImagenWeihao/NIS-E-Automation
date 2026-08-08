@@ -33,7 +33,7 @@ try:
     _MPL_OK = True
 except ImportError:
     _MPL_OK = False
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -88,6 +88,25 @@ class SpheroidRecord:
     nd2_out_path:     str   = ""
     status:           str   = Status.DETECTED
 
+    @property
+    def stage_xy(self) -> tuple[float, float]:
+        """The absolute stage (x, y) to drive to for this spheroid.
+
+        verified_* when Step 2 has populated it (anchoring REFINES the coords), else the
+        Step-1 mosaic coords -- which are ALREADY absolute stage coordinates, because
+        screen_mosaic derives them from the mosaic ND2's own stage position. So a run
+        that SKIPS Step 2 now targets the real spheroid instead of stage origin.
+
+        Both verified axes exactly 0.0 is the never-populated sentinel: those are the
+        dataclass defaults, and a genuine measurement is essentially never exactly 0.00
+        on both axes at once. This matters because stage (0,0) is the CENTRE of a 96-well
+        plate -- which is precisely where skip-Step-2 triggers used to send the stage
+        (2026-08-07: af_trigger_01.ini carried stage_x=117.43, stage_y=120.53, a bare
+        re-centring delta added to the 0.0 default, instead of A02's ~(40715, 31481))."""
+        if self.verified_x_um == 0.0 and self.verified_y_um == 0.0:
+            return (self.mosaic_x_um, self.mosaic_y_um)
+        return (self.verified_x_um, self.verified_y_um)
+
 
 @dataclass
 class PipelineState:
@@ -100,6 +119,13 @@ class PipelineState:
     offset_x:       float = 0.0
     offset_y:       float = 0.0
     offset_anchors: list[dict] = field(default_factory=list)
+    # Ranks the operator unchecked in Step 3's Use column. Persisted so a GUI restart
+    # restores the same working set instead of silently re-including excluded spheroids.
+    excluded_ranks: list[int] = field(default_factory=list)
+    # Step 3 Z geometry, so a restored session keeps the operator's stack settings.
+    z_centre:       float = 0.0
+    z_half:         float = 0.0
+    z_step:         float = 0.0
 
 
 # ── Step 1: Screen mosaic ─────────────────────────────────────────────────────
@@ -130,6 +156,12 @@ def screen_mosaic(nd2_path: Path, out_dir: Path, well_id: str,
             mosaic_x_um   = float(r["x_um"]),
             mosaic_y_um   = float(r["y_um"]),
             mosaic_z_um   = float(r["z_surface_um"]),
+            # Seed verified_* from the mosaic coords, which are already ABSOLUTE stage
+            # positions. Step 2 overwrites these with its refined values; leaving them at
+            # the 0.0 default meant a skipped Step 2 sent every trigger to stage origin --
+            # the centre of the plate. See SpheroidRecord.stage_xy.
+            verified_x_um = float(r["x_um"]),
+            verified_y_um = float(r["y_um"]),
         ))
     return records
 
@@ -359,7 +391,7 @@ def trigger_autofocus_all(records: list[SpheroidRecord], work_dir: Path,
     # 1. verify-distinct, before we write or delete anything
     seen: dict[tuple, int] = {}
     for r in records:
-        key = (round(r.verified_x_um, 2), round(r.verified_y_um, 2))
+        key = tuple(round(v, 2) for v in r.stage_xy)
         if key in seen:
             raise ValueError(
                 f"Duplicate trigger coordinate {key} for rank {r.rank} and rank "
@@ -377,12 +409,13 @@ def trigger_autofocus_all(records: list[SpheroidRecord], work_dir: Path,
     n = 0
     for r in records:
         p = work_dir / f"{AF_TRIGGER_PREFIX}{r.rank:02d}.ini"
+        sx, sy = r.stage_xy          # verified when Step 2 ran, else the mosaic coords
         lines = [
             f"[{INI_SECTION}]",
             f"rank={r.rank}",
             f"spheroid_id={r.spheroid_id}",
-            f"stage_x={r.verified_x_um}",
-            f"stage_y={r.verified_y_um}",
+            f"stage_x={sx}",
+            f"stage_y={sy}",
         ]
         if per_record_z and r.z_centre_um > 0.0:
             lines.append(f"z_centre={r.z_centre_um}")
@@ -565,8 +598,12 @@ def recenter_from_captures(records: list[SpheroidRecord], nd2_dir: Path,
         # move the stage opposite the image-centroid offset to bring it to centre
         dx = round(-dcol * px * sx, 2)
         dy = round(-drow * px * sy, 2)
-        r.verified_x_um = round(r.verified_x_um + dx, 2)
-        r.verified_y_um = round(r.verified_y_um + dy, 2)
+        # Apply the re-centring to the CURRENT stage target, not to verified_* directly:
+        # if Step 2 never ran, verified_* is still 0.0 and this would have produced a bare
+        # delta (~100 um = plate centre) instead of a real coordinate.
+        bx, by = r.stage_xy
+        r.verified_x_um = round(bx + dx, 2)
+        r.verified_y_um = round(by + dy, 2)
         applied.append((r.rank, round(dcol, 1), round(drow, 1), dx, dy))
     return applied, skipped
 
@@ -1007,8 +1044,8 @@ def write_trigger(record: SpheroidRecord, trigger_dir: Path,
         f"[{INI_SECTION}]",
         f"rank={record.rank}",
         f"spheroid_id={record.spheroid_id}",
-        f"stage_x={record.verified_x_um}",
-        f"stage_y={record.verified_y_um}",
+        f"stage_x={record.stage_xy[0]}",
+        f"stage_y={record.stage_xy[1]}",
         f"z_centre={record.z_centre_um}",
         f"z_half={record.z_half_um}",
         f"z_step={record.z_step_um}",
@@ -1062,12 +1099,18 @@ def save_state(state: PipelineState) -> None:
 
 
 def load_state(out_dir: Path) -> PipelineState | None:
+    """Read pipeline_state.json back. Unknown keys are DROPPED rather than raising, so a
+    state file written by a newer build (or one carrying a since-removed field) still
+    restores instead of forcing the operator to re-run Steps 1-3."""
     p = out_dir / STATE_FILENAME
     if not p.exists():
         return None
     d = json.loads(p.read_text(encoding="utf-8"))
-    records = [SpheroidRecord(**r) for r in d.pop("records", [])]
-    return PipelineState(**d, records=records)
+    rec_fields = {f.name for f in fields(SpheroidRecord)}
+    records = [SpheroidRecord(**{k: v for k, v in r.items() if k in rec_fields})
+               for r in d.pop("records", [])]
+    st_fields = {f.name for f in fields(PipelineState)} - {"records"}
+    return PipelineState(**{k: v for k, v in d.items() if k in st_fields}, records=records)
 
 
 # ── CSV export of pipeline state ──────────────────────────────────────────────

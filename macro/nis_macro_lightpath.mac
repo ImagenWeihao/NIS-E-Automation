@@ -1,0 +1,202 @@
+// ============================================================================
+// nis_macro_lightpath.mac -- SNAPSHOT / RESTORE the imaging light path, so the
+// post-PA validation is acquired under EXACTLY the pre-PA conditions.
+//
+// Why this exists: pa_setup arms the rig for photoactivation -- it extracts the PFS
+// dichroic (Stg_PFSInsertExtractDM(0)) and drives the confocal zoom to the PA square.
+// NOTHING in the After-PA Validation path puts either back: that card dispatches only
+// action 2 (capture_zstack), which never touches the dichroic or the zoom. On
+// 2026-08-07 this left the rig at zoom 8 with the dichroic OUT while the pre-PA
+// baseline had been taken at zoom 2 with it IN -- a 79.5 um field through one optical
+// path versus a 318.2 um field through another. A post-PA set acquired like that is
+// not comparable to its baseline, the difference reads as photoactivation, and it
+// cannot be repaired afterwards. Restoring it by hand means remembering two numbers
+// under time pressure, and that was got wrong on the first attempt the same evening.
+//
+// mode=snapshot : record the CURRENT multi-laser powers into the state INI. Run with
+//                 the pre-PA validation, so the baseline is READ OFF THE RIG rather
+//                 than assumed.
+// mode=restore  : insert the PFS dichroic (dichroic_in=1), set the confocal zoom
+//                 (zoom>0), and re-apply every laser power in the state INI. Run
+//                 immediately before the post-PA validation.
+//
+// Reads <work_dir>/lightpath_trigger.ini  [lightpath]:
+//   mode          snapshot | restore
+//   dichroic_in   1 -> Stg_PFSInsertExtractDM(1) on restore
+//   zoom          confocal zoom to restore; <=0 or absent -> leave the zoom alone
+//   a1_on         1 -> A1 confirmed powered ON. GATES the dichroic + zoom calls, which
+//                 crash the grabber when the A1 is off (same guard every other macro
+//                 here uses). Laser power get/set is Ti-side and runs regardless.
+//   state         path to the state INI (default <work_dir>/lightpath_state.ini)
+//
+// State INI written by snapshot / read by restore:
+//   [lasers]
+//   count=<n>
+//   dev0=<device name>   line0=<line index>   pwr0=<power>
+//   dev1=...
+// INI + Int_GetKeyString is used deliberately: it is the one file-parsing idiom
+// proven on this rig. Do NOT switch to character-walking a text buffer -- pointer
+// arithmetic and strncpy are not part of this macro dialect.
+//
+// Rig dialect (verified): single main() only; CRLF + ASCII; Int_GetKeyString + atof
+// for INI values; char[] paths/names; sprintf args as ONE quoted comma-list of
+// variable names.
+// ============================================================================
+
+#define SEC "lightpath"
+
+int main()
+{
+    char cfg[256];
+    char work_dir[256];
+    char trigger_path[256];
+    char state_path[256];
+    char mode[64];
+    char numbuf[64];
+    char name[128];
+    char body[4096];
+    char mb[4096];
+    char line[256];
+    char msg[512];
+    char key[64];
+    char dev[128];
+    char oc[160];
+    double dichroic_in, zoom, a1_on;
+    int nml, i, nl, j, pwr, cnt, idx, n_set, li, lp;
+
+    strcpy(cfg, "C:/SpheroidPA/session.ini");
+    work_dir[0] = 0;
+    Int_GetKeyString(cfg, "paths", "work_dir", work_dir, 256);
+    if( work_dir[0] == 0 )
+    {
+        strcpy(msg, "lightpath: session.ini has no work_dir.");
+        SetCommandText(msg);
+        WideCharToMultiByte(mb, msg);
+        WriteFile("C:/SpheroidPA/debug/lightpath.txt", mb, strlen(msg));
+        return FALSE;
+    }
+    strcpy(trigger_path, work_dir);
+    strcat(trigger_path, "/lightpath_trigger.ini");
+    if( ExistFile(trigger_path) != TRUE )
+    {
+        strcpy(msg, "lightpath: lightpath_trigger.ini not found in work_dir.");
+        SetCommandText(msg);
+        WideCharToMultiByte(mb, msg);
+        WriteFile("C:/SpheroidPA/debug/lightpath.txt", mb, strlen(msg));
+        return FALSE;
+    }
+
+    mode[0] = 0;
+    Int_GetKeyString(trigger_path, SEC, "mode", mode, 64);
+    state_path[0] = 0;
+    Int_GetKeyString(trigger_path, SEC, "state", state_path, 256);
+    if( state_path[0] == 0 )
+    {
+        strcpy(state_path, work_dir);
+        strcat(state_path, "/lightpath_state.ini");
+    }
+    numbuf[0] = 0;
+    Int_GetKeyString(trigger_path, SEC, "dichroic_in", numbuf, 64);
+    dichroic_in = atof(numbuf);
+    numbuf[0] = 0;
+    Int_GetKeyString(trigger_path, SEC, "zoom", numbuf, 64);
+    zoom = atof(numbuf);
+    numbuf[0] = 0;
+    Int_GetKeyString(trigger_path, SEC, "a1_on", numbuf, 64);
+    a1_on = atof(numbuf);
+
+    // ---- SNAPSHOT ----------------------------------------------------------
+    // mode[0] == 115 is 's' (snapshot). Compared as a character code because
+    // strcmp is avoided elsewhere in this dialect for the same reason.
+    if( mode[0] == 115 )
+    {
+        strcpy(body, "[lasers]\n");
+        cnt = 0;
+        nml = Stg_GetMultiLaserCount();
+        i = 0;
+        while( i < nml )
+        {
+            name[0] = 0;
+            Stg_GetMultiLaserName(i, name);
+            nl = Stg_GetMultiLaserNumLines(name);
+            j = 0;
+            while( j < nl )
+            {
+                pwr = Stg_GetMultiLaserPower(name, j);
+                sprintf(line, "dev%d=%s\nline%d=%d\npwr%d=%d\n", "cnt,name,cnt,j,cnt,pwr");
+                strcat(body, line);
+                cnt = cnt + 1;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        sprintf(line, "count=%d\n", "cnt");
+        strcat(body, line);
+        WideCharToMultiByte(mb, body);
+        WriteFile(state_path, mb, strlen(body));
+        sprintf(msg, "lightpath: snapshot of %d laser line(s) -> %s", "cnt,state_path");
+        SetCommandText(msg);
+        WideCharToMultiByte(mb, msg);
+        WriteFile("C:/SpheroidPA/debug/lightpath.txt", mb, strlen(msg));
+        SetCommandText(0);
+        return TRUE;
+    }
+
+    // ---- RESTORE -----------------------------------------------------------
+    // Optical config FIRST, before anything else: selecting an OC sets the whole imaging
+    // state (light source, its on/off line, camera, filters), so it must not be undone by
+    // the per-line power replay below. Added 2026-08-07 after a mosaic came back
+    // unilluminated: the post-PA sequence left the rig on the 1050 nm 2P config, and this
+    // macro restored the 555 line's POWER (Stg_SetMultiLaserPower) but not its ON state --
+    // power without "used" is still dark. Selecting the OC restores both.
+    // Leave `oc` empty to skip, and point `state` at a nonexistent file to select the OC
+    // WITHOUT overwriting the powers the OC just set.
+    oc[0] = 0;
+    Int_GetKeyString(trigger_path, SEC, "oc", oc, 160);
+    if( oc[0] != 0 )
+        SelectOptConf(oc);
+
+    if( a1_on > 0.5 )
+    {
+        if( dichroic_in > 0.5 )
+            Stg_PFSInsertExtractDM(1);
+        if( zoom > 0.0 )
+            Confocal_SetScanArea(zoom, 0.0, 0.0, 0.0, 1.0);
+    }
+
+    n_set = 0;
+    if( ExistFile(state_path) == TRUE )
+    {
+        numbuf[0] = 0;
+        Int_GetKeyString(state_path, "lasers", "count", numbuf, 64);
+        cnt = atof(numbuf);
+        idx = 0;
+        while( idx < cnt )
+        {
+            sprintf(key, "dev%d", "idx");
+            dev[0] = 0;
+            Int_GetKeyString(state_path, "lasers", key, dev, 128);
+            sprintf(key, "line%d", "idx");
+            numbuf[0] = 0;
+            Int_GetKeyString(state_path, "lasers", key, numbuf, 64);
+            li = atof(numbuf);
+            sprintf(key, "pwr%d", "idx");
+            numbuf[0] = 0;
+            Int_GetKeyString(state_path, "lasers", key, numbuf, 64);
+            lp = atof(numbuf);
+            if( dev[0] != 0 )
+            {
+                Stg_SetMultiLaserPower(dev, li, lp);
+                n_set = n_set + 1;
+            }
+            idx = idx + 1;
+        }
+    }
+
+    sprintf(msg, "lightpath restored: dichroic IN=%.0f, zoom=%.1f, %d laser line(s) re-applied.", "dichroic_in,zoom,n_set");
+    SetCommandText(msg);
+    WideCharToMultiByte(mb, msg);
+    WriteFile("C:/SpheroidPA/debug/lightpath.txt", mb, strlen(msg));
+    SetCommandText(0);
+    return TRUE;
+}

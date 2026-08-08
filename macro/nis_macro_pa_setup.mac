@@ -37,6 +37,8 @@ int main()
     char msg[256];
     char mbuf[512];
     char save_dir[256];
+    char save_prefix[128];
+    char save_stem[512];   // >= save_dir(256) + "/" + save_prefix(128), with margin
     double zoom, power;
     int laser_line;
 
@@ -132,17 +134,29 @@ int main()
     //    The JOB saves through the ND experiment, so this is the lever that redirects it.
     //    ND_DefineExperiment's first 5 args are the T/XY/Z/L dimension flags: the PA job
     //    uses Time (loops), XY (imported multipoint) and Z (stack) -- keep all TRUE so we
-    //    only change the destination, not the experiment shape. Filename = destination
-    //    path, Prefix = per-file name stem.
-    //    NOTE: verify once on the rig that the job's Points/ZStack/Time dimensions are
-    //    unchanged after this runs (Job Execution should still read Points(n/n),
-    //    ZStack(n/n), Time(n/n)) -- and that pa/ actually fills.
+    //    only change the destination, not the experiment shape (rig-confirmed 2026-08-07:
+    //    T/M/Z/lambda all survived the call).
+    //
+    //    Arg 6 is a full FILE PATH STEM, not a directory. NIS splits it into the dialog's
+    //    Path (up to the last separator) and Filename (last segment + ".nd2"), and arg 7
+    //    is NOT the filename. Passing the bare folder ".../0807/pa" gave
+    //    Path ".../0807/" + Filename "pa.nd2" -- stacks landing NEXT TO pa/, not in it
+    //    (rig-observed 2026-08-07). So append the prefix to build the stem, matching
+    //    nis_macro_pa_savepath.mac. Getting this wrong here is worse than in that macro:
+    //    re-running PA Setup after the path was corrected would silently re-break it.
     save_dir[0] = 0;
     Int_GetKeyString(trigger_path, SEC, "save_dir", save_dir, 256);
     if( save_dir[0] != 0 )
     {
-        ND_DefineExperiment(TRUE, TRUE, TRUE, TRUE, TRUE, save_dir, "PA", 0, FALSE, FALSE, FALSE);
-        sprintf(msg, "PA setup: ND save target -> %s", "save_dir");
+        save_prefix[0] = 0;
+        Int_GetKeyString(trigger_path, SEC, "save_prefix", save_prefix, 128);
+        if( save_prefix[0] == 0 )
+            strcpy(save_prefix, "PA");
+        strcpy(save_stem, save_dir);
+        strcat(save_stem, "/");
+        strcat(save_stem, save_prefix);
+        ND_DefineExperiment(TRUE, TRUE, TRUE, TRUE, TRUE, save_stem, save_prefix, 0, FALSE, FALSE, FALSE);
+        sprintf(msg, "PA setup: ND save stem -> %s", "save_stem");
         SetCommandText(msg);
     }
 

@@ -9,7 +9,7 @@
 //
 // cmd.ini (written by the GUI, [command] section):
 //   action     = human-readable name (echoed back in cmd_done.ini)
-//   action_id  = 1 autofocus | 2 zstack | 3 zcorrected | 4 pa_setup
+//   action_id  = 1 autofocus | 2 zstack | 3 zcorrected | 4 pa_setup | 11 pa_savepath
 //                5 pa_points | 6 pa_pick | 7 pa_validate | 8 init_rig | 9 pa_done
 //                10 run_job
 //                20 run_diag -- runs a READ-ONLY diagnostic. The macro name is
@@ -144,6 +144,15 @@ int main()
                 if( aid == 8.0 ) strcpy(macro_name, "nis_macro_init_rig.mac");
                 if( aid == 9.0 ) strcpy(macro_name, "nis_macro_pa_done.mac");
                 if( aid == 10.0 ) strcpy(macro_name, "nis_macro_run_job.mac");
+                // 11 = pa_savepath: set ONLY the ND "Save to File" target from
+                // pa_trigger.ini's save_dir. Imaging-only, fires nothing -- safe to
+                // run (and re-run) before arming the rig, so the operator can verify
+                // the folder in the ND dialog before the PA job saves through it.
+                if( aid == 11.0 ) strcpy(macro_name, "nis_macro_pa_savepath.mac");
+                // 12 = lightpath: snapshot (pre-PA) / restore (post-PA) of the dichroic,
+                // confocal zoom and laser powers, so the two halves of a before/after
+                // comparison are acquired under identical optics. Imaging-only.
+                if( aid == 12.0 ) strcpy(macro_name, "nis_macro_lightpath.mac");
                 // 20 = run_diag: name is BUILT as diag_<key>.mac (prefix hardcoded)
                 // so only read-only diag_*.mac can ever run via this action. numbuf
                 // is free here (action_id already parsed into aid). A missing/empty
