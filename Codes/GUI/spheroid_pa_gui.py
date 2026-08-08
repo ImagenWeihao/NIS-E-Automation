@@ -1,5 +1,5 @@
 """
-spheroid_pa_gui.py  v1.17.0
+spheroid_pa_gui.py  v1.17.1
 NIS-E Spheroid PA Pipeline — ND2-native I/O
 
 Pipeline:  Job A ND2 → [parse metadata + detect spheroids]
@@ -598,7 +598,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("SpheroidPA  v1.17.0 — NIS-E Spheroid PA Pipeline")
+        self.title("SpheroidPA  v1.17.1 — NIS-E Spheroid PA Pipeline")
         self.geometry("1680x880")
         self.minsize(1000, 660)
         self.configure(bg=BG)
@@ -631,7 +631,7 @@ class App(tk.Tk):
     def _build_ui(self):
         hdr = tk.Frame(self, bg=BG2)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="  SpheroidPA  v1.17.0",
+        tk.Label(hdr, text="  SpheroidPA  v1.17.1",
                  bg=BG2, fg=MAUVE, font=("Segoe UI", 13, "bold"), pady=8
                  ).pack(side="left")
         tk.Label(hdr, text="Screen → Anchor → Autofocus → Capture  ",
@@ -1467,6 +1467,12 @@ class App(tk.Tk):
         # means no control can be pointed at an unintended job. project stays a var
         # (IMAGEN, editable) because both jobs are launched under the same project.
         # Per-macro "include in Run Pipeline" selections.
+        # pa_setup has no tick of its own since the Photoactivation card merged setup and
+        # fire (2026-08-08). It mirrors _pl_pa_sel_pajob: pa_setup exists only to arm the
+        # rig for the JOB, and the JOB cannot fire without it, so "laser in the sequence,
+        # prep not" was never a state worth being able to express -- it fires through the
+        # dichroic with the interlock still in. Kept as a separate var so the sequence
+        # builder and the plan log line stay readable.
         self._pl_pa_sel_setup    = tk.BooleanVar(value=True)
         # _pl_pa_sel_points removed with the PA Points card (2026-08-07) -- see the removal
         # note in the Step-4 card builder.
@@ -1482,6 +1488,8 @@ class App(tk.Tk):
         # tick: 'A1 powered ON' must be set, and _pl_pa_run_pipeline_thread shows a modal
         # naming the optical config and every point before the worker thread starts.
         self._pl_pa_sel_pajob   = tk.BooleanVar(value=True)    # launch step3_zstack_PA_WC
+        self._pl_pa_sel_pajob.trace_add(
+            "write", lambda *_: self._pl_pa_sel_setup.set(self._pl_pa_sel_pajob.get()))
         # ON by default: post-PA is imaging only (no laser), and the pipeline already
         # refuses to run it unless the PA genuinely produced output -- so a stray tick
         # cannot manufacture a bogus comparison. Left OFF, a "Run All" ends silently after
@@ -2117,16 +2125,31 @@ class App(tk.Tk):
                        bg=BG2, fg=TEXT2, selectcolor=SURFACE, activebackground=BG2,
                        activeforeground=TEXT, font=("Segoe UI", 8)).pack(side="left", padx=(12, 0))
 
-        # Card 1 -- PA Setup (action 4): the rig prep that has to happen before the PA JOB.
+        # Card 1 -- Photoactivation: rig prep (pa_setup, action 4) AND the 850 nm JOB
+        # launch (run_job, action 10), merged into one card 2026-08-08.
         #
-        # Trimmed to what actually reaches the hardware (2026-08-08). Power %, Zoom and
-        # Loops were removed: the A1PlusPad wiring that would let the GUI drive the 850 nm
-        # scan is not in place, so those three fields never changed the OC -- the JOB runs
-        # entirely on "850 nm power loop full reso2"'s own settings. Leaving editable boxes
-        # in front of an operator is worse than having none: it invites setting a power and
-        # believing it took. Removing A1 interlock and Dichroic OUT DO work, so they stay.
-        card, body = self._pl_pa_card(pa, "PA Setup  (interlock + dichroic OUT for the 850 nm JOB)",
-                                      self._pl_pa_sel_setup)
+        # They were two cards with two ticks, but never two decisions: pa_setup exists only
+        # to arm the rig for the JOB, and the JOB cannot fire without it. Two ticks meant a
+        # state where the laser was in the sequence and its prep was not -- which fires
+        # through the dichroic with the interlock still in. The single header tick drives
+        # both (see the _pl_pa_sel_setup mirror below).
+        #
+        # Trimmed to what actually reaches the hardware. Power %, Zoom and Loops were
+        # removed: the A1PlusPad wiring that would let the GUI drive the 850 nm scan is not
+        # in place, so those three fields never changed the OC -- the JOB runs entirely on
+        # "850 nm power loop full reso2"'s own settings. Leaving editable boxes in front of
+        # an operator is worse than having none: it invites setting a power and believing
+        # it took. Removing A1 interlock and Dichroic OUT DO work, so they stay.
+        #
+        # RED throughout, unlike every other card: ticking this one puts the laser in the
+        # sequence.
+        card = tk.Frame(pa, bg=BG2, bd=1, relief="solid"); card.pack(fill="x", padx=4, pady=3)
+        hdrp = tk.Frame(card, bg=BG2); hdrp.pack(fill="x", padx=6, pady=(3, 0))
+        tk.Checkbutton(hdrp, text="Photoactivation  (setup + launch step3_zstack_PA_WC - FIRES 850 nm LASER)",
+                       variable=self._pl_pa_sel_pajob, bg=BG2, fg=RED,
+                       selectcolor=SURFACE, activebackground=BG2, activeforeground=TEXT,
+                       font=("Segoe UI", 9, "bold")).pack(side="left")
+        body = tk.Frame(card, bg=BG2); body.pack(fill="x", padx=24, pady=(0, 2))
         r = tk.Frame(body, bg=BG2); r.pack(fill="x")
         tk.Label(r, text="Activation OC:", bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
         # readonly: the list holds ONE entry, and this also blocks free-text entry -- an
@@ -2151,18 +2174,68 @@ class App(tk.Tk):
                        selectcolor=SURFACE, activebackground=BG2, activeforeground=TEXT,
                        font=("Segoe UI", 9, "bold")).pack(side="left", padx=(10, 0))
         self._info(body,
-                   "Arms the rig for the 850 nm JOB. Power, zoom and dwell come from the OC.",
-                   "Removing the A1 interlock and swinging the dichroic OUT are the two "
-                   "things this card actually does to the hardware; both are required "
+                   "Arms the rig, then fires the 850 nm laser at Step 3's trigger point.",
+                   "SETUP. Removing the A1 interlock and swinging the dichroic OUT are the "
+                   "two things the setup step does to the hardware; both are required "
                    "before the JOB can fire.\n\n"
                    "It does NOT set the activation power, zoom or loop count. Those live "
                    "in the '850 nm power loop full reso2' optical config and are edited in "
                    "NIS-E. The GUI fields for them were removed because the A1PlusPad "
                    "wiring that would make them effective is not in place -- they read as "
                    "controls but changed nothing.\n\n"
-                   "Well is the canonical working well, shared with Step 1 and the JOB "
-                   "launch: set it once and it follows everywhere.")
-        self._pl_pa_card_buttons(card, "pa_setup", 4)
+                   "JOB. Hard-wired to step3_zstack_PA_WC -- deliberately no dropdown, so "
+                   "this gated button can never be pointed at a different job. The point "
+                   "and well are set at launch via Jobs_RunJobInitParam from the current "
+                   "af_trigger, so it fires on exactly the supplied coordinates rather "
+                   "than whatever PredefinedPoint the job has stored (which has been seen "
+                   "15 mm off target, on plastic between wells).\n\n"
+                   "The JOB's own z-stack depth comes from the job, not from here -- the "
+                   "GUI cannot read ZStackDefinition, so check it in NIS-E before firing. "
+                   "The completion line reports the actual file count.\n\n"
+                   "Firing is gated twice: 'A1 powered ON' must be ticked, and a confirm "
+                   "dialog shows the optical config and every point before anything "
+                   "happens.\n\n"
+                   "Well is the canonical working well, shared with Step 1: set it once "
+                   "and it follows everywhere.",
+                   fg=RED)
+
+        # ── PA save folder ────────────────────────────────────────────────────
+        rsd = tk.Frame(body, bg=BG2); rsd.pack(fill="x", pady=(6, 0))
+        tk.Label(rsd, text="PA folder:", bg=BG2, fg=TEXT2,
+                 font=("Segoe UI", 9)).pack(side="left", padx=(0, 4))
+        tk.Entry(rsd, textvariable=self._pl_pa_save_dir, bg=SURFACE, fg=TEXT,
+                 insertbackground=TEXT, relief="flat", font=("Segoe UI", 9)
+                 ).pack(side="left", fill="x", expand=True, padx=(0, 6))
+        self._btn(rsd, "Browse", lambda: self._pl_browse_dir(self._pl_pa_save_dir),
+                  SURFACE2, TEXT, side="left")
+        self._info(
+            body,
+            "Defaults to <Output directory>/pa, created automatically and sent to the job.",
+            "The folder is created if missing and follows the Output directory, so it moves "
+            "with the run folder. A path you type yourself is never overwritten.\n\n"
+            "It is sent to the JOB at launch as StoreToFsOnly.Folder -- the 'Alternative "
+            "Storage Location' task -- so this box IS the destination; there is no second "
+            "place to keep in sync. Previously that path lived only on the job and kept "
+            "whatever the last session set, which is how PA output once landed in another "
+            "user's folder.\n\n"
+            "Note this is NOT NIS-E's ND 'Save to File'. The JOB ignores that dialog; an "
+            "earlier build pushed the path there and merely made every validation capture "
+            "drop a duplicate copy into pa/.")
+        self._pl_pa_save_lbl = tk.Label(body, text="", bg=BG2, fg=YELLOW,
+                                        font=("Segoe UI", 8), anchor="w",
+                                        justify="left", wraplength=460)
+        self._pl_pa_save_lbl.pack(fill="x")
+
+        # Setup and fire, in the order the pipeline runs them. Reload writes
+        # pa_trigger.ini; Run Setup dispatches pa_setup alone (useful when re-arming after
+        # a manual NIS-E poke); Run Photoactivation is the gated laser button.
+        rjb = tk.Frame(card, bg=BG2); rjb.pack(fill="x", padx=24, pady=(6, 6))
+        self._btn(rjb, "Reload", lambda: self._pl_pa_reload("pa_setup"),
+                  SURFACE2, TEXT, side="left")
+        self._btn(rjb, "Run Setup", lambda: self._pl_pa_run_macro("pa_setup", 4),
+                  BLUE, "#1e1e2e", side="left")
+        self._btn(rjb, "Run Photoactivation",
+                  self._pl_run_pa_job, RED, "#1e1e2e", side="left")
 
         # Job3 card REMOVED 2026-08-08. It held a duplicate Well box (already on PA Setup,
         # same _pl_well_id) and a "Watch for PA done" button that polled pa_done.ini for an
@@ -2189,63 +2262,9 @@ class App(tk.Tk):
         # nis_macro_pa_points.mac and dispatcher action 5 are left in place (harmless, and
         # still useful for a manual ND multipoint), but nothing in the GUI dispatches them.
 
-        # Photoactivation JOB launch (Jobs_RunJobByName via nis_macro_run_job.mac,
-        # action 10): fires the 850 nm PA activation laser, so it is gated on the A1
-        # power confirmation AND an explicit confirm click. Standalone card (not in the
-        # Run Pipeline sequence, which deliberately stops before the laser fires).
-        paj = tk.Frame(pa, bg=BG2, bd=1, relief="solid"); paj.pack(fill="x", padx=4, pady=3)
-        hdrj = tk.Frame(paj, bg=BG2); hdrj.pack(fill="x", padx=6, pady=(3, 0))
-        # Header checkbox = "include in Run Pipeline", same placement as every other
-        # Step-4 card (see _pl_pa_card): the title IS the tick, top-left of the card.
-        # RED rather than MAUVE because ticking this one puts the laser in the sequence.
-        tk.Checkbutton(hdrj, text="Photoactivation JOB  (launch step3_zstack_PA_WC - FIRES 850 nm LASER)",
-                       variable=self._pl_pa_sel_pajob, bg=BG2, fg=RED,
-                       selectcolor=SURFACE, activebackground=BG2, activeforeground=TEXT,
-                       font=("Segoe UI", 9, "bold")).pack(side="left")
-        bodyj = tk.Frame(paj, bg=BG2); bodyj.pack(fill="x", padx=24, pady=(0, 6))
-        self._info(
-            bodyj,
-            "Fires the 850 nm laser at Step 3's trigger point. Needs 'A1 powered ON'.",
-            "Job is hard-wired to step3_zstack_PA_WC -- there is deliberately no dropdown, so "
-            "this gated button can never be pointed at a different job.\n\n"
-            "The point and well are set at launch via Jobs_RunJobInitParam from the current "
-            "af_trigger, so it fires on exactly the supplied coordinates rather than whatever "
-            "PredefinedPoint the job has stored (which has been seen 15 mm off target, on "
-            "plastic between wells).\n\n"
-            "Firing is gated twice: 'A1 powered ON' must be ticked, and a confirm dialog "
-            "shows the optical config and point before anything happens.",
-            fg=RED)
-
-        # ── PA save folder ────────────────────────────────────────────────────
-        rsd = tk.Frame(bodyj, bg=BG2); rsd.pack(fill="x", pady=(6, 0))
-        tk.Label(rsd, text="PA folder:", bg=BG2, fg=TEXT2,
-                 font=("Segoe UI", 9)).pack(side="left", padx=(0, 4))
-        tk.Entry(rsd, textvariable=self._pl_pa_save_dir, bg=SURFACE, fg=TEXT,
-                 insertbackground=TEXT, relief="flat", font=("Segoe UI", 9)
-                 ).pack(side="left", fill="x", expand=True, padx=(0, 6))
-        self._btn(rsd, "Browse", lambda: self._pl_browse_dir(self._pl_pa_save_dir),
-                  SURFACE2, TEXT, side="left")
-        self._info(
-            bodyj,
-            "Defaults to <Output directory>/pa, created automatically and sent to the job.",
-            "The folder is created if missing and follows the Output directory, so it moves "
-            "with the run folder. A path you type yourself is never overwritten.\n\n"
-            "It is sent to the JOB at launch as StoreToFsOnly.Folder -- the 'Alternative "
-            "Storage Location' task -- so this box IS the destination; there is no second "
-            "place to keep in sync. Previously that path lived only on the job and kept "
-            "whatever the last session set, which is how PA output once landed in another "
-            "user's folder.\n\n"
-            "Note this is NOT NIS-E's ND 'Save to File'. The JOB ignores that dialog; an "
-            "earlier build pushed the path there and merely made every validation capture "
-            "drop a duplicate copy into pa/.")
-        self._pl_pa_save_lbl = tk.Label(bodyj, text="", bg=BG2, fg=YELLOW,
-                                        font=("Segoe UI", 8), anchor="w",
-                                        justify="left", wraplength=460)
-        self._pl_pa_save_lbl.pack(fill="x")
-
-        rjb = tk.Frame(bodyj, bg=BG2); rjb.pack(fill="x", pady=(6, 0))
-        self._btn(rjb, "Run Photoactivation",
-                  self._pl_run_pa_job, RED, "#1e1e2e", side="left")
+        # The standalone 'Photoactivation JOB' card was merged into the Photoactivation
+        # card above on 2026-08-08 -- setup and fire were never two decisions. Its PA
+        # folder box, its (i) text and its Run Photoactivation button all live there now.
 
         # Card 3 -- After-PA Validation (dispatcher z-stack action, id 2): the SAME
         # multi-channel capture as the before-PA Validation card, but its passes save
