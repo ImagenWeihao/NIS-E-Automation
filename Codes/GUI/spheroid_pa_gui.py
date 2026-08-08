@@ -1,5 +1,5 @@
 """
-spheroid_pa_gui.py  v1.17.2
+spheroid_pa_gui.py  v1.17.3
 NIS-E Spheroid PA Pipeline — ND2-native I/O
 
 Pipeline:  Job A ND2 → [parse metadata + detect spheroids]
@@ -598,7 +598,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("SpheroidPA  v1.17.2 — NIS-E Spheroid PA Pipeline")
+        self.title("SpheroidPA  v1.17.3 — NIS-E Spheroid PA Pipeline")
         self.geometry("1680x880")
         self.minsize(1000, 660)
         self.configure(bg=BG)
@@ -631,7 +631,7 @@ class App(tk.Tk):
     def _build_ui(self):
         hdr = tk.Frame(self, bg=BG2)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="  SpheroidPA  v1.17.2",
+        tk.Label(hdr, text="  SpheroidPA  v1.17.3",
                  bg=BG2, fg=MAUVE, font=("Segoe UI", 13, "bold"), pady=8
                  ).pack(side="left")
         tk.Label(hdr, text="Screen → Anchor → Autofocus → Capture  ",
@@ -5779,18 +5779,29 @@ class App(tk.Tk):
             params[self.PA_POINT_X_FMT.format(i=i)] = x
             params[self.PA_POINT_Y_FMT.format(i=i)] = y
             params[self.PA_POINT_Z_FMT.format(i=i)] = z
-        # ArraySize is sent ONLY when growing the array beyond the single point the job
-        # already holds. Rig evidence 2026-08-07: three launches sending x/y/z + well all
-        # produced output; the two that additionally sent ArraySize produced NOTHING -- a
-        # silent no-op, no jobrun, no nd2, while cmd_done still said ok. An unrecognised key
-        # appears to make Jobs_RunJobInitParam reject the WHOLE parameter set, which then
-        # falls back to the job's stored point. So for the single-point case (the norm) send
-        # exactly the payload that is proven to work, and accept the extra risk only when
-        # multi-point genuinely needs the array grown.
-        if len(pts) > 1:
-            params[self.PA_POINT_COUNT_KEY] = len(pts)
-            self._pl_log(f"PA: sending {self.PA_POINT_COUNT_KEY}={len(pts)} -- UNPROVEN key; "
-                         f"if the job produces no output, this is the first thing to drop.")
+        # ArraySize is sent on EVERY launch, growing or shrinking.
+        #
+        # Confirmed on the rig 2026-08-08 by reading the job's own Debug parameter tree with
+        # two points stored:
+        #     PredefinedPoints.Positions.Positions.ArraySize          -> 2
+        #     ...Positions[0].Position.Stage.x                        -> 47793.418
+        #     ...Positions[1].Position.Stage.x                        -> 37892.041
+        # so the [i] template is addressable, the units are um (the UI shows mm), and
+        # ArraySize renders NORMAL in that tree -- red is reserved for read-only outputs
+        # there (ClassName, TaskName, ROICount are red; ArraySize is not).
+        #
+        # This supersedes an earlier note in this file claiming ArraySize made the job
+        # produce nothing. Those two silent launches were on 2026-08-07, inside the window
+        # of the dispatcher-lock bug where cmd.ini was never written at all -- the lock
+        # explains the silence, and ArraySize was misattributed.
+        #
+        # SHRINKING IS THE SAFETY-CRITICAL DIRECTION, and only sending this when growing was
+        # a real hazard: the POINT LOOP iterates every element of PredefinedPoints.Positions,
+        # so a 1-spheroid run against a job left holding 2 points fires the laser at BOTH --
+        # the second at whatever stale coordinates it kept. That is not hypothetical; the job
+        # was found holding a point at (47793, 15481) um, ~10 mm outside the working well and
+        # 187 um off in Z, i.e. on plastic between wells.
+        params[self.PA_POINT_COUNT_KEY] = len(pts)
         well = self._pl_well_id.get().strip()
         if well:
             params[self.WELL_PARAM_KEY] = self._pl_well_param_value(well)
@@ -5804,7 +5815,9 @@ class App(tk.Tk):
 
         # Log EVERY point, not just a count: this is the last human-readable record of what
         # the laser was told to hit, and the Debug breakpoint that used to show it is gone.
-        self._pl_log(f"PA point params: {len(pts)} point(s), well={well or '(none)'}, "
+        self._pl_log(f"PA point params: {len(pts)} point(s) "
+                     f"({self.PA_POINT_COUNT_KEY.rsplit('.', 1)[-1]}={len(pts)}), "
+                     f"well={well or '(none)'}, "
                      f"store={str(Path(store)) if store else '(job default)'}")
         for i, (name, x, y, z) in enumerate(pts):
             self._pl_log(f"   [{i}] {name}: Stage.x/y=({x:.1f}, {y:.1f}) um  z={z:.1f} um")
