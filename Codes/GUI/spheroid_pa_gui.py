@@ -1,5 +1,5 @@
 """
-spheroid_pa_gui.py  v1.15.0
+spheroid_pa_gui.py  v1.17.0
 NIS-E Spheroid PA Pipeline — ND2-native I/O
 
 Pipeline:  Job A ND2 → [parse metadata + detect spheroids]
@@ -598,7 +598,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("SpheroidPA  v1.15.0 — NIS-E Spheroid PA Pipeline")
+        self.title("SpheroidPA  v1.17.0 — NIS-E Spheroid PA Pipeline")
         self.geometry("1680x880")
         self.minsize(1000, 660)
         self.configure(bg=BG)
@@ -631,7 +631,7 @@ class App(tk.Tk):
     def _build_ui(self):
         hdr = tk.Frame(self, bg=BG2)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="  SpheroidPA  v1.15.0",
+        tk.Label(hdr, text="  SpheroidPA  v1.17.0",
                  bg=BG2, fg=MAUVE, font=("Segoe UI", 13, "bold"), pady=8
                  ).pack(side="left")
         tk.Label(hdr, text="Screen → Anchor → Autofocus → Capture  ",
@@ -1475,11 +1475,13 @@ class App(tk.Tk):
         # Pre-PA card: baseline viz capture(s) before PA Setup, via the SAME
         # dispatcher z-stack action (id 2) -- one pass per checked OC, each routed
         # into its own nd2/prePA_<tag> subfolder. See SLIM025/026/031/043.
-        self._pl_pa_sel_prepa   = tk.BooleanVar(value=False)   # include in Run Pipeline
-        # Run Pipeline steps that FIRE THE LASER / depend on it. Default OFF: the sequence
-        # historically stopped before the laser on purpose, so enabling these has to be a
-        # deliberate act, not an inherited default.
-        self._pl_pa_sel_pajob   = tk.BooleanVar(value=False)   # launch step3_zstack_PA_WC
+        self._pl_pa_sel_prepa   = tk.BooleanVar(value=True)    # include in Run Pipeline
+        # Every card ships ticked (operator request, 2026-08-08): the whole point of Step 4
+        # is the full pre-PA -> PA -> post-PA sequence, and a card silently left off reads
+        # as a hang rather than a choice. The laser is still gated twice and NOT by this
+        # tick: 'A1 powered ON' must be set, and _pl_pa_run_pipeline_thread shows a modal
+        # naming the optical config and every point before the worker thread starts.
+        self._pl_pa_sel_pajob   = tk.BooleanVar(value=True)    # launch step3_zstack_PA_WC
         # ON by default: post-PA is imaging only (no laser), and the pipeline already
         # refuses to run it unless the PA genuinely produced output -- so a stray tick
         # cannot manufacture a bogus comparison. Left OFF, a "Run All" ends silently after
@@ -1510,6 +1512,11 @@ class App(tk.Tk):
         # photoactivation. ON by default: the pre-PA pass snapshots the rig's laser powers
         # and the post-PA pass restores them along with the dichroic and zoom, so the two
         # halves match by construction instead of by the operator remembering two numbers.
+        #
+        # No longer exposed in the UI (2026-08-08). There is no legitimate reason to
+        # capture the post-PA set through the PA light path, and the mismatch is invisible
+        # in the images -- it just looks like signal change. Kept as a var so the
+        # snapshot/restore code path stays readable and testable.
         self._pl_lightpath_restore = tk.BooleanVar(value=True)
         # Keep each captured ND2 open in NIS-E after it is saved. OFF by default: a
         # multi-spheroid x multi-OC x z-stack run opens dozens of image windows, which
@@ -1520,12 +1527,23 @@ class App(tk.Tk):
 
         # Initialization card (Step 4, first card): rig known-good defaults dispatched
         # as init_rig (action 8) -> init_trigger.ini. z_centre/z_half/z_step reuse the
-        # Step 3 vars and a1_on reuses _pl_pa_a1on. Standalone (not in Run Pipeline).
+        # Step 3 vars and a1_on reuses _pl_pa_a1on. Run Pipeline dispatches it immediately
+        # before the pre-PA captures AND again before the post-PA captures, so both halves
+        # of the comparison start from the same rig state; the button stays for standalone
+        # use.
         self._pl_init_zoom         = tk.StringVar(value="2.0")
-        self._pl_init_power        = tk.StringVar(value="30")
         self._pl_init_dichroic_out = tk.BooleanVar(value=False)   # unchecked = dichroic IN
-        self._pl_init_pfs          = tk.BooleanVar(value=True)
         self._pl_init_save_repoint = tk.BooleanVar(value=True)
+        # Not exposed (2026-08-08). init_trigger.ini's key set is the macro's contract, so
+        # both keys are still written -- with values that are not the operator's to pick:
+        #   power_pct  the 850 nm activation power lives in the OC, not here. The
+        #              A1PlusPad wiring that would let the GUI set it is not in place, so
+        #              a field for it only invited belief in a control that does nothing.
+        #   pfs_on     PFS is always off on this rig; it cannot hold through a dichroic-OUT
+        #              PA anyway, and _pl_init_dichroic_toggle already force-cleared it.
+        INIT_PFS_ON = False
+        self._pl_init_power        = tk.StringVar(value=str(MAX_PA_ACTIVATION_POWER_PCT))
+        self._pl_init_pfs          = tk.BooleanVar(value=INIT_PFS_ON)
 
         # ── Outer layout: sidebar | [ middle (steps+dashboard) | table ]
         # A horizontal paned window holds two draggable panes that never overlap:
@@ -1979,66 +1997,83 @@ class App(tk.Tk):
                            bg=BG, fg=MAUVE, font=("Segoe UI", 9, "bold"),
                            bd=1, relief="groove")
         pa.pack(fill="both", expand=True, padx=4, pady=(6, 6))
-        tk.Label(pa, text="Start nis_macro_dispatcher.mac once in NIS-E. Per card: edit params, "
-                          "Reload writes pa_trigger.ini, Run dispatches that macro. Tick a card to "
-                          "include it in Run Pipeline (checked macros run in order, waiting for each).\n"
-                          "Run Pipeline covers Validation -> Setup -> Points; it does NOT fire the PA "
-                          "itself -- after Points, manually Run step3_zstack_PA in NIS-E JOBS Explorer, "
-                          "then run Validation again (same card) to capture the after-PA images. OC "
-                          "dropdowns/checkboxes list the full mGold profile set: Activation OC = "
-                          "750-850nm (per-protein/dye 2P activation sweep, IMPA004); Viz OC = "
-                          "890-1050nm (890=mBeRFP T-cell identity, 940=PAsfGFP before/after, "
-                          "1050=spheroid depth/faded-square re-image).",
-                 bg=BG, fg=SUBTEXT, font=("Segoe UI", 8), justify="left",
-                 wraplength=520).pack(anchor="w", padx=8, pady=(3, 4))
+        # Kept short and CURRENT. The previous text still described the pre-v1.16 flow --
+        # "Run Pipeline ... does NOT fire the PA itself, manually Run step3_zstack_PA in
+        # JOBS Explorer" -- which stopped being true when the PA job and post-PA captures
+        # joined the sequence. A stale instruction on the laser step is worse than none.
+        _hdr = tk.Frame(pa, bg=BG); _hdr.pack(fill="x", padx=8, pady=(3, 4))
+        self._info(
+            _hdr,
+            "Run Pipeline: init -> pre-PA -> re-centre -> PA setup -> 850 nm JOB -> "
+            "init -> post-PA. Needs nis_macro_dispatcher.mac running in NIS-E.",
+            "Every card runs in the order shown, waiting for each to report back. Untick a "
+            "card's header to leave it out.\n\n"
+            "The 850 nm JOB fires the laser. It is gated twice: 'A1 powered ON' must be "
+            "ticked, and a confirm dialog naming the optical config and every point appears "
+            "before the sequence starts. Post-PA captures run only if the JOB actually "
+            "produced output -- a post-PA set with no PA in between is a mislabelled copy "
+            "of the baseline.\n\n"
+            "Initialization runs twice, once before each capture phase, so the before and "
+            "after sets are acquired from the same rig state.\n\n"
+            "Viz OCs: 890 = mBeRFP (T-cell identity), 940 = PAsfGFP (the before/after "
+            "readout), 1050 = spheroid depth / faded-square re-image. The activation OC is "
+            "locked to 850 nm.",
+            bg=BG, wrap=520)
 
         # Card -1 -- Initialization (dispatcher init_rig action, id 8): normalize the rig
-        # + GUI to known-good defaults before an experiment (confocal zoom=2, PA power
-        # cap, z-defaults, dichroic IN, PFS ON, Save-to-File -> pipeline nd2_dir). Writes
-        # init_trigger.ini and dispatches nis_macro_init_rig.mac. Standalone card (not in
-        # the Run Pipeline sequence). First card in Step 4. z_centre/z_half/z_step reuse
-        # the Step 3 vars; A1-powered guard reuses PA Setup's _pl_pa_a1on.
+        # + GUI to known-good defaults (confocal zoom=2, z-defaults, dichroic IN,
+        # Save-to-File -> pipeline nd2_dir). Writes init_trigger.ini and dispatches
+        # nis_macro_init_rig.mac. First card in Step 4.
+        #
+        # Run Pipeline dispatches this immediately before the pre-PA captures AND again
+        # before the post-PA captures (2026-08-08) -- so it is NOT a standalone card any
+        # more, and there is no tick to include it: both halves of a before/after set must
+        # start from the same rig state or the comparison is not one. The button stays for
+        # running it on its own.
+        #
+        # PA power % and PFS ON were removed: the activation power lives in the 850 nm OC
+        # (the A1PlusPad wiring that would let the GUI set it is not in place), and PFS is
+        # always off on this rig. Both keys are still written to init_trigger.ini -- see
+        # the var block for why.
         init = tk.Frame(pa, bg=BG2, bd=1, relief="solid"); init.pack(fill="x", padx=4, pady=3)
         hdri = tk.Frame(init, bg=BG2); hdri.pack(fill="x", padx=6, pady=(3, 0))
         tk.Label(hdri, text="Initialization  (rig known-good defaults)", bg=BG2, fg=MAUVE,
                  font=("Segoe UI", 9, "bold")).pack(side="left")
+        tk.Label(hdri, text="  runs automatically before pre-PA and post-PA", bg=BG2,
+                 fg=GREEN, font=("Segoe UI", 8)).pack(side="left")
         bodyi = tk.Frame(init, bg=BG2); bodyi.pack(fill="x", padx=24, pady=(0, 4))
         ri = tk.Frame(bodyi, bg=BG2); ri.pack(fill="x", pady=(2, 0))
         for lbl, var, w in [("Confocal zoom:", self._pl_init_zoom, 5),
-                            ("PA power %:", self._pl_init_power, 5)]:
+                            ("z_centre:", self._pl_z_centre, 8), ("z_half:", self._pl_z_half, 6),
+                            ("z_step:", self._pl_z_step, 6)]:
             tk.Label(ri, text=lbl, bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
             tk.Entry(ri, textvariable=var, width=w, bg=SURFACE, fg=TEXT, insertbackground=TEXT,
-                     relief="flat", font=("Segoe UI", 9)).pack(side="left", padx=(0, 8))
-        ri2 = tk.Frame(bodyi, bg=BG2); ri2.pack(fill="x", pady=(2, 0))
-        for lbl, var, w in [("z_centre:", self._pl_z_centre, 8), ("z_half:", self._pl_z_half, 6),
-                            ("z_step:", self._pl_z_step, 6)]:
-            tk.Label(ri2, text=lbl, bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
-            tk.Entry(ri2, textvariable=var, width=w, bg=SURFACE, fg=TEXT, insertbackground=TEXT,
                      relief="flat", font=("Segoe UI", 9)).pack(side="left", padx=(0, 8))
         ri3 = tk.Frame(bodyi, bg=BG2); ri3.pack(fill="x", pady=(2, 0))
         tk.Checkbutton(ri3, text="Dichroic OUT", variable=self._pl_init_dichroic_out, bg=BG2, fg=TEXT2,
                        selectcolor=SURFACE, activebackground=BG2, activeforeground=TEXT,
-                       font=("Segoe UI", 9), command=self._pl_init_dichroic_toggle).pack(side="left")
-        self._pl_init_pfs_chk = tk.Checkbutton(ri3, text="PFS ON", variable=self._pl_init_pfs, bg=BG2, fg=TEXT2,
-                       selectcolor=SURFACE, activebackground=BG2, activeforeground=TEXT,
-                       font=("Segoe UI", 9))
-        self._pl_init_pfs_chk.pack(side="left", padx=(10, 0))
-        self._pl_init_dichroic_toggle()
+                       font=("Segoe UI", 9)).pack(side="left")
         tk.Checkbutton(ri3, text="Re-point Save-to-File to pipeline nd2_dir",
                        variable=self._pl_init_save_repoint, bg=BG2, fg=TEXT2, selectcolor=SURFACE,
                        activebackground=BG2, activeforeground=TEXT,
                        font=("Segoe UI", 9)).pack(side="left", padx=(10, 0))
-        ri4 = tk.Frame(bodyi, bg=BG2); ri4.pack(fill="x", pady=(2, 0))
-        tk.Checkbutton(ri4, text="A1 powered ON", variable=self._pl_pa_a1on, bg=BG2, fg="#f7768e",
+        tk.Checkbutton(ri3, text="A1 powered ON", variable=self._pl_pa_a1on, bg=BG2, fg="#f7768e",
                        selectcolor=SURFACE, activebackground=BG2, activeforeground=TEXT,
-                       font=("Segoe UI", 9, "bold")).pack(side="left")
+                       font=("Segoe UI", 9, "bold")).pack(side="left", padx=(10, 0))
         btn_init = tk.Frame(init, bg=BG2); btn_init.pack(fill="x", padx=24, pady=(2, 4))
         self._btn(btn_init, "Initialize Rig", self._pl_init_rig, BLUE, "#1e1e2e", side="left")
-        tk.Label(init, text="Sets zoom=2 / power cap / save-path / z-defaults / dichroic / PFS to "
-                            "known-good before an experiment; detector gains and per-OC re-save are "
-                            "rig-side (handled in the macro / rig).",
-                 bg=BG2, fg=SUBTEXT, font=("Segoe UI", 8), justify="left",
-                 wraplength=460).pack(anchor="w", padx=24, pady=(0, 6))
+        self._info(bodyi,
+                   "Sets zoom / save-path / z-defaults / dichroic to known-good.",
+                   "Dispatched as init_rig (action 8) via init_trigger.ini.\n\n"
+                   "Run Pipeline runs it twice -- once before the pre-PA captures and again "
+                   "before the post-PA captures -- so both halves of the before/after set "
+                   "are acquired from the same rig state. PA Setup leaves the rig at "
+                   "dichroic OUT and the PA zoom; without this the post-PA pass would "
+                   "image a 79.5 um field against a 318.2 um baseline, and the difference "
+                   "would read as photoactivation.\n\n"
+                   "PFS stays off: it cannot hold focus through a dichroic-OUT PA. PA power "
+                   "is not set here -- it lives in the 850 nm optical config.\n\n"
+                   "Detector gains and per-OC re-save are rig-side, handled in the macro.")
 
         # Card 0 -- Validation (dispatcher z-stack action, id 2): before- AND after-PA
         # multi-channel capture, one pass per checked OC, each routed into its own
@@ -2048,15 +2083,16 @@ class App(tk.Tk):
         # card (removed 2026-07-07). Internal names keep the "_pl_prepa_*" prefix.
         card, body = self._pl_pa_card(pa, "Before-PA Validation  (baseline multi-channel capture -> nd2/prePA_<tag>)",
                                       self._pl_pa_sel_prepa)
-        tk.Label(body, text="Channel selection only -- position/Z come from whatever "
-                            "af_trigger_NN.ini files already exist (generate them in Step 3, or "
-                            "write them by hand). Each checked OC injects oc= into every existing "
-                            "trigger and runs one full z-stack pass via the dispatcher "
-                            "(nis_macro_capture_zstack.mac, action 2) into its own "
-                            "nd2/prePA_<tag> subfolder. Run this before PA Setup for the baseline; the "
-                            "After-PA Validation card below captures the post-JOB result.",
-                 bg=BG2, fg=SUBTEXT, font=("Segoe UI", 8), justify="left",
-                 wraplength=460).pack(anchor="w")
+        self._info(body,
+                   "Baseline z-stack per checked channel. Positions come from Step 3.",
+                   "Channel selection only -- position and Z come from whatever "
+                   "af_trigger_NN.ini files already exist (generate them in Step 3, or write "
+                   "them by hand).\n\n"
+                   "Each checked OC injects oc= into every existing trigger and runs one "
+                   "full z-stack pass via the dispatcher (nis_macro_capture_zstack.mac, "
+                   "action 2) into its own nd2/prePA_<tag> subfolder.\n\n"
+                   "The After-PA Validation card captures the matching post-JOB set into "
+                   "nd2/postPA_<tag>, at the same positions and Z.")
         r = tk.Frame(body, bg=BG2); r.pack(fill="x", pady=(2, 0))
         tk.Checkbutton(r, text="890nm (mBeRFP - T-cell identity)", variable=self._pl_prepa_oc_890,
                        bg=BG2, fg=TEXT2, selectcolor=SURFACE, activebackground=BG2,
@@ -2081,8 +2117,15 @@ class App(tk.Tk):
                        bg=BG2, fg=TEXT2, selectcolor=SURFACE, activebackground=BG2,
                        activeforeground=TEXT, font=("Segoe UI", 8)).pack(side="left", padx=(12, 0))
 
-        # Card 1 -- PA Setup (action 4): hardware prep + centred activation square.
-        card, body = self._pl_pa_card(pa, "PA Setup  (interlock / OC / dichroic / centred square)",
+        # Card 1 -- PA Setup (action 4): the rig prep that has to happen before the PA JOB.
+        #
+        # Trimmed to what actually reaches the hardware (2026-08-08). Power %, Zoom and
+        # Loops were removed: the A1PlusPad wiring that would let the GUI drive the 850 nm
+        # scan is not in place, so those three fields never changed the OC -- the JOB runs
+        # entirely on "850 nm power loop full reso2"'s own settings. Leaving editable boxes
+        # in front of an operator is worse than having none: it invites setting a power and
+        # believing it took. Removing A1 interlock and Dichroic OUT DO work, so they stay.
+        card, body = self._pl_pa_card(pa, "PA Setup  (interlock + dichroic OUT for the 850 nm JOB)",
                                       self._pl_pa_sel_setup)
         r = tk.Frame(body, bg=BG2); r.pack(fill="x")
         tk.Label(r, text="Activation OC:", bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
@@ -2093,12 +2136,9 @@ class App(tk.Tk):
                      state="readonly", values=PA_ACTIVATION_OC_LIST).pack(side="left")
         tk.Label(r, text="(locked)", bg=BG2, fg=SUBTEXT,
                  font=("Segoe UI", 8)).pack(side="left", padx=(6, 0))
-        r = tk.Frame(body, bg=BG2); r.pack(fill="x", pady=(2, 0))
-        for lbl, var, w in [("Power %:", self._pl_pa_power, 5), ("Zoom:", self._pl_pa_zoom, 5),
-                            ("Well:", self._pl_well_id, 5), ("Loops:", self._pl_pa_loops, 5)]:
-            tk.Label(r, text=lbl, bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
-            tk.Entry(r, textvariable=var, width=w, bg=SURFACE, fg=TEXT, insertbackground=TEXT,
-                     relief="flat", font=("Segoe UI", 9)).pack(side="left", padx=(0, 8))
+        tk.Label(r, text="  Well:", bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(8, 3))
+        tk.Entry(r, textvariable=self._pl_well_id, width=5, bg=SURFACE, fg=TEXT,
+                 insertbackground=TEXT, relief="flat", font=("Segoe UI", 9)).pack(side="left")
         r = tk.Frame(body, bg=BG2); r.pack(fill="x", pady=(2, 0))
         tk.Checkbutton(r, text="Dichroic OUT", variable=self._pl_pa_dichroic, bg=BG2, fg=TEXT2,
                        selectcolor=SURFACE, activebackground=BG2, activeforeground=TEXT,
@@ -2110,36 +2150,27 @@ class App(tk.Tk):
         tk.Checkbutton(r, text="A1 powered ON", variable=self._pl_pa_a1on, bg=BG2, fg="#f7768e",
                        selectcolor=SURFACE, activebackground=BG2, activeforeground=TEXT,
                        font=("Segoe UI", 9, "bold")).pack(side="left", padx=(10, 0))
+        self._info(body,
+                   "Arms the rig for the 850 nm JOB. Power, zoom and dwell come from the OC.",
+                   "Removing the A1 interlock and swinging the dichroic OUT are the two "
+                   "things this card actually does to the hardware; both are required "
+                   "before the JOB can fire.\n\n"
+                   "It does NOT set the activation power, zoom or loop count. Those live "
+                   "in the '850 nm power loop full reso2' optical config and are edited in "
+                   "NIS-E. The GUI fields for them were removed because the A1PlusPad "
+                   "wiring that would make them effective is not in place -- they read as "
+                   "controls but changed nothing.\n\n"
+                   "Well is the canonical working well, shared with Step 1 and the JOB "
+                   "launch: set it once and it follows everywhere.")
         self._pl_pa_card_buttons(card, "pa_setup", 4)
 
-        # Job3 settings (step3_zstack_PA -- the manual JOB itself, not a dispatcher
-        # macro; no pipeline checkbox / Reload / Run here -- nothing to dispatch).
-        # Well is bound to the SAME _pl_well_id as Job1's settings, so it's always
-        # the current working well -- set it once in Step 1, syncs everywhere.
-        job3 = tk.Frame(pa, bg=BG2, bd=1, relief="solid")
-        job3.pack(fill="x", padx=4, pady=3)
-        hdr3 = tk.Frame(job3, bg=BG2); hdr3.pack(fill="x", padx=6, pady=(3, 0))
-        tk.Label(hdr3, text="Job3 (step3_zstack_PA -- manual JOB run)", bg=BG2, fg=MAUVE,
-                 font=("Segoe UI", 9, "bold")).pack(side="left")
-        body3 = tk.Frame(job3, bg=BG2); body3.pack(fill="x", padx=24, pady=(0, 6))
-        tk.Label(body3, text="Run this JOB manually in NIS-E JOBS Explorer. "
-                             "Well below is the SAME working well as Job1 -- set it once in "
-                             "Step 1 and every job's well field updates together.",
-                 bg=BG2, fg=SUBTEXT, font=("Segoe UI", 8), justify="left",
-                 wraplength=460).pack(anchor="w")
-        r = tk.Frame(body3, bg=BG2); r.pack(fill="x", pady=(2, 0))
-        tk.Label(r, text="Well:", bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(0, 3))
-        tk.Entry(r, textvariable=self._pl_well_id, width=8, bg=SURFACE, fg=TEXT,
-                 insertbackground=TEXT, relief="flat", font=("Segoe UI", 9)).pack(side="left")
-        # The JOB runs manually; a companion macro (nis_macro_pa_done.mac / the JOB's
-        # post-capture hook) writes pa_done.ini into the work dir when it finishes. This
-        # button polls for that flag so the operator gets a timestamped "PA JOB complete"
-        # in the log instead of watching NIS-E.
-        rw = tk.Frame(body3, bg=BG2); rw.pack(fill="x", pady=(4, 0))
-        self._btn(rw, "Watch for PA done", self._pl_watch_pa_done_thread, GREEN, "#1e1e2e", side="left")
-        self._pl_pa_done_status = tk.Label(rw, text="PA done: not watching", bg=BG2, fg=SUBTEXT,
-                                           font=("Segoe UI", 8))
-        self._pl_pa_done_status.pack(side="left", padx=(8, 0))
+        # Job3 card REMOVED 2026-08-08. It held a duplicate Well box (already on PA Setup,
+        # same _pl_well_id) and a "Watch for PA done" button that polled pa_done.ini for an
+        # hour. Both are obsolete: the JOB is launched by the pipeline, not by hand in JOBS
+        # Explorer, and the pipeline waits on the PA's own output and logs the result --
+        # "PA job -> complete (N file(s), output quiet for 90s)". pa_done.ini is not even
+        # written on the dispatcher path, so the watcher would have timed out on a run that
+        # succeeded. See _pl_pa_wait_for_job.
 
         # PA Points card REMOVED 2026-08-07 -- discontinued, not merely hidden.
         #
@@ -2229,11 +2260,15 @@ class App(tk.Tk):
                        selectcolor=SURFACE, activebackground=BG2, activeforeground=TEXT,
                        font=("Segoe UI", 9, "bold")).pack(side="left")
         bodya = tk.Frame(apa, bg=BG2); bodya.pack(fill="x", padx=24, pady=(0, 4))
-        tk.Label(bodya, text="Run AFTER the step3_zstack_PA JOB. Same positions/Z as the before-PA "
-                             "Validation (from Step 3's checked rows), saved to nd2/postPA_<tag> so "
-                             "the before/after sets stay separate.",
-                 bg=BG2, fg=SUBTEXT, font=("Segoe UI", 8), justify="left",
-                 wraplength=460).pack(anchor="w")
+        self._info(bodya,
+                   "Same positions and Z as the baseline, saved to nd2/postPA_<tag>.",
+                   "Runs AFTER the 850 nm JOB, from Step 3's checked rows -- the same "
+                   "positions and Z geometry as the Before-PA Validation, into a separate "
+                   "subfolder so the two sets never collide.\n\n"
+                   "In a pipeline these captures run ONLY if the PA job actually produced "
+                   "output. Without a PA in between they would be a second copy of the "
+                   "baseline wearing a post-PA label, which silently corrupts the "
+                   "comparison rather than failing visibly.")
         ra = tk.Frame(bodya, bg=BG2); ra.pack(fill="x", pady=(2, 0))
         tk.Checkbutton(ra, text="890nm (mBeRFP - T-cell identity)", variable=self._pl_postpa_oc_890,
                        bg=BG2, fg=TEXT2, selectcolor=SURFACE, activebackground=BG2,
@@ -2254,15 +2289,16 @@ class App(tk.Tk):
         # every other Step-4 card. In a pipeline these captures run ONLY if the PA job
         # actually produced output -- a post-PA set with no PA in between is a mislabelled
         # copy of the baseline.
-        # Default ON. Leave it on unless you have a reason: with it off, the post-PA set
-        # is captured through whatever optics pa_setup left (dichroic OUT, PA zoom), and
-        # the mismatch is invisible in the images -- it just looks like signal change.
-        rlp = tk.Frame(apa, bg=BG2); rlp.pack(fill="x", padx=24, pady=(0, 6))
-        tk.Checkbutton(rlp, text="Restore pre-PA light path before capture "
-                               "(dichroic IN + zoom + laser powers)",
-                       variable=self._pl_lightpath_restore,
-                       bg=BG2, fg=GREEN, selectcolor=SURFACE, activebackground=BG2,
-                       activeforeground=TEXT, font=("Segoe UI", 8)).pack(anchor="w")
+        # The "Restore pre-PA light path" checkbox was removed 2026-08-08 -- the restore is
+        # now unconditional (_pl_lightpath_restore stays True and is never unset). There is
+        # no legitimate reason to capture the post-PA set through the PA optics: pa_setup
+        # leaves dichroic OUT and the PA zoom, which on 2026-08-07 meant a 79.5 um field
+        # against a 318.2 um baseline. That mismatch is invisible in the images -- it reads
+        # as photoactivation -- so it must not be one tick away.
+        tk.Label(apa, text="Pre-PA light path (dichroic IN + zoom + laser powers) is "
+                           "restored automatically before these captures.",
+                 bg=BG2, fg=GREEN, font=("Segoe UI", 8), justify="left",
+                 wraplength=460).pack(anchor="w", padx=24, pady=(0, 6))
 
         # Bottom bar: run the checked cards in order.
         bottom = tk.Frame(pa, bg=BG); bottom.pack(fill="x", padx=8, pady=(4, 4))
@@ -4831,6 +4867,77 @@ class App(tk.Tk):
         self._pl_dispatch_busy = True
         threading.Thread(target=self._pl_pa_run_pipeline, daemon=True).start()
 
+    def _pl_pipeline_dispatch(self, wd, action, aid, timeout_s=1800):
+        """Dispatch one dispatcher action from inside Run Pipeline and wait for its
+        cmd_done.ini. Returns the status string ('ok', 'aborted', an error, or None on
+        timeout).
+
+        Dispatches DIRECTLY rather than through _pl_send_command: that path refuses when
+        _pl_dispatch_busy is set, and the pipeline holds that lock for its whole sequence.
+        Routing a pipeline step through it produces a modal on a worker thread and a step
+        that never runs while the log still says it was sent (2026-08-07, three PA runs)."""
+        import configparser, time, spheroid_pipeline as _pl
+        if self._pl_abort_requested(wd):
+            return "aborted"
+        done = wd / "cmd_done.ini"
+        try:
+            done.unlink()
+        except FileNotFoundError:
+            pass
+        _pl._atomic_write_crlf(wd / "cmd.ini",
+                               ["[command]", f"action={action}", f"action_id={aid}"])
+        self.after(0, lambda a=action: self._pl_pa_status.configure(
+            text=f"Pipeline: running '{a}'...", fg=YELLOW))
+        self._pl_log(f"PA pipeline: dispatched '{action}'")
+        for _ in range(timeout_s):
+            if done.exists():
+                cp = configparser.ConfigParser()
+                try:
+                    cp.read(done)
+                    status = cp.get("command", "status",
+                                    fallback=cp.get("spheroid", "status", fallback="?"))
+                except Exception:
+                    time.sleep(1.0); continue
+                if status == "?":
+                    # cmd_done.ini is built key-by-key with status written LAST, so a file
+                    # that parses without one is still being written -- not a finished run
+                    # with an unknown result. Breaking here reported "?" and aborted a
+                    # post-PA sequence whose capture had actually succeeded (2026-08-07,
+                    # cost the 1050 nm pass).
+                    time.sleep(1.0); continue
+                return status
+            if self._pl_abort_requested(wd):
+                return "aborted"
+            time.sleep(1.0)
+        return None
+
+    def _pl_pipeline_init_rig(self, wd, when):
+        """Normalize the rig (init_rig, action 8) inside Run Pipeline. Called once before
+        the pre-PA captures and again before the post-PA captures so both halves of the
+        before/after set start from the same state -- PA Setup leaves the rig at dichroic
+        OUT and the PA zoom, and nothing else puts it back. Returns True to continue.
+
+        A failure here is NOT fatal to the run: the post-PA path also restores the light
+        path explicitly (_pl_lightpath_step), so a failed init is a warning, not a reason
+        to throw away captures that are about to succeed."""
+        try:
+            desc = self._pl_write_init_trigger(wd)
+        except Exception as exc:
+            self._pl_log(f"PA pipeline: init_rig SKIPPED before {when} -- "
+                         f"could not write init_trigger.ini ({exc})")
+            return True
+        self._pl_log(f"PA pipeline: init_rig before {when} ({desc})")
+        status = self._pl_pipeline_dispatch(wd, "init_rig", 8, timeout_s=300)
+        if status == "aborted":
+            self._pl_log("PA pipeline: ABORT requested during init_rig")
+            return False
+        if status != "ok":
+            self._pl_log(f"PA pipeline: init_rig -> {status or 'timeout'} "
+                         f"(continuing; the light-path restore still applies)")
+        else:
+            self._pl_log("PA pipeline: init_rig -> ok")
+        return True
+
     def _pl_pa_run_pipeline(self):
         """Run the checked PA cards in order, each via the dispatcher, waiting for
         cmd_done.ini between steps. Stops on the first non-ok result. Holds the
@@ -4844,7 +4951,7 @@ class App(tk.Tk):
             # because something failed -- which is exactly the ambiguity that made the
             # 2026-08-07 run unreadable.
             self._pl_log(
-                "PA pipeline: selected -> "
+                "PA pipeline: selected -> init_rig (always, before pre-PA and post-PA), "
                 f"pre-PA={self._pl_pa_sel_prepa.get()} "
                 f"(ocs={[t for _, t in self._pl_prepa_checked_ocs()]}), "
                 f"recenter={self._pl_pa_sel_recenter.get()}, "
@@ -4877,7 +4984,14 @@ class App(tk.Tk):
             if not seq and not do_prepa:
                 self.after(0, lambda: self._pl_pa_status.configure(
                     text="Pipeline: no macros checked.", fg=RED)); return
+            # The work dir is needed BEFORE the pre-PA captures now, because init_rig runs
+            # first. Resolve it without a dialog (worker thread) and fall back to the
+            # trigger writer's own resolution if it is not set up yet.
+            wd_early = self._pl_resolve_work_dir()
             if do_prepa:
+                if wd_early is not None and not self._pl_pipeline_init_rig(wd_early, "pre-PA"):
+                    self.after(0, lambda: self._pl_pa_status.configure(
+                        text="Pipeline: aborted during init.", fg=RED)); return
                 self._pl_log("PA pipeline: Pre-PA viz capture(s) first")
                 if not self._pl_prepa_capture_ocs():
                     return   # status already shown by the helper
@@ -4896,41 +5010,11 @@ class App(tk.Tk):
                 return
             self._pl_log(f"PA pipeline: {[a for a, _ in seq]}")
             for action, aid in seq:
-                if self._pl_abort_requested(wd):
-                    self._pl_log(f"PA pipeline: ABORT requested -- stopping before '{action}'")
+                status = self._pl_pipeline_dispatch(wd, action, aid)
+                if status == "aborted":
+                    self._pl_log(f"PA pipeline: ABORT requested -- stopping at '{action}'")
                     self.after(0, lambda: self._pl_pa_status.configure(
                         text="Pipeline: aborted by operator.", fg=RED)); return
-                done = wd / "cmd_done.ini"
-                try:
-                    done.unlink()
-                except FileNotFoundError:
-                    pass
-                _pl._atomic_write_crlf(wd / "cmd.ini",
-                                       ["[command]", f"action={action}", f"action_id={aid}"])
-                self.after(0, lambda a=action: self._pl_pa_status.configure(
-                    text=f"Pipeline: running '{a}'...", fg=YELLOW))
-                self._pl_log(f"PA pipeline: dispatched '{action}'")
-                status = None
-                for _ in range(1800):
-                    if done.exists():
-                        cp = configparser.ConfigParser()
-                        try:
-                            cp.read(done); status = cp.get("command", "status",
-                                fallback=cp.get("spheroid", "status", fallback="?"))
-                        except Exception:
-                            time.sleep(1.0); continue
-                        if status == "?":
-                            # cmd_done.ini is built key-by-key with status written LAST, so a
-                            # file that parses without one is still being written -- not a
-                            # finished run with an unknown result. Breaking here reported "?"
-                            # and aborted a post-PA sequence whose capture had actually
-                            # succeeded (2026-08-07, cost the 1050 nm pass).
-                            time.sleep(1.0); continue
-                        break
-                    if self._pl_abort_requested(wd):
-                        status = "aborted"
-                        break
-                    time.sleep(1.0)
                 self._pl_log(f"PA pipeline: '{action}' -> {status or 'timeout'}")
                 if status != "ok":
                     msg = (f"Pipeline stopped at '{action}' -> {status}" if status
@@ -5020,6 +5104,14 @@ class App(tk.Tk):
                 if not self._pl_pa_sel_pajob.get():
                     self._pl_log("PA pipeline: post-PA requested WITHOUT the PA job in this "
                                  "run -- assuming the PA was fired separately.")
+                # Re-normalize the rig first. PA Setup left it at dichroic OUT and the PA
+                # zoom; without this the post-PA set is captured through the PA optics and
+                # the mismatch reads as photoactivation. The explicit light-path restore in
+                # _pl_prepa_capture_ocs still runs after it -- init_rig sets the rig's
+                # known-good state, the restore reproduces THIS run's pre-PA state.
+                if not self._pl_pipeline_init_rig(wd, "post-PA"):
+                    self.after(0, lambda: self._pl_pa_status.configure(
+                        text="Pipeline: aborted before the post-PA captures.", fg=RED)); return
                 self.after(0, lambda: self._pl_pa_status.configure(
                     text="Pipeline: After-PA captures...", fg=YELLOW))
                 self._pl_log("PA pipeline: After-PA viz capture(s)")
@@ -5970,23 +6062,15 @@ class App(tk.Tk):
         finally:
             self._pl_dispatch_busy = False
 
-    def _pl_init_dichroic_toggle(self):
-        """Dichroic OUT is the higher-priority parameter: the PFS focus lock cannot
-        engage with the dichroic mirror extracted, so selecting OUT forces PFS
-        unlocked (off) and greys out the PFS checkbox; IN re-enables it. The macro
-        enforces the same override on the rig side as a safety."""
-        if self._pl_init_dichroic_out.get():
-            self._pl_init_pfs.set(False)
-            self._pl_init_pfs_chk.configure(state="disabled")
-        else:
-            self._pl_init_pfs_chk.configure(state="normal")
-
-    def _pl_init_rig(self):
-        """Write init_trigger.ini (rig known-good defaults) into the session work dir and
-        dispatch nis_macro_init_rig.mac (action 8) to normalize the rig before an
-        experiment: confocal zoom, PA power cap, z-defaults, dichroic, PFS, and re-point
-        Save-to-File at the pipeline nd2_dir. z_centre/z_half/z_step come from Step 3; the
-        A1-powered guard reuses PA Setup's _pl_pa_a1on."""
+    # _pl_init_dichroic_toggle removed 2026-08-08 with the PFS ON checkbox. It existed to
+    # force PFS off (and grey the box) whenever Dichroic OUT was ticked, because the focus
+    # lock cannot hold through a dichroic-OUT PA. PFS is now unconditionally off on this
+    # rig, so there is nothing left to interlock -- see the INIT_PFS_ON note in __init__.
+    def _pl_resolve_work_dir(self):
+        """The session work dir (where every trigger/handshake file lives), resolved the
+        same way everywhere: session.ini first, then the Trigger dir field, then
+        <output>/autofocus. Returns a Path or None -- and never shows a dialog, so the
+        pipeline worker thread can call it too."""
         import configparser, spheroid_pipeline as _pl
         cp = configparser.ConfigParser()
         try:
@@ -5998,85 +6082,68 @@ class App(tk.Tk):
         if not work:
             o = self._pl_out_dir.get().strip()
             work = str(Path(o) / "autofocus") if o else ""
-        if not work:
-            messagebox.showwarning("No work dir",
-                                   "Run Step 3 (Trigger) first, or set the Trigger dir."); return
-        try:
-            zoom     = float(self._pl_init_zoom.get().strip())
-            power    = float(self._pl_init_power.get().strip())
-            z_centre = float(self._pl_z_centre.get().strip())
-            z_half   = float(self._pl_z_half.get().strip())
-            z_step   = float(self._pl_z_step.get().strip())
-        except ValueError:
-            messagebox.showwarning("Bad number",
-                                   "Zoom / power / z_centre / z_half / z_step must all be numeric."); return
-        if power > MAX_PA_ACTIVATION_POWER_PCT:
-            power = MAX_PA_ACTIVATION_POWER_PCT
-            self._pl_init_power.set(str(MAX_PA_ACTIVATION_POWER_PCT))
-        wd = Path(work)
-        init_lines = [
+        return Path(work) if work else None
+
+    def _pl_write_init_trigger(self, wd):
+        """Write init_trigger.ini (rig known-good defaults) into `wd`. Returns a short
+        description of what was written, or raises. Split out of _pl_init_rig so the Run
+        Pipeline worker can write it without touching a Tk dialog.
+
+        power_pct and pfs_on are no longer operator-settable (see the var block): the
+        activation power lives in the 850 nm OC, and PFS is always off on this rig. Both
+        keys stay in the file because the key set is nis_macro_init_rig.mac's contract --
+        Int_GetKeyString on a missing key is not a case the macro handles."""
+        import spheroid_pipeline as _pl
+        zoom     = float(self._pl_init_zoom.get().strip())
+        z_centre = float(self._pl_z_centre.get().strip())
+        z_half   = float(self._pl_z_half.get().strip())
+        z_step   = float(self._pl_z_step.get().strip())
+        power    = min(float(self._pl_init_power.get().strip()), MAX_PA_ACTIVATION_POWER_PCT)
+        dic      = '1' if self._pl_init_dichroic_out.get() else '0'
+        wd.mkdir(parents=True, exist_ok=True)
+        _pl._atomic_write_crlf(wd / "init_trigger.ini", [
             "[init]",
             f"zoom={zoom}",
             f"power_pct={power}",
             f"z_centre={z_centre}",
             f"z_half={z_half}",
             f"z_step={z_step}",
-            f"dichroic_out={'1' if self._pl_init_dichroic_out.get() else '0'}",
+            f"dichroic_out={dic}",
             f"pfs_on={'1' if self._pl_init_pfs.get() else '0'}",
             f"a1_on={'1' if self._pl_pa_a1on.get() else '0'}",
             f"save_repoint={'1' if self._pl_init_save_repoint.get() else '0'}",
-        ]
+        ])
+        return (f"zoom={zoom}, z={z_centre}+/-{z_half}@{z_step}, dichroic_out={dic}, "
+                f"pfs=off")
+
+    def _pl_init_rig(self):
+        """Write init_trigger.ini and dispatch nis_macro_init_rig.mac (action 8) to
+        normalize the rig: confocal zoom, z-defaults, dichroic, and re-point Save-to-File
+        at the pipeline nd2_dir. z_centre/z_half/z_step come from Step 3; the A1-powered
+        guard reuses PA Setup's _pl_pa_a1on. Run Pipeline calls _pl_write_init_trigger
+        directly instead of this -- see _pl_pipeline_init_rig."""
+        wd = self._pl_resolve_work_dir()
+        if wd is None:
+            messagebox.showwarning("No work dir",
+                                   "Run Step 3 (Trigger) first, or set the Trigger dir."); return
         try:
-            wd.mkdir(parents=True, exist_ok=True)
-            _pl._atomic_write_crlf(wd / "init_trigger.ini", init_lines)
+            desc = self._pl_write_init_trigger(wd)
+        except ValueError:
+            messagebox.showwarning("Bad number",
+                                   "Zoom / z_centre / z_half / z_step must all be numeric."); return
         except Exception as exc:
             messagebox.showerror("Write failed", str(exc)); return
         self._pl_send_command("init_rig", 8)
-        self._pl_log(f"Init: rig defaults written to {wd / 'init_trigger.ini'} "
-                     f"(zoom={zoom}, power={power}%, z={z_centre}+/-{z_half}@{z_step}, "
-                     f"dichroic_out={'1' if self._pl_init_dichroic_out.get() else '0'}, "
-                     f"pfs={'1' if self._pl_init_pfs.get() else '0'}) -> dispatched init_rig (id 8)")
+        self._pl_log(f"Init: rig defaults written to {wd / 'init_trigger.ini'} ({desc}) "
+                     f"-> dispatched init_rig (id 8)")
 
-    def _pl_watch_pa_done_thread(self):
-        threading.Thread(target=self._pl_watch_pa_done, daemon=True).start()
-
-    def _pl_watch_pa_done(self):
-        """Poll <work_dir>/pa_done.ini (written by nis_macro_pa_done.mac / the JOB
-        post-capture hook when the manual step3_zstack_PA JOB finishes) for ~1 hour.
-        When it appears, log a timestamped completion line, flip the status label GREEN,
-        and delete the flag so the next run starts clean."""
-        import configparser, time, spheroid_pipeline as _pl
-        cp = configparser.ConfigParser()
-        try:
-            if _pl.SESSION_INI.exists():
-                cp.read(_pl.SESSION_INI)
-        except Exception:
-            pass
-        work = cp.get("paths", "work_dir", fallback="").strip() or self._pl_trigger_dir.get().strip()
-        if not work:
-            o = self._pl_out_dir.get().strip()
-            work = str(Path(o) / "autofocus") if o else ""
-        if not work:
-            self.after(0, lambda: self._pl_pa_done_status.configure(
-                text="PA done: no work dir (run Step 3 Trigger first)", fg=YELLOW))
-            return
-        flag = Path(work) / "pa_done.ini"
-        self.after(0, lambda: self._pl_pa_done_status.configure(text="PA done: watching...", fg=YELLOW))
-        for _ in range(1800):      # ~1 hour at 2 s per poll
-            if flag.exists():
-                ts = time.strftime('%H:%M:%S')
-                self.after(0, lambda t=ts: self._pl_log(
-                    f"[{t}] PA JOB complete - run After-PA Validation"))
-                self.after(0, lambda: self._pl_pa_done_status.configure(
-                    text="PA done: complete - run After-PA Validation", fg=GREEN))
-                try:
-                    flag.unlink()
-                except FileNotFoundError:
-                    pass
-                return
-            time.sleep(2)
-        self.after(0, lambda: self._pl_pa_done_status.configure(
-            text="PA done: timed out (no pa_done.ini after ~1 h)", fg=YELLOW))
+    # _pl_watch_pa_done / _pl_watch_pa_done_thread removed 2026-08-08 with the Job3 card.
+    # They polled <work_dir>/pa_done.ini for ~1 h so the operator could see "PA JOB
+    # complete" without watching NIS-E. Run Pipeline now waits on the PA itself
+    # (_pl_pa_wait_for_job, which watches for *ZStack*.nd2 appearing in the PA folder and
+    # then going quiet) and logs the result, so a separate watcher button was a second,
+    # weaker answer to a question already answered -- and pa_done.ini is not written at all
+    # when the job is launched through the dispatcher.
 
     def _btn(self, parent, text, command, bg, fg, bold=False, side="left", grid=None):
         b = tk.Button(parent, text=text, command=command,
