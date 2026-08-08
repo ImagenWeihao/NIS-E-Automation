@@ -1,5 +1,5 @@
 """
-spheroid_pa_gui.py  v1.17.1
+spheroid_pa_gui.py  v1.17.2
 NIS-E Spheroid PA Pipeline — ND2-native I/O
 
 Pipeline:  Job A ND2 → [parse metadata + detect spheroids]
@@ -598,7 +598,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("SpheroidPA  v1.17.1 — NIS-E Spheroid PA Pipeline")
+        self.title("SpheroidPA  v1.17.2 — NIS-E Spheroid PA Pipeline")
         self.geometry("1680x880")
         self.minsize(1000, 660)
         self.configure(bg=BG)
@@ -631,7 +631,7 @@ class App(tk.Tk):
     def _build_ui(self):
         hdr = tk.Frame(self, bg=BG2)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="  SpheroidPA  v1.17.1",
+        tk.Label(hdr, text="  SpheroidPA  v1.17.2",
                  bg=BG2, fg=MAUVE, font=("Segoe UI", 13, "bold"), pady=8
                  ).pack(side="left")
         tk.Label(hdr, text="Screen → Anchor → Autofocus → Capture  ",
@@ -3813,6 +3813,17 @@ class App(tk.Tk):
             self.after(0, lambda n=len(triggers): self._pl_af_status_lbl.configure(
                 text=f"Capture: {tag} for {n} spheroid(s)…", fg=YELLOW))
             self._pl_log(f"Capture: dispatched 1050 z-stack ({oc_name}) for {len(triggers)} spheroid(s)")
+            # Same no-overwrite guarantee for the plain nd2/ dir these land in. A Step-3
+            # Locate pass writes the same <id>_zstack.nd2 name as a full stack, so without
+            # this a 1-plane locate silently destroys a 61-plane capture.
+            try:
+                _cp = configparser.ConfigParser(); _cp.read(_pl.SESSION_INI)
+                _nd = _cp.get("paths", "nd2_dir", fallback="").strip()
+            except Exception:
+                _nd = ""
+            if _nd:
+                self._pl_archive_existing_nd2(
+                    _nd, [d.get("spheroid_id", "") for d in triggers], f"Capture {tag}")
             done = wd / "cmd_done.ini"
             try:
                 done.unlink()
@@ -4409,6 +4420,60 @@ class App(tk.Tk):
             ocs.append(("1050nm_Galvo_561nm_NDD2_WC", "1050nm_depth"))
         return ocs
 
+    def _pl_archive_existing_nd2(self, nd2_dir, spheroid_ids, label="Capture"):
+        """Move any capture this pass is about to overwrite into <nd2_dir>/_archive/.
+
+        nis_macro_capture_zstack.mac saves to <nd2_dir>/<spheroid_id>_zstack.nd2 with
+        ImageSaveAs, which overwrites in place, without warning, and with no undo. On
+        2026-08-08 a re-run against the same Output directory with 'Locate only' ticked
+        replaced three 61-plane baselines (32.6 MB each) with 1-plane captures (884 KB).
+        The share (\\\\10.21.16.98) has no snapshots, so that raw data is simply gone --
+        and it was the baseline half of the only complete before/after set of the night.
+
+        Archiving rather than versioning in place is deliberate. Every analysis script
+        does glob('*.nd2')[0] on these folders, and glob does not sort -- a sibling copy
+        would make which file gets analysed depend on OS directory order. Moving the old
+        one under _archive/ keeps exactly one canonical capture per folder, so nothing
+        downstream has to change.
+
+        The archived name carries the ORIGINAL capture's mtime, not the time of the
+        overwrite: that is the timestamp identifying which run it belongs to.
+
+        Never raises. Failing to archive must not abort a capture the operator is
+        waiting on -- it degrades to the old overwrite behaviour with a loud log line.
+        """
+        try:
+            d = Path(nd2_dir)
+            if not d.is_dir():
+                return
+            wanted = {str(s).strip() for s in spheroid_ids if str(s).strip()}
+            if not wanted:
+                return
+            arch = d / "_archive"
+            moved = []
+            for f in d.glob("*_zstack.nd2"):
+                if f.stem[:-len("_zstack")] not in wanted:
+                    continue                      # a different spheroid; this pass won't touch it
+                try:
+                    ts = time.strftime("%Y%m%d_%H%M%S", time.localtime(f.stat().st_mtime))
+                    mb = f.stat().st_size / 1e6
+                except OSError:
+                    ts, mb = "unknown", 0.0
+                arch.mkdir(parents=True, exist_ok=True)
+                dest = arch / f"{f.stem}__{ts}.nd2"
+                n = 1
+                while dest.exists():              # same second, or a repeat archive
+                    dest = arch / f"{f.stem}__{ts}_{n}.nd2"
+                    n += 1
+                f.rename(dest)                    # same filesystem -> atomic, no copy cost
+                moved.append(f"{dest.name} ({mb:.1f} MB)")
+            if moved:
+                self._pl_log(f"{label}: archived {len(moved)} existing capture(s) rather than "
+                             f"overwriting -> {d.name}/_archive/  [{', '.join(moved)}]")
+        except Exception as exc:
+            self._pl_log(f"{label}: WARNING -- could not archive existing captures in "
+                         f"{nd2_dir} ({exc}). The capture will OVERWRITE them.")
+
     def _pl_prepa_capture_ocs(self, phase="prePA"):
         """Capture a full Z-stack at each checked Pre-PA OC, via the dispatcher's
         z-stack action (id 2) -- same mechanism as every other dispatcher card,
@@ -4520,6 +4585,11 @@ class App(tk.Tk):
                     _pl._atomic_write_crlf(wd / f"af_trigger_{int(d['rank']):02d}.ini", lines)
                 nd2_sub = base_nd2_dir / f"{phase}_{tag}"
                 nd2_sub.mkdir(parents=True, exist_ok=True)
+                # Never overwrite a capture that is already there -- archive it first.
+                # This folder is exactly where the 2026-08-08 baseline loss happened.
+                self._pl_archive_existing_nd2(
+                    nd2_sub, [d.get("spheroid_id", "") for d in triggers],
+                    f"{plabel} {tag}")
                 _point_nd2_dir(nd2_sub)
 
                 done = wd / "cmd_done.ini"
