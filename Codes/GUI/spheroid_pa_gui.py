@@ -1,5 +1,5 @@
 """
-spheroid_pa_gui.py  v1.17.6
+spheroid_pa_gui.py  v1.18.0
 NIS-E Spheroid PA Pipeline — ND2-native I/O
 
 Pipeline:  Job A ND2 → [parse metadata + detect spheroids]
@@ -86,7 +86,7 @@ MAX_POWER_PCT          = 100.0
 # NOTE: pa_trigger.ini's power_pct is NOT read by the step3_zstack_PA JOB itself
 # (it's set manually in NIS-E's own Job Wizard) -- this GUI-side cap is a strong
 # default/reminder, not a technical enforcement of the real laser power.
-MAX_PA_ACTIVATION_POWER_PCT = 30.0
+MAX_PA_ACTIVATION_POWER_PCT = 20.0
 
 # Sharpness-peak prominence floor for per-spheroid Find Z-Center: a captured wide/coarse
 # 1050 stack must show a focus peak at least this fraction above its baseline to be
@@ -598,7 +598,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("SpheroidPA  v1.17.6 — NIS-E Spheroid PA Pipeline")
+        self.title("SpheroidPA  v1.18.0 — NIS-E Spheroid PA Pipeline")
         self.geometry("1680x880")
         self.minsize(1000, 660)
         self.configure(bg=BG)
@@ -631,7 +631,7 @@ class App(tk.Tk):
     def _build_ui(self):
         hdr = tk.Frame(self, bg=BG2)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="  SpheroidPA  v1.17.6",
+        tk.Label(hdr, text="  SpheroidPA  v1.18.0",
                  bg=BG2, fg=MAUVE, font=("Segoe UI", 13, "bold"), pady=8
                  ).pack(side="left")
         tk.Label(hdr, text="Screen → Anchor → Autofocus → Capture  ",
@@ -4466,6 +4466,76 @@ class App(tk.Tk):
             ocs.append(("1050nm_Galvo_561nm_NDD2_WC", "1050nm_depth"))
         return ocs
 
+    def _pl_pa_check_delivered_power(self, dirs, before):
+        """Read the activation power the PA ACTUALLY delivered, from its first output file.
+
+        Returns (ok, reason). ok=False aborts the run before the remaining points fire.
+
+        This is a verification, not a setting. MAX_PA_ACTIVATION_POWER_PCT is enforced
+        nowhere else in the system that matters: the GUI's power field is inert, and the
+        real value comes from the optical config, which only NIS-E can change. The nd2's
+        text_info is the first and only machine-readable record of what was delivered.
+
+        Fails OPEN on a read error. A brand-new PA file can be mid-write, and refusing to
+        continue because a header would not parse would abort good runs for a transient --
+        the wrong trade when the check is a backstop rather than the primary gate. It says
+        so loudly in the log either way."""
+        import re as _re
+        try:
+            import nd2 as _nd2
+        except ImportError:
+            self._pl_log("PA dose check: SKIPPED -- the 'nd2' package is not installed. "
+                         f"Verify the OC is at or below {MAX_PA_ACTIVATION_POWER_PCT:.0f}% by hand.")
+            return True, ""
+        newest = None
+        for d in dirs:
+            try:
+                for p in d.glob(self.PA_OUTPUT_GLOB):
+                    if str(p) in before:
+                        continue
+                    if newest is None or p.stat().st_mtime > newest.stat().st_mtime:
+                        newest = p
+            except Exception:
+                pass
+        if newest is None:
+            return True, ""
+        try:
+            with _nd2.ND2File(str(newest)) as f:
+                desc = f.text_info.get("description", "")
+        except Exception as exc:
+            self._pl_log(f"PA dose check: could not read {newest.name} ({exc}) -- continuing. "
+                         f"Confirm the delivered power in the analysis.")
+            return True, ""
+        hits = _re.findall(r"\{Laser Wavelength\}:\s*([\d.]+)\s*\{Laser Power\}:\s*([\d.]+)", desc)
+        if not hits:
+            self._pl_log(f"PA dose check: no laser record in {newest.name} -- continuing.")
+            return True, ""
+        worst = max(float(p) for _w, p in hits)
+        wl = {float(w) for w, _p in hits}
+        self._pl_log(f"PA dose check: delivered {sorted(wl)} nm at {worst:.1f}% "
+                     f"(cap {MAX_PA_ACTIVATION_POWER_PCT:.0f}%) -- read from {newest.name}")
+        if worst > MAX_PA_ACTIVATION_POWER_PCT + 1e-6:
+            msg = (f"850 nm delivered at {worst:.1f}%, above the {MAX_PA_ACTIVATION_POWER_PCT:.0f}% cap. "
+                   f"ABORTED after the first plane. 30% destroyed both spheroids on "
+                   f"2026-08-09 -- lower the power in the optical config, not the GUI.")
+            self._pl_log(f"PA dose check: *** {msg} ***")
+            # Drop abort.ini so the dispatcher stops at the next boundary. It cannot
+            # interrupt a macro already inside ND_RunZSeriesExp -- the current plane will
+            # finish -- but it stops the remaining points, which is the difference between
+            # losing one spheroid and losing the plate.
+            try:
+                import spheroid_pipeline as _pl
+                ap = self._pl_abort_path()
+                if ap is not None:
+                    _pl._atomic_write_crlf(Path(ap), ["[abort]", "requested=1",
+                                                      f"reason=PA power {worst:.1f}% over cap"])
+                    self._pl_log(f"PA dose check: wrote {ap} -- remaining points will not fire.")
+            except Exception as exc:
+                self._pl_log(f"PA dose check: could not write the abort flag ({exc}). "
+                             f"STOP THE JOB IN NIS-E BY HAND.")
+            return False, msg
+        return True, ""
+
     def _pl_archive_existing_nd2(self, nd2_dir, spheroid_ids, label="Capture"):
         """Move any capture this pass is about to overwrite into <nd2_dir>/_archive/.
 
@@ -4879,8 +4949,27 @@ class App(tk.Tk):
                 except Exception:
                     pass
             if now != seen:
+                first = (seen == 0)
                 seen, last_change = now, time.time()
                 self._pl_log(f"PA job: {seen} output file(s) so far")
+                if first:
+                    # DOSE CHECK, on the very first plane the job writes -- about 5 s in.
+                    #
+                    # The activation power lives in the optical config and cannot be set
+                    # from here: pa_setup's Stg_SetMultiLaserPower sits behind
+                    # `if(laser_name[0] != 0)` and laser_name is hardcoded "". So software
+                    # can only VERIFY, and the earliest it can is the first nd2, which
+                    # records what was actually delivered.
+                    #
+                    # 2026-08-09: a run at 30% destroyed both spheroids -- one dispersed
+                    # (58% of its 1050 nm structure signal gone, tissue displaced 60 um in
+                    # z), the other lit up 6-15x in channels 850 nm cannot convert, which
+                    # is ablation autofluorescence and reads deceptively like a clean
+                    # activation. Catching it 5 s in costs one spheroid instead of every
+                    # spheroid in the run.
+                    ok_dose, why_dose = self._pl_pa_check_delivered_power(dirs, before)
+                    if not ok_dose:
+                        return False, why_dose
             if seen == 0:
                 if time.time() - t0 > self.PA_JOB_LAUNCH_TIMEOUT_S:
                     return False, (f"no PA output after "

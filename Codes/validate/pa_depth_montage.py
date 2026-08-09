@@ -7,11 +7,20 @@ at SOURCE RESOLUTION: one image pixel per output pixel, no resampling anywhere. 
 in resolves data rather than interpolation, which is the whole point of these sheets.
 PIL is used rather than matplotlib for exactly that reason: an imshow would resample.
 
-DISPLAY RANGE is FIXED at 0-VMAX (default 2000) for every panel in every figure, so pre
-and post are directly comparable and figures are comparable across spheroids, channels
-and runs. It is never a percentile stretch: that renormalises each image to its own noise
-floor and flatters whichever side is dimmer, which is how a retracted result got made.
-The LUT key drawn on each figure states the range so the level is never implied.
+DISPLAY RANGE is ONE value per figure, applied identically to every panel -- all three
+rows, all N z-planes, pre and post alike. That is the property that matters: neither side
+of the comparison is ever favoured, which is how a retracted result once got made.
+
+The value is chosen PER CHANNEL, by the same rule the 0807 sheets used: snap the 99.9th
+percentile over pre AND post together up to the next round ceiling. It is emphatically
+not a per-panel stretch. A single ceiling shared across channels does not work on this
+sample -- 940 nm PAsfGFP sits at a mean of ~2 counts while 890 nm runs to hundreds, so a
+range that suits the identity channel renders the PA readout black and hides the result.
+Reference values, 0807_6:  890 -> 0-4000,  940 -> 0-400,  1050 -> 0-2000.
+
+Pass a number as the third argument to pin the range instead, when a figure has to be
+compared against another run pixel-for-pixel. Either way the LUT key on each figure
+states the range, so the level is never implied.
 
 The PA square and its z range come from the PA series' OWN geometry and stage position --
 side from sizes['X'] * voxel_size().x, centre matched to this spheroid's readout position.
@@ -31,7 +40,13 @@ from PIL import Image, ImageDraw, ImageFont
 
 RUN = Path(sys.argv[1])
 PA_GLOB = sys.argv[2] if len(sys.argv) > 2 else "*ZStack*.nd2"
-VMAX = float(sys.argv[3]) if len(sys.argv) > 3 else 2000.0
+# "auto" (default) reproduces the rule the 0807 sheets used: per channel, snap the 99.9th
+# percentile over pre AND post together up to the next round number. A single fixed
+# ceiling across all three channels does not work here -- 940 nm PAsfGFP sits at a mean of
+# ~2 counts against 890 nm's hundreds, so a range that suits the identity channel renders
+# the PA readout black, which hides the result rather than reporting it.
+# Pass a number instead to pin the range when comparing across runs.
+VMAX_ARG = sys.argv[3] if len(sys.argv) > 3 else "auto"
 
 BG, INK, MUTED, CYAN, RED = (30, 30, 46), (232, 232, 240), (154, 160, 181), (34, 229, 229), (243, 139, 168)
 GAP = 3
@@ -40,6 +55,15 @@ CHANNELS = [("890nm_mBeRFP", "890 nm  mBeRFP  -- T-cell identity", (255, 32, 32)
             ("940nm_PAsfGFP", "940 nm  PAsfGFP  -- PA readout", (32, 255, 32)),
             ("1050nm_depth", "1050 nm  depth  -- spheroid structure", (255, 32, 32))]
 ROW_LABELS = ["Pre-PA", "Pre-PA + PA zone", "Post-PA"]
+
+
+def nice_max(v):
+    """Snap up to the next round ceiling -- the 0807 rule, kept identical so sheets from
+    the two runs are read the same way."""
+    for c in (25, 50, 100, 200, 400, 800, 1200, 2000, 4000, 8000, 16000, 65535):
+        if v <= c:
+            return float(c)
+    return 65535.0
 
 
 def font(sz):
@@ -80,7 +104,7 @@ def lut_key(d, x, y, colour, vmax, f_lbl):
     d.rectangle([x, y, x + w, y + h], outline=MUTED, width=1)
     d.text((x, y + h + 5), "0", font=f_lbl, fill=MUTED, anchor="lt")
     d.text((x + w, y + h + 5), f"{vmax:.0f}", font=f_lbl, fill=MUTED, anchor="rt")
-    d.text((x + w / 2, y + h + 5), "display range (identical every panel)",
+    d.text((x + w / 2, y + h + 5), "display range (identical every panel, every spheroid)",
            font=f_lbl, fill=MUTED, anchor="mt")
 
 
@@ -101,6 +125,24 @@ spheroids = sorted({Path(p).stem.replace("_zstack", "")
                     for p in glob.glob(str(RUN / "nd2" / "prePA_*" / "*_zstack.nd2"))})
 print(f"spheroids: {spheroids}\n")
 
+# ── one display range per CHANNEL, over EVERY spheroid and both phases ──────
+# Per-spheroid ranges would rescale each spheroid to its own brightness, so a spheroid
+# that lost 85% of its signal renders as bright as one that did not -- the two become
+# incomparable at a glance, which is the opposite of what these sheets are for.
+CH_VMAX = {}
+if VMAX_ARG == "auto":
+    for _tag, _lbl, _c in CHANNELS:
+        _hi = 0.0
+        for _s in spheroids:
+            for _ph in ("prePA", "postPA"):
+                _r = load(_ph, _tag, _s)
+                if _r:
+                    _hi = max(_hi, float(np.percentile(_r[0], 99.9)))
+        CH_VMAX[_tag] = nice_max(_hi)
+        print(f"  display range {_tag:16s} 0-{CH_VMAX[_tag]:.0f}"
+              f"   (max p99.9 over {len(spheroids)} spheroid(s), both phases: {_hi:.0f})")
+    print()
+
 for sph in spheroids:
     for tag, label, colour in CHANNELS:
         pre, post = load("prePA", tag, sph), load("postPA", tag, sph)
@@ -111,6 +153,8 @@ for sph in spheroids:
         nz = min(A.shape[0], B.shape[0])
         A, B, zs = A[:nz], B[:nz], zs[:nz]
         ny, nx = A.shape[1], A.shape[2]
+
+        VMAX = CH_VMAX[tag] if VMAX_ARG == "auto" else float(VMAX_ARG)
 
         mine = min(pa_pts, key=lambda r: (r[1] - xy[0]) ** 2 + (r[2] - xy[1]) ** 2) if pa_pts else None
         if mine and ((mine[1] - xy[0]) ** 2 + (mine[2] - xy[1]) ** 2) ** 0.5 > 50:
@@ -173,4 +217,5 @@ for sph in spheroids:
 
         out = RUN / f"{sph}_depth_montage_{tag}_native.png"
         img.save(out, compress_level=6)
-        print(f"  wrote {out.name}   {W}x{H} px   display 0-{VMAX:.0f}")
+        print(f"  wrote {out.name}   {W}x{H} px   display 0-{VMAX:.0f}"
+              f"   (p99.9 pre {np.percentile(A,99.9):.0f} / post {np.percentile(B,99.9):.0f})")
