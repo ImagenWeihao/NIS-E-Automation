@@ -30,8 +30,17 @@ SETTING_RE = re.compile(
 PA_SIDE_DEFAULT = 79.5
 
 
-def read(run, phase, tag):
-    fs = glob.glob(str(BASE / run / "nd2" / f"{phase}_{tag}" / "*.nd2"))
+def spheroids(run):
+    """Every spheroid with a pre-PA set. A multi-spheroid run writes one nd2 per
+    spheroid per phase per channel, so globbing [0] silently analyses only the
+    alphabetically-first one and reports it as if it were the run."""
+    return sorted({Path(p).stem.replace("_zstack", "")
+                   for p in glob.glob(str(BASE / run / "nd2" / "prePA_*" / "*_zstack.nd2"))})
+
+
+def read(run, phase, tag, sph=None):
+    pat = f"{sph}_zstack.nd2" if sph else "*.nd2"
+    fs = glob.glob(str(BASE / run / "nd2" / f"{phase}_{tag}" / pat))
     if not fs:
         return None
     with nd2.ND2File(fs[0]) as f:
@@ -56,12 +65,13 @@ def masks(shape, px, side=PA_SIDE_DEFAULT):
 
 
 runs = sys.argv[1:] or ["0807", "0807_2", "0807_3"]
-for run in runs:
+_jobs = [(r, s_) for r in runs for s_ in (spheroids(r) or [None])]
+for run, SPH in _jobs:
     print("=" * 96)
-    print(f"RUN {run}")
+    print(f"RUN {run}" + (f"   spheroid {SPH}" if SPH else ""))
     got = {}
     for tag in TAGS:
-        a, b = read(run, "prePA", tag), read(run, "postPA", tag)
+        a, b = read(run, "prePA", tag, SPH), read(run, "postPA", tag, SPH)
         if a and b:
             got[tag] = (a, b)
     if not got:

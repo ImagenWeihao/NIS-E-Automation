@@ -40,19 +40,42 @@ for ln in LOG.read_text(encoding="utf-8", errors="replace").splitlines():
         cmd = block
 
 # ── fired: stagePositionUm out of the PA series itself ─────────────────────
-fired = []
+#
+# GROUPED BY Point####, not one row per file. A multi-plane PA writes one nd2 per
+# z-plane, all at the same XY, so a file-per-point assumption reports a correct
+# 2-point x 37-plane run as "72 files matched no commanded point" and "2 distinct
+# positions of 74 files" -- both alarming, both wrong. What the job emits is
+# Point0000_ZStack0000..36 / Point0001_ZStack0000..36. The claim to test is ONE XY per
+# POINT, with z sweeping by design.
+_by_point = {}
 for p in sorted(glob.glob(str(RUN / "pa" / (sys.argv[2] if len(sys.argv) > 2 else "*ZStack*.nd2")))):
+    m = re.search(r"(Point\d+)", Path(p).name)
+    key = m.group(1) if m else Path(p).name
     with nd2.ND2File(p) as f:
         sp = f.frame_metadata(0).channels[0].position.stagePositionUm
-        fired.append((Path(p).name, sp.x, sp.y, sp.z,
-                      f.sizes["X"] * f.voxel_size().x, dict(f.sizes)))
+        rec = (sp.x, sp.y, sp.z, f.sizes["X"] * f.voxel_size().x, dict(f.sizes))
+    _by_point.setdefault(key, []).append(rec)
+
+fired = []
+for key, recs in sorted(_by_point.items()):
+    xs = {round(r[0], 1) for r in recs}
+    ys = {round(r[1], 1) for r in recs}
+    zs = sorted(r[2] for r in recs)
+    label = f"{key} ({len(recs)} plane{'s' if len(recs) > 1 else ''}, z {zs[0]:.0f}-{zs[-1]:.0f})"
+    # XY must be constant within a point; z sweeps. XY moving mid-stack means the stage
+    # drifted or the job re-homed -- surface it rather than averaging it away.
+    if len(xs) > 1 or len(ys) > 1:
+        label += f"  *** XY NOT CONSTANT ({len(xs)} x, {len(ys)} y) ***"
+    # match on the MIDDLE plane's z: a symmetric stack straddles the commanded z, so the
+    # first plane is a half-range low and would report a spurious dZ of -half.
+    fired.append((label, recs[0][0], recs[0][1], zs[len(zs) // 2], recs[0][3], recs[0][4]))
 
 print(f"commanded : {len(cmd)} point(s)")
 for i, n, x, y, z in cmd:
     print(f"   [{i}] {n:24s} ({x:9.1f}, {y:9.1f})  z={z:8.1f}")
-print(f"\nfired     : {len(fired)} PA file(s)")
+print(f"\nfired     : {len(fired)} PA point(s), {sum(len(v) for v in _by_point.values())} file(s)")
 for n, x, y, z, side, sizes in fired:
-    print(f"   {n[:52]:52s} ({x:9.1f}, {y:9.1f})  z={z:8.1f}  {side:.1f} um sq  {sizes}")
+    print(f"   {n[:58]:58s} ({x:9.1f}, {y:9.1f})  z_mid={z:8.1f}  {side:.1f} um sq")
 
 if not cmd or not fired:
     print("\nCannot verify: missing commanded points or PA output.")

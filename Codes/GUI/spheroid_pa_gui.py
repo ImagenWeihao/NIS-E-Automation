@@ -1,5 +1,5 @@
 """
-spheroid_pa_gui.py  v1.17.5
+spheroid_pa_gui.py  v1.17.6
 NIS-E Spheroid PA Pipeline — ND2-native I/O
 
 Pipeline:  Job A ND2 → [parse metadata + detect spheroids]
@@ -598,7 +598,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("SpheroidPA  v1.17.5 — NIS-E Spheroid PA Pipeline")
+        self.title("SpheroidPA  v1.17.6 — NIS-E Spheroid PA Pipeline")
         self.geometry("1680x880")
         self.minsize(1000, 660)
         self.configure(bg=BG)
@@ -631,7 +631,7 @@ class App(tk.Tk):
     def _build_ui(self):
         hdr = tk.Frame(self, bg=BG2)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="  SpheroidPA  v1.17.5",
+        tk.Label(hdr, text="  SpheroidPA  v1.17.6",
                  bg=BG2, fg=MAUVE, font=("Segoe UI", 13, "bold"), pady=8
                  ).pack(side="left")
         tk.Label(hdr, text="Screen → Anchor → Autofocus → Capture  ",
@@ -2162,6 +2162,23 @@ class App(tk.Tk):
         tk.Label(r, text="  Well:", bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(8, 3))
         tk.Entry(r, textvariable=self._pl_well_id, width=5, bg=SURFACE, fg=TEXT,
                  insertbackground=TEXT, relief="flat", font=("Segoe UI", 9)).pack(side="left")
+        # Zoom is LIVE and it is what sets the PA square size. nis_macro_pa_setup.mac
+        # calls Confocal_SetScanArea(zoom, 0,0,0, 1.0) unconditionally and AFTER
+        # SelectOptConf, so it overrides whatever scan area the OC carries.
+        #
+        # v1.17.1 removed this field on the belief it was inert like Power % and Loops.
+        # That was wrong: those two really are dead (pa_setup's Stg_SetMultiLaserPower is
+        # behind `if laser_name[0] != 0` and laser_name is hardcoded "", and loops is only
+        # mentioned in a comment), but zoom reaches the scanner every run. Hiding a live
+        # control is worse than exposing a dead one -- the square size was being set by a
+        # value the operator could neither see nor change.
+        tk.Label(r, text="  Zoom:", bg=BG2, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left", padx=(8, 3))
+        tk.Entry(r, textvariable=self._pl_pa_zoom, width=4, bg=SURFACE, fg=TEXT,
+                 insertbackground=TEXT, relief="flat", font=("Segoe UI", 9)).pack(side="left")
+        self._pl_pa_sq_lbl = tk.Label(r, text="", bg=BG2, fg=YELLOW, font=("Segoe UI", 8))
+        self._pl_pa_sq_lbl.pack(side="left", padx=(4, 0))
+        self._pl_pa_zoom.trace_add("write", self._pl_pa_zoom_square)
+        self.after(340, self._pl_pa_zoom_square)
         r = tk.Frame(body, bg=BG2); r.pack(fill="x", pady=(2, 0))
         tk.Checkbutton(r, text="Dichroic OUT", variable=self._pl_pa_dichroic, bg=BG2, fg=TEXT2,
                        selectcolor=SURFACE, activebackground=BG2, activeforeground=TEXT,
@@ -4101,6 +4118,27 @@ class App(tk.Tk):
         if v > MAX_PA_ACTIVATION_POWER_PCT:
             self._pl_pa_power.set(str(MAX_PA_ACTIVATION_POWER_PCT))
 
+    # Full confocal field at zoom 1, in um. Measured, not assumed: every PA nd2 this rig
+    # has produced reports sizes['X'] * voxel_size().x = 79.5 um at Scanner Zoom 8.000,
+    # so 79.5 * 8 = 636.0. Used only to show the operator what a zoom value means.
+    PA_FULL_FIELD_UM = 636.0
+
+    def _pl_pa_zoom_square(self, *_):
+        """Show the PA square size the current zoom will actually produce.
+
+        The number matters: the square is the stimulus geometry, every in/out statistic is
+        computed against it, and it is set here rather than by the optical config --
+        pa_setup's Confocal_SetScanArea(zoom, ...) runs after SelectOptConf and wins."""
+        try:
+            z = float(self._pl_pa_zoom.get().strip())
+            txt = f"-> {self.PA_FULL_FIELD_UM / z:.1f} um square" if z >= 0.5 else "-> zoom < 0.5, macro uses 8"
+        except (ValueError, ZeroDivisionError):
+            txt = ""
+        try:
+            self._pl_pa_sq_lbl.configure(text=txt)
+        except Exception:
+            pass
+
     def _pl_pa_sync_save_dir(self, *_):
         """Keep the PA folder pointed at <Output directory>/pa and make sure it exists.
 
@@ -4205,6 +4243,14 @@ class App(tk.Tk):
             "[photoactivation]",
             f"job={self._pl_pa_job.get().strip()}",
             f"optical_config={self._pl_pa_oc.get().strip()}",
+            # INERT, written only because the key set is nis_macro_pa_setup.mac's contract
+            # (Int_GetKeyString on a missing key is not a case it handles). The macro reads
+            # power_pct into `power` but only applies it inside
+            #     if( laser_name[0] != 0 ) Stg_SetMultiLaserPower(...)
+            # and laser_name is hardcoded "" at line 48, so the branch never runs -- the
+            # 850 OC's own power loop sets the activation power. Likewise `loops` appears
+            # only in a comment. Neither is exposed in the GUI, and neither should be:
+            # they would read as controls and change nothing. `zoom` below IS live.
             f"power_pct={self._pl_pa_power.get().strip()}",
             f"well={self._pl_well_id.get().strip()}",
             f"loops={self._pl_pa_loops.get().strip()}",
