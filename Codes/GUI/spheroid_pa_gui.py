@@ -1533,6 +1533,16 @@ class App(tk.Tk):
         # hold them all open on the rig. Tick only for live debugging.
         self._pl_keep_open_in_nise = tk.BooleanVar(value=False)
 
+        # Step 5 -- Image Analysis. Post-acquisition figure generation from the nd2 a run
+        # already wrote. No dispatcher, no hardware; safe to run or re-run at any time.
+        self._pl_ia_run_dir     = tk.StringVar(value="")
+        self._pl_ia_sel_montage = tk.BooleanVar(value=True)
+        self._pl_ia_auto        = tk.BooleanVar(value=True)   # build after the PA job
+        # "auto" reproduces the rule the 0807 sheets used. A pinned number is for
+        # pixel-for-pixel comparison against another run.
+        self._pl_ia_vmax        = tk.StringVar(value="auto")
+        self._pl_ia_pa_glob     = tk.StringVar(value="*ZStack*.nd2")
+
         # Initialization card (Step 4, first card): rig known-good defaults dispatched
         # as init_rig (action 8) -> init_trigger.ini. z_centre/z_half/z_step reuse the
         # Step 3 vars and a1_on reuses _pl_pa_a1on. Run Pipeline dispatches it immediately
@@ -1593,6 +1603,7 @@ class App(tk.Tk):
             ("s2", "2", "Anchor\nOffset"),
             ("s3", "3", "Autofocus\n+ Reg"),
             ("s4", "4", "Generate\n+ Capture"),
+            ("s5", "5", "Image\nAnalysis"),
         ]
 
         for key, num, name in _step_defs:
@@ -1911,12 +1922,95 @@ class App(tk.Tk):
                                          justify="left", wraplength=480)
         self._pl_capture_lbl.pack(fill="x", padx=12)
 
+        # Step 5 content -- Image Analysis. Post-acquisition only: it reads the nd2 files
+        # a run already produced and writes figures. It dispatches nothing, touches no
+        # hardware, and is safe to run at any time, including while a capture is going.
+        f_s5 = tk.Frame(content_host, bg=BG)
+        self._pl_step_frames["s5"] = f_s5
+
+        s5 = tk.Frame(f_s5, bg=BG); s5.pack(fill="x", padx=12, pady=3)
+        row_ = tk.Frame(s5, bg=BG); row_.pack(fill="x", pady=2)
+        tk.Label(row_, text="Run folder:", width=20, anchor="w",
+                 bg=BG, fg=TEXT2, font=("Segoe UI", 9)).pack(side="left")
+        tk.Entry(row_, textvariable=self._pl_ia_run_dir, bg=SURFACE, fg=TEXT,
+                 insertbackground=TEXT, relief="flat",
+                 font=("Segoe UI", 9)).pack(side="left", fill="x", expand=True, padx=(0, 6))
+        self._btn(row_, "Browse", lambda: self._pl_browse_dir(self._pl_ia_run_dir),
+                  SURFACE2, TEXT, side="left")
+        tk.Label(f_s5, text="Defaults to the Output directory. Reads nd2/prePA_* and nd2/postPA_*, "
+                            "and the PA geometry from pa/.",
+                 bg=BG, fg=SUBTEXT, font=("Segoe UI", 8), justify="left",
+                 wraplength=480).pack(anchor="w", padx=12)
+
         # ── Right pane: per-step content ──────────────────────────────────────
         # Steps 1-3 show the merged Spheroid State & Dashboard table; Step 4 swaps
         # it for the Photoactivation macro cards (toggled in _pl_show_step). The
         # live dashboard stays in the middle pane for every step.
         self._pl_table_host = tk.Frame(side_panel, bg=BG2)
         self._pl_pa_host    = tk.Frame(side_panel, bg=BG)
+        self._pl_ia_host    = tk.Frame(side_panel, bg=BG)
+
+        # ── Step 5 right pane: Image Analysis cards ───────────────────────────
+        ia = tk.LabelFrame(self._pl_ia_host, text=" Image Analysis - figures from captured nd2 ",
+                           bg=BG, fg=MAUVE, font=("Segoe UI", 9, "bold"), bd=1, relief="groove")
+        ia.pack(fill="both", expand=True, padx=4, pady=(6, 6))
+        _iah = tk.Frame(ia, bg=BG); _iah.pack(fill="x", padx=8, pady=(3, 4))
+        self._info(_iah,
+                   "Runs after the PA job by default. Reads nd2 only -- no hardware, no dispatcher.",
+                   "Everything here is post-acquisition. It can be run at any time, including "
+                   "during a capture, and re-run as often as you like -- it only writes "
+                   "figures into the run folder.\n\n"
+                   "The PA square is taken from the PA series' OWN geometry and stage "
+                   "position, matched per launch, never from a GUI field. A run folder can "
+                   "hold several launches in pa/, and keying on the point index alone "
+                   "silently matched a spheroid to another launch's coordinate.",
+                   bg=BG, wrap=520)
+
+        # Card -- Depth montage
+        card_dm = tk.Frame(ia, bg=BG2, bd=1, relief="solid"); card_dm.pack(fill="x", padx=4, pady=3)
+        hdm = tk.Frame(card_dm, bg=BG2); hdm.pack(fill="x", padx=6, pady=(3, 0))
+        tk.Checkbutton(hdm, text="Depth montage  (native 1:1, per spheroid per channel)",
+                       variable=self._pl_ia_sel_montage, bg=BG2, fg=MAUVE, selectcolor=SURFACE,
+                       activebackground=BG2, activeforeground=TEXT,
+                       font=("Segoe UI", 9, "bold")).pack(side="left")
+        bdm = tk.Frame(card_dm, bg=BG2); bdm.pack(fill="x", padx=24, pady=(0, 4))
+        r = tk.Frame(bdm, bg=BG2); r.pack(fill="x", pady=(2, 0))
+        tk.Label(r, text="Display range:", bg=BG2, fg=TEXT2,
+                 font=("Segoe UI", 9)).pack(side="left", padx=(0, 4))
+        ttk.Combobox(r, textvariable=self._pl_ia_vmax, width=8, state="readonly",
+                     font=("Segoe UI", 9),
+                     values=["auto", "400", "800", "1200", "2000", "4000"]).pack(side="left")
+        tk.Label(r, text="  PA glob:", bg=BG2, fg=TEXT2,
+                 font=("Segoe UI", 9)).pack(side="left", padx=(8, 3))
+        tk.Entry(r, textvariable=self._pl_ia_pa_glob, width=22, bg=SURFACE, fg=TEXT,
+                 insertbackground=TEXT, relief="flat", font=("Segoe UI", 9)).pack(side="left")
+        self._info(bdm,
+                   "auto = per channel, 99.9th percentile over pre AND post, snapped up.",
+                   "ONE range per figure, applied to every panel -- all three rows, every "
+                   "z-plane, pre and post alike. Never a per-panel percentile stretch: that "
+                   "renormalises each image to its own noise floor and flatters whichever "
+                   "side is dimmer, which is how a retracted result once got made.\n\n"
+                   "auto is computed per channel across every spheroid in the run, so the "
+                   "spheroids stay comparable with each other. A single ceiling shared "
+                   "across channels does not work here -- 940 nm sits at ~2 counts while "
+                   "890 nm runs to hundreds, so a range that suits the identity channel "
+                   "renders the PA readout black.\n\n"
+                   "Pin a number instead when a figure must be compared pixel-for-pixel "
+                   "against another run. The LUT key on each figure always states the range.\n\n"
+                   "PA glob selects which PA series supplies the square. Leave the default "
+                   "to use every launch in pa/; narrow it to one timestamp prefix to "
+                   "restrict the figures to a single launch.")
+        bdm2 = tk.Frame(card_dm, bg=BG2); bdm2.pack(fill="x", padx=24, pady=(2, 6))
+        self._btn(bdm2, "Build Montages", self._pl_ia_run_montage_thread, BLUE, "#1e1e2e",
+                  side="left")
+        tk.Checkbutton(bdm2, text="Build automatically after the PA job",
+                       variable=self._pl_ia_auto, bg=BG2, fg=GREEN, selectcolor=SURFACE,
+                       activebackground=BG2, activeforeground=TEXT,
+                       font=("Segoe UI", 8)).pack(side="left", padx=(10, 0))
+        self._pl_ia_status = tk.Label(ia, text="Image analysis: idle", bg=BG, fg=SUBTEXT,
+                                      font=("Segoe UI", 9), anchor="w", justify="left",
+                                      wraplength=520)
+        self._pl_ia_status.pack(fill="x", padx=8, pady=(0, 6))
 
         tk.Label(self._pl_table_host, text="Spheroid State & Dashboard", bg=BG2, fg=MAUVE,
                  font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=8, pady=(6, 2))
@@ -2989,11 +3083,17 @@ class App(tk.Tk):
         self._pl_step_frames[key].pack(side="top", fill="x")
         # Right pane: Step 4 shows the Photoactivation macro cards; steps 1-3 show
         # the merged Spheroid State & Dashboard table.
+        for h in (self._pl_table_host, self._pl_pa_host, self._pl_ia_host):
+            h.pack_forget()
         if key == "s4":
-            self._pl_table_host.pack_forget()
             self._pl_pa_host.pack(fill="both", expand=True)
+        elif key == "s5":
+            # Default the run folder to the Output directory the moment Step 5 is opened,
+            # so the common case needs no typing.
+            if not self._pl_ia_run_dir.get().strip():
+                self._pl_ia_run_dir.set(self._pl_out_dir.get().strip())
+            self._pl_ia_host.pack(fill="both", expand=True)
         else:
-            self._pl_pa_host.pack_forget()
             self._pl_table_host.pack(fill="both", expand=True)
         for k, card in self._pl_step_cards.items():
             bg = SURFACE2 if k == key else BG2
@@ -4922,6 +5022,65 @@ class App(tk.Tk):
             pass
         return [x for x in dirs if x]
 
+    # ── Step 5: Image Analysis ────────────────────────────────────────────────
+    def _pl_ia_run_montage_thread(self):
+        threading.Thread(target=self._pl_ia_run_montage, daemon=True).start()
+
+    def _pl_ia_run_montage(self, run_dir=None, quiet=False):
+        """Build the depth montages for a run. Returns the list of files written.
+
+        Imported from Codes/validate/pa_depth_montage.py rather than reimplemented, so the
+        GUI and the command line produce byte-identical figures and there is one place to
+        fix. Runs on a worker thread: a 61-plane 3-channel sheet is ~32,000 px wide and
+        takes minutes, which would freeze the UI.
+
+        Reads nd2 and writes png. It never dispatches, so it cannot collide with a capture
+        and is safe to run while the rig is busy."""
+        import sys as _sys, traceback
+        rd = (run_dir or self._pl_ia_run_dir.get().strip()
+              or self._pl_out_dir.get().strip())
+        if not rd or not Path(rd).is_dir():
+            msg = f"Image analysis: run folder not found ({rd or 'unset'})"
+            self._pl_log(msg)
+            self.after(0, lambda: self._pl_ia_status.configure(text=msg, fg=RED))
+            return []
+        vdir = Path(__file__).resolve().parent.parent / "validate"
+        if str(vdir) not in _sys.path:
+            _sys.path.insert(0, str(vdir))
+        try:
+            import pa_depth_montage as _dm
+        except Exception as exc:
+            msg = (f"Image analysis: could not import pa_depth_montage ({exc}). "
+                   f"Needs numpy, nd2 and Pillow.")
+            self._pl_log(msg)
+            self.after(0, lambda m=msg: self._pl_ia_status.configure(text=m, fg=RED))
+            return []
+        self.after(0, lambda: self._pl_ia_status.configure(
+            text="Image analysis: building depth montages...", fg=YELLOW))
+        self._pl_log(f"Image analysis: depth montages for {rd} "
+                     f"(range={self._pl_ia_vmax.get()}, pa_glob={self._pl_ia_pa_glob.get()})")
+        try:
+            written = _dm.build_montages(
+                rd,
+                pa_glob=self._pl_ia_pa_glob.get().strip() or "*ZStack*.nd2",
+                vmax=self._pl_ia_vmax.get().strip() or "auto",
+                log=self._pl_log)
+        except Exception as exc:
+            # A figure failure must never look like a rig failure. Log the traceback and
+            # say so plainly; the acquisition it describes is already safely on disk.
+            self._pl_log(f"Image analysis: FAILED -- {type(exc).__name__}: {exc}")
+            for ln in traceback.format_exc().splitlines():
+                self._pl_log(f"    {ln}")
+            self.after(0, lambda e=exc: self._pl_ia_status.configure(
+                text=f"Image analysis FAILED — {type(e).__name__}: {e} (see log)", fg=RED))
+            return []
+        n = len(written or [])
+        done = f"Image analysis: {n} montage(s) written to {Path(rd).name}/"
+        self._pl_log(done)
+        self.after(0, lambda d=done: self._pl_ia_status.configure(
+            text=d, fg=GREEN if n else YELLOW))
+        return written or []
+
     def _pl_pa_stray_point(self, dirs, before, n_points):
         """Has the JOB fired at a point we did not ask for? Returns the stray label or None.
 
@@ -5423,6 +5582,17 @@ class App(tk.Tk):
             self._pl_log(f"PA pipeline: COMPLETE -- {', '.join(done_bits)}")
             self.after(0, lambda b=", ".join(done_bits): self._pl_pa_status.configure(
                 text=f"Pipeline complete: {b}.", fg=GREEN))
+            # Step 5: build the depth montages while the run is still fresh, so the
+            # figures exist before anyone has to remember to ask for them. Inline rather
+            # than on a new thread -- the pipeline thread is finished with the rig by now,
+            # and running here keeps the "COMPLETE" line and the figure log together.
+            # Guarded: a figure failure must never turn a good acquisition into a failed
+            # run, and _pl_ia_run_montage already swallows and logs its own exceptions.
+            if self._pl_ia_auto.get() and self._pl_ia_sel_montage.get():
+                try:
+                    self._pl_ia_run_montage(run_dir=self._pl_out_dir.get().strip())
+                except Exception as exc:
+                    self._pl_log(f"Image analysis: skipped after the run ({exc})")
         except Exception as exc:
             # This runs on a daemon thread. Without this handler an exception unwinds out
             # of the thread and is DISCARDED -- no console, no log, no dialog: the sequence

@@ -38,16 +38,6 @@ import numpy as np
 import nd2
 from PIL import Image, ImageDraw, ImageFont
 
-RUN = Path(sys.argv[1])
-PA_GLOB = sys.argv[2] if len(sys.argv) > 2 else "*ZStack*.nd2"
-# "auto" (default) reproduces the rule the 0807 sheets used: per channel, snap the 99.9th
-# percentile over pre AND post together up to the next round number. A single fixed
-# ceiling across all three channels does not work here -- 940 nm PAsfGFP sits at a mean of
-# ~2 counts against 890 nm's hundreds, so a range that suits the identity channel renders
-# the PA readout black, which hides the result rather than reporting it.
-# Pass a number instead to pin the range when comparing across runs.
-VMAX_ARG = sys.argv[3] if len(sys.argv) > 3 else "auto"
-
 BG, INK, MUTED, CYAN, RED = (30, 30, 46), (232, 232, 240), (154, 160, 181), (34, 229, 229), (243, 139, 168)
 GAP = 3
 L_M, T_M, B_M, R_M = 430, 330, 150, 50
@@ -60,6 +50,14 @@ CHANNELS = [("890nm_mBeRFP", "890 nm  mBeRFP  -- T-cell identity", (255, 32, 32)
 # sheets exist to answer. The top row stays clean so the raw baseline is visible unmarked.
 ROW_LABELS = ["Pre-PA", "Pre-PA + PA zone", "Post-PA + PA zone"]
 SQUARE_ROWS = (1, 2)
+
+# "auto" (default) reproduces the rule the 0807 sheets used: per channel, snap the 99.9th
+# percentile over pre AND post together up to the next round number. A single fixed
+# ceiling across all three channels does not work here -- 940 nm PAsfGFP sits at a mean of
+# ~2 counts against 890 nm's hundreds, so a range that suits the identity channel renders
+# the PA readout black, which hides the result rather than reporting it.
+# Pass a number instead to pin the range when comparing across runs.
+
 
 
 def nice_max(v):
@@ -109,130 +107,158 @@ def lut_key(d, x, y, colour, vmax, f_lbl):
     d.rectangle([x, y, x + w, y + h], outline=MUTED, width=1)
     d.text((x, y + h + 5), "0", font=f_lbl, fill=MUTED, anchor="lt")
     d.text((x + w, y + h + 5), f"{vmax:.0f}", font=f_lbl, fill=MUTED, anchor="rt")
-    d.text((x + w / 2, y + h + 5), "display range (identical every panel, every spheroid)",
+    d.text((x + w / 2, y + h + 30), "display range -- identical on every panel and spheroid",
            font=f_lbl, fill=MUTED, anchor="mt")
 
 
-# ── PA stimulus geometry, grouped per point ────────────────────────────────
-pa = {}
-for p in sorted(glob.glob(str(RUN / "pa" / PA_GLOB))):
-    key = (re.search(r"(Point\d+)", Path(p).name) or [None, Path(p).name])[1]
-    with nd2.ND2File(p) as f:
-        sp = f.frame_metadata(0).channels[0].position.stagePositionUm
-        pa.setdefault(key, []).append((sp.x, sp.y, sp.z, f.sizes["X"] * f.voxel_size().x))
-pa_pts = [(k, v[0][0], v[0][1], min(r[2] for r in v), max(r[2] for r in v), v[0][3])
-          for k, v in sorted(pa.items())]
-print(f"PA points: {len(pa_pts)}")
-for k, x, y, z0, z1, s in pa_pts:
-    print(f"   {k}  ({x:.1f}, {y:.1f})  z {z0:.0f}-{z1:.0f}  {s:.1f} um square")
 
-spheroids = sorted({Path(p).stem.replace("_zstack", "")
-                    for p in glob.glob(str(RUN / "nd2" / "prePA_*" / "*_zstack.nd2"))})
-print(f"spheroids: {spheroids}\n")
+def build_montages(run_dir, pa_glob="*ZStack*.nd2", vmax="auto", log=print):
+    """Write one native-resolution depth montage per spheroid per channel.
 
-# ── one display range per CHANNEL, over EVERY spheroid and both phases ──────
-# Per-spheroid ranges would rescale each spheroid to its own brightness, so a spheroid
-# that lost 85% of its signal renders as bright as one that did not -- the two become
-# incomparable at a glance, which is the opposite of what these sheets are for.
-CH_VMAX = {}
-if VMAX_ARG == "auto":
-    for _tag, _lbl, _c in CHANNELS:
-        _hi = 0.0
-        for _s in spheroids:
-            for _ph in ("prePA", "postPA"):
-                _r = load(_ph, _tag, _s)
-                if _r:
-                    _hi = max(_hi, float(np.percentile(_r[0], 99.9)))
-        CH_VMAX[_tag] = nice_max(_hi)
-        print(f"  display range {_tag:16s} 0-{CH_VMAX[_tag]:.0f}"
-              f"   (max p99.9 over {len(spheroids)} spheroid(s), both phases: {_hi:.0f})")
-    print()
+    Returns the list of paths written. `log` takes one string, so a GUI can pass its own
+    logger instead of print. This is the callable the SpheroidPA Step-5 card and the
+    post-PA hook both use; the __main__ block below is a thin CLI over it.
+    """
+    global RUN, PA_GLOB, VMAX_ARG
+    RUN, PA_GLOB, VMAX_ARG = Path(run_dir), pa_glob, ("auto" if vmax in (None, "", "auto") else str(vmax))
+    _written = []
+    # ── PA stimulus geometry, grouped per point ────────────────────────────────
+    # Key by LAUNCH + Point, never Point alone. Every launch writes into the same pa/ folder
+    # with its own <YYYYmmdd_HHMMSS_mmm>__ prefix, so keying on Point0000 merges separate
+    # runs: on work/0809 that blended the 13:24 two-point launch with the 14:38 one-point
+    # launch and resolved Point0000 to a coordinate 822 um from sph_A03_03 -- past the 50 um
+    # match tolerance, so the sheet drew NO square and said "no PA file matches this
+    # spheroid". Each spheroid must match the point from ITS OWN launch.
+    pa = {}
+    for p in sorted(glob.glob(str(RUN / "pa" / PA_GLOB))):
+        _lp = (re.match(r"(\d{8}_\d{6}_\d+)__", Path(p).name) or [None, ""])[1]
+        _pt = (re.search(r"(Point\d+)", Path(p).name) or [None, Path(p).name])[1]
+        key = f"{_lp}/{_pt}" if _lp else _pt
+        with nd2.ND2File(p) as f:
+            sp = f.frame_metadata(0).channels[0].position.stagePositionUm
+            pa.setdefault(key, []).append((sp.x, sp.y, sp.z, f.sizes["X"] * f.voxel_size().x))
+    pa_pts = [(k, v[0][0], v[0][1], min(r[2] for r in v), max(r[2] for r in v), v[0][3])
+              for k, v in sorted(pa.items())]
+    log(f"PA points: {len(pa_pts)}")
+    for k, x, y, z0, z1, s in pa_pts:
+        log(f"   {k}  ({x:.1f}, {y:.1f})  z {z0:.0f}-{z1:.0f}  {s:.1f} um square")
 
-for sph in spheroids:
-    for tag, label, colour in CHANNELS:
-        pre, post = load("prePA", tag, sph), load("postPA", tag, sph)
-        if not pre or not post:
-            print(f"  {sph} {tag}: incomplete pre/post, skipped")
-            continue
-        (A, px, zs, xy), (B, _, _, _) = pre, post
-        nz = min(A.shape[0], B.shape[0])
-        A, B, zs = A[:nz], B[:nz], zs[:nz]
-        ny, nx = A.shape[1], A.shape[2]
+    spheroids = sorted({Path(p).stem.replace("_zstack", "")
+                        for p in glob.glob(str(RUN / "nd2" / "prePA_*" / "*_zstack.nd2"))})
+    print(f"spheroids: {spheroids}\n")
 
-        VMAX = CH_VMAX[tag] if VMAX_ARG == "auto" else float(VMAX_ARG)
+    # ── one display range per CHANNEL, over EVERY spheroid and both phases ──────
+    # Per-spheroid ranges would rescale each spheroid to its own brightness, so a spheroid
+    # that lost 85% of its signal renders as bright as one that did not -- the two become
+    # incomparable at a glance, which is the opposite of what these sheets are for.
+    CH_VMAX = {}
+    if VMAX_ARG == "auto":
+        for _tag, _lbl, _c in CHANNELS:
+            _hi = 0.0
+            for _s in spheroids:
+                for _ph in ("prePA", "postPA"):
+                    _r = load(_ph, _tag, _s)
+                    if _r:
+                        _hi = max(_hi, float(np.percentile(_r[0], 99.9)))
+            CH_VMAX[_tag] = nice_max(_hi)
+            log(f"  display range {_tag:16s} 0-{CH_VMAX[_tag]:.0f}"
+                  f"   (max p99.9 over {len(spheroids)} spheroid(s), both phases: {_hi:.0f})")
+    
+    for sph in spheroids:
+        for tag, label, colour in CHANNELS:
+            pre, post = load("prePA", tag, sph), load("postPA", tag, sph)
+            if not pre or not post:
+                log(f"  {sph} {tag}: incomplete pre/post, skipped")
+                continue
+            (A, px, zs, xy), (B, _, _, _) = pre, post
+            nz = min(A.shape[0], B.shape[0])
+            A, B, zs = A[:nz], B[:nz], zs[:nz]
+            ny, nx = A.shape[1], A.shape[2]
 
-        mine = min(pa_pts, key=lambda r: (r[1] - xy[0]) ** 2 + (r[2] - xy[1]) ** 2) if pa_pts else None
-        if mine and ((mine[1] - xy[0]) ** 2 + (mine[2] - xy[1]) ** 2) ** 0.5 > 50:
-            mine = None
-        side, PA_LO, PA_HI = (mine[5], mine[3], mine[4]) if mine else (None, None, None)
+            VMAX = CH_VMAX[tag] if VMAX_ARG == "auto" else float(VMAX_ARG)
 
-        W = L_M + nz * (nx + GAP) - GAP + R_M
-        H = T_M + 3 * (ny + GAP) - GAP + B_M
-        canvas = np.empty((H, W, 3), np.uint8)
-        canvas[:, :] = BG
-        col = np.array(colour, np.float32) / 255.0
-        for r in range(3):
-            stack = B if r == 2 else A
-            y = T_M + r * (ny + GAP)
-            for i in range(nz):
-                x = L_M + i * (nx + GAP)
-                canvas[y:y + ny, x:x + nx] = (
-                    (np.clip(stack[i] / VMAX, 0, 1)[..., None] * col) * 255 + 0.5).astype(np.uint8)
+            mine = min(pa_pts, key=lambda r: (r[1] - xy[0]) ** 2 + (r[2] - xy[1]) ** 2) if pa_pts else None
+            if mine and ((mine[1] - xy[0]) ** 2 + (mine[2] - xy[1]) ** 2) ** 0.5 > 50:
+                mine = None
+            side, PA_LO, PA_HI = (mine[5], mine[3], mine[4]) if mine else (None, None, None)
 
-        img = Image.fromarray(canvas)
-        d = ImageDraw.Draw(img)
-        f_t, f_s, f_r, f_z, f_l = font(64), font(30), font(38), font(26), font(24)
-
-        if side:
-            s_px = side / px
-            for r in SQUARE_ROWS:
-                ry = T_M + r * (ny + GAP)
+            W = L_M + nz * (nx + GAP) - GAP + R_M
+            H = T_M + 3 * (ny + GAP) - GAP + B_M
+            canvas = np.empty((H, W, 3), np.uint8)
+            canvas[:, :] = BG
+            col = np.array(colour, np.float32) / 255.0
+            for r in range(3):
+                stack = B if r == 2 else A
+                y = T_M + r * (ny + GAP)
                 for i in range(nz):
                     x = L_M + i * (nx + GAP)
-                    d.rectangle([x + (nx - s_px) / 2, ry + (ny - s_px) / 2,
-                                 x + (nx + s_px) / 2, ry + (ny + s_px) / 2],
-                                outline=CYAN, width=3)
-        else:
-            d.text((L_M + 12, T_M + (ny + GAP) + 12), "no PA file matches this spheroid",
-                   font=f_s, fill=RED, anchor="lt")
+                    canvas[y:y + ny, x:x + nx] = (
+                        (np.clip(stack[i] / VMAX, 0, 1)[..., None] * col) * 255 + 0.5).astype(np.uint8)
 
-        for i in range(nz):
-            x = L_M + i * (nx + GAP)
-            inpa = side is not None and PA_LO - 1 <= zs[i] <= PA_HI + 1
-            if inpa:
-                d.rectangle([x, T_M - 26, x + nx, T_M - 18], fill=CYAN)
-            if i % 2 == 0 or i == nz - 1:
-                d.text((x + nx / 2, T_M - 36), f"{zs[i]:.0f}", font=f_z,
-                       fill=CYAN if inpa else MUTED, anchor="mb")
-        for r, lab in enumerate(ROW_LABELS):
-            d.text((L_M - 22, T_M + r * (ny + GAP) + ny / 2), lab, font=f_r, fill=INK, anchor="rm")
+            img = Image.fromarray(canvas)
+            d = ImageDraw.Draw(img)
+            f_t, f_s, f_r, f_z, f_l = font(64), font(30), font(38), font(26), font(24)
 
-        d.text((L_M, 46), f"{sph}   {label}", font=f_t, fill=INK, anchor="lt")
-        pa_txt = (f"cyan = 850 nm PA, {side:.0f} um square, z {PA_LO:.0f}-{PA_HI:.0f} um"
-                  if side else "PA geometry not identifiable in pa/")
-        d.text((L_M, 130), f"{nz} z-planes {zs[0]:.0f}-{zs[-1]:.0f} um, {zs[1]-zs[0]:.0f} um step"
-               f"   |   {pa_txt}", font=f_s, fill=MUTED, anchor="lt")
-        d.text((L_M, 172), f"native 1:1 -- every panel is the full {nx}x{ny} source, no resampling "
-               f"({px:.5f} um/px)", font=f_s, fill=MUTED, anchor="lt")
-        lut_key(d, L_M, 214, colour, VMAX, f_l)
+            if side:
+                s_px = side / px
+                for r in SQUARE_ROWS:
+                    ry = T_M + r * (ny + GAP)
+                    for i in range(nz):
+                        x = L_M + i * (nx + GAP)
+                        d.rectangle([x + (nx - s_px) / 2, ry + (ny - s_px) / 2,
+                                     x + (nx + s_px) / 2, ry + (ny + s_px) / 2],
+                                    outline=CYAN, width=3)
+            else:
+                d.text((L_M + 12, T_M + (ny + GAP) + 12), "no PA file matches this spheroid",
+                       font=f_s, fill=RED, anchor="lt")
 
-        bar = 50.0 / px
-        by = T_M + 3 * (ny + GAP) - GAP + 46
-        d.rectangle([L_M, by, L_M + bar, by + 9], fill=INK)
-        d.text((L_M, by + 20), "50 um", font=f_s, fill=INK, anchor="lt")
+            for i in range(nz):
+                x = L_M + i * (nx + GAP)
+                inpa = side is not None and PA_LO - 1 <= zs[i] <= PA_HI + 1
+                if inpa:
+                    d.rectangle([x, T_M - 26, x + nx, T_M - 18], fill=CYAN)
+                if i % 2 == 0 or i == nz - 1:
+                    d.text((x + nx / 2, T_M - 36), f"{zs[i]:.0f}", font=f_z,
+                           fill=CYAN if inpa else MUTED, anchor="mb")
+            for r, lab in enumerate(ROW_LABELS):
+                d.text((L_M - 22, T_M + r * (ny + GAP) + ny / 2), lab, font=f_r, fill=INK, anchor="rm")
 
-        out = RUN / f"{sph}_depth_montage_{tag}_native.png"
-        try:
-            img.save(out, compress_level=6)
-        except PermissionError:
-            # Usually the previous version is open in a viewer. Do not abandon the whole
-            # run over one locked file -- the remaining spheroids still need their sheets.
-            alt = RUN / f"{sph}_depth_montage_{tag}_native__new.png"
+            d.text((L_M, 46), f"{sph}   {label}", font=f_t, fill=INK, anchor="lt")
+            pa_txt = (f"cyan = 850 nm PA, {side:.0f} um square, z {PA_LO:.0f}-{PA_HI:.0f} um"
+                      if side else "PA geometry not identifiable in pa/")
+            d.text((L_M, 130), f"{nz} z-planes {zs[0]:.0f}-{zs[-1]:.0f} um, {zs[1]-zs[0]:.0f} um step"
+                   f"   |   {pa_txt}", font=f_s, fill=MUTED, anchor="lt")
+            d.text((L_M, 172), f"native 1:1 -- every panel is the full {nx}x{ny} source, no resampling "
+                   f"({px:.5f} um/px)", font=f_s, fill=MUTED, anchor="lt")
+            lut_key(d, L_M, 214, colour, VMAX, f_l)
+
+            bar = 50.0 / px
+            by = T_M + 3 * (ny + GAP) - GAP + 46
+            d.rectangle([L_M, by, L_M + bar, by + 9], fill=INK)
+            d.text((L_M, by + 20), "50 um", font=f_s, fill=INK, anchor="lt")
+
+            out = RUN / f"{sph}_depth_montage_{tag}_native.png"
             try:
-                img.save(alt, compress_level=6)
-                print(f"  {out.name} LOCKED (open elsewhere) -> wrote {alt.name} instead")
-            except Exception as exc:
-                print(f"  {out.name} LOCKED and fallback failed ({exc}) -- SKIPPED")
-            continue
-        print(f"  wrote {out.name}   {W}x{H} px   display 0-{VMAX:.0f}"
-              f"   (p99.9 pre {np.percentile(A,99.9):.0f} / post {np.percentile(B,99.9):.0f})")
+                img.save(out, compress_level=6)
+            except PermissionError:
+                # Usually the previous version is open in a viewer. Do not abandon the whole
+                # run over one locked file -- the remaining spheroids still need their sheets.
+                alt = RUN / f"{sph}_depth_montage_{tag}_native__new.png"
+                try:
+                    img.save(alt, compress_level=6)
+                    _written.append(alt)
+                    log(f"  {out.name} LOCKED -> wrote {alt.name} instead")
+                except Exception as exc:
+                    log(f"  {out.name} LOCKED and fallback failed ({exc}) -- SKIPPED")
+                continue
+            _written.append(out)
+            log(f"  wrote {out.name}   {W}x{H} px   display 0-{VMAX:.0f}"
+                f"   (p99.9 pre {np.percentile(A,99.9):.0f} / post {np.percentile(B,99.9):.0f})")
+
+    return _written
+
+
+if __name__ == "__main__":
+    build_montages(sys.argv[1],
+                   sys.argv[2] if len(sys.argv) > 2 else "*ZStack*.nd2",
+                   sys.argv[3] if len(sys.argv) > 3 else "auto")

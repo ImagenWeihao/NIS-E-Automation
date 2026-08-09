@@ -18,6 +18,7 @@ used in that analysis had come from a config value rather than the data. If no P
 matches this spheroid, the zone panel says so instead of drawing an assumed box.
 """
 import glob
+import re
 import sys
 from pathlib import Path
 
@@ -64,11 +65,19 @@ def load(phase, tag, sph):
 
 
 # ── PA stimulus geometry, from the PA files themselves ─────────────────────
-pa = []
+# One entry per (launch, Point): keying on Point alone merges launches that share the
+# pa/ folder, and a spheroid then matches another run's coordinate. See the montage note.
+_seen = {}
 for p in sorted(glob.glob(str(RUN / "pa" / PA_GLOB))):
+    _lp = (re.match(r"(\d{8}_\d{6}_\d+)__", Path(p).name) or [None, ""])[1]
+    _pt = (re.search(r"(Point\d+)", Path(p).name) or [None, Path(p).name])[1]
+    k = f"{_lp}/{_pt}"
+    if k in _seen:
+        continue
     with nd2.ND2File(p) as f:
         sp = f.frame_metadata(0).channels[0].position.stagePositionUm
-        pa.append((Path(p).name, sp.x, sp.y, sp.z, f.sizes["X"] * f.voxel_size().x))
+        _seen[k] = (k, sp.x, sp.y, sp.z, f.sizes["X"] * f.voxel_size().x)
+pa = list(_seen.values())
 print(f"PA files: {len(pa)}")
 for n, x, y, z, s in pa:
     print(f"   {n[:56]:56s} ({x:.1f}, {y:.1f}) z={z:.1f}  {s:.1f} um sq")
