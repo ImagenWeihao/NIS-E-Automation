@@ -1,5 +1,5 @@
 """
-spheroid_pa_gui.py  v1.17.4
+spheroid_pa_gui.py  v1.17.5
 NIS-E Spheroid PA Pipeline — ND2-native I/O
 
 Pipeline:  Job A ND2 → [parse metadata + detect spheroids]
@@ -598,7 +598,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("SpheroidPA  v1.17.4 — NIS-E Spheroid PA Pipeline")
+        self.title("SpheroidPA  v1.17.5 — NIS-E Spheroid PA Pipeline")
         self.geometry("1680x880")
         self.minsize(1000, 660)
         self.configure(bg=BG)
@@ -631,7 +631,7 @@ class App(tk.Tk):
     def _build_ui(self):
         hdr = tk.Frame(self, bg=BG2)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="  SpheroidPA  v1.17.4",
+        tk.Label(hdr, text="  SpheroidPA  v1.17.5",
                  bg=BG2, fg=MAUVE, font=("Segoe UI", 13, "bold"), pady=8
                  ).pack(side="left")
         tk.Label(hdr, text="Screen → Anchor → Autofocus → Capture  ",
@@ -4442,6 +4442,13 @@ class App(tk.Tk):
         Never raises. Failing to archive must not abort a capture the operator is
         waiting on -- it degrades to the old overwrite behaviour with a loud log line.
         """
+        # Local import, matching this file's idiom: `time` is NOT imported at module
+        # scope, only inside the functions that need it. Relying on that was the v1.17.2
+        # bug -- every call raised NameError, was swallowed by the except below, and the
+        # guard silently degraded to the overwrite it exists to prevent. The unit test
+        # missed it because it exec'd the method with `time` injected into its globals,
+        # which proved the logic and not the wiring.
+        import time
         try:
             d = Path(nd2_dir)
             if not d.is_dir():
