@@ -54,7 +54,12 @@ L_M, T_M, B_M, R_M = 430, 330, 150, 50
 CHANNELS = [("890nm_mBeRFP", "890 nm  mBeRFP  -- T-cell identity", (255, 32, 32)),
             ("940nm_PAsfGFP", "940 nm  PAsfGFP  -- PA readout", (32, 255, 32)),
             ("1050nm_depth", "1050 nm  depth  -- spheroid structure", (255, 32, 32))]
-ROW_LABELS = ["Pre-PA", "Pre-PA + PA zone", "Post-PA"]
+# The PA square is drawn on the middle AND bottom rows. Showing it only on the pre-PA row
+# makes the reader carry the position across a 31,000 px sheet by eye to judge whether a
+# post-PA change sits inside the stimulated volume -- which is the whole question these
+# sheets exist to answer. The top row stays clean so the raw baseline is visible unmarked.
+ROW_LABELS = ["Pre-PA", "Pre-PA + PA zone", "Post-PA + PA zone"]
+SQUARE_ROWS = (1, 2)
 
 
 def nice_max(v):
@@ -178,16 +183,17 @@ for sph in spheroids:
         d = ImageDraw.Draw(img)
         f_t, f_s, f_r, f_z, f_l = font(64), font(30), font(38), font(26), font(24)
 
-        ry = T_M + (ny + GAP)
         if side:
             s_px = side / px
-            for i in range(nz):
-                x = L_M + i * (nx + GAP)
-                d.rectangle([x + (nx - s_px) / 2, ry + (ny - s_px) / 2,
-                             x + (nx + s_px) / 2, ry + (ny + s_px) / 2],
-                            outline=CYAN, width=3)
+            for r in SQUARE_ROWS:
+                ry = T_M + r * (ny + GAP)
+                for i in range(nz):
+                    x = L_M + i * (nx + GAP)
+                    d.rectangle([x + (nx - s_px) / 2, ry + (ny - s_px) / 2,
+                                 x + (nx + s_px) / 2, ry + (ny + s_px) / 2],
+                                outline=CYAN, width=3)
         else:
-            d.text((L_M + 12, ry + 12), "no PA file matches this spheroid",
+            d.text((L_M + 12, T_M + (ny + GAP) + 12), "no PA file matches this spheroid",
                    font=f_s, fill=RED, anchor="lt")
 
         for i in range(nz):
@@ -216,6 +222,17 @@ for sph in spheroids:
         d.text((L_M, by + 20), "50 um", font=f_s, fill=INK, anchor="lt")
 
         out = RUN / f"{sph}_depth_montage_{tag}_native.png"
-        img.save(out, compress_level=6)
+        try:
+            img.save(out, compress_level=6)
+        except PermissionError:
+            # Usually the previous version is open in a viewer. Do not abandon the whole
+            # run over one locked file -- the remaining spheroids still need their sheets.
+            alt = RUN / f"{sph}_depth_montage_{tag}_native__new.png"
+            try:
+                img.save(alt, compress_level=6)
+                print(f"  {out.name} LOCKED (open elsewhere) -> wrote {alt.name} instead")
+            except Exception as exc:
+                print(f"  {out.name} LOCKED and fallback failed ({exc}) -- SKIPPED")
+            continue
         print(f"  wrote {out.name}   {W}x{H} px   display 0-{VMAX:.0f}"
               f"   (p99.9 pre {np.percentile(A,99.9):.0f} / post {np.percentile(B,99.9):.0f})")

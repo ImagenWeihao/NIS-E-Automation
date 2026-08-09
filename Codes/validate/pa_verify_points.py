@@ -47,8 +47,25 @@ for ln in LOG.read_text(encoding="utf-8", errors="replace").splitlines():
 # positions of 74 files" -- both alarming, both wrong. What the job emits is
 # Point0000_ZStack0000..36 / Point0001_ZStack0000..36. The claim to test is ONE XY per
 # POINT, with z sweeping by design.
+#
+# GROUPED BY LAUNCH TOO, not just by point. Every launch writes into the same pa/ folder
+# with its own <YYYYmmdd_HHMMSS_mmm>__ prefix, so grouping on Point#### alone merges
+# separate launches: on work/0809 the 13:24 two-point run and the 14:38 one-point run
+# collapsed into "Point0000, 62 planes, XY NOT CONSTANT, dXY 822.4 um" -- a FAIL invented
+# entirely by the grouping. Only the newest launch is compared, since the commanded points
+# parsed from the log are the ones from the most recent dispatch.
+_all = sorted(glob.glob(str(RUN / "pa" / (sys.argv[2] if len(sys.argv) > 2 else "*ZStack*.nd2"))))
+_launches = sorted({(re.match(r"(\d{8}_\d{6}_\d+)__", Path(p).name) or [None, ""])[1]
+                    for p in _all} - {""})
+if len(_launches) > 1:
+    print(f"note: {len(_launches)} launches in pa/ -- comparing the newest ({_launches[-1]}). "
+          f"Earlier: {', '.join(_launches[:-1])}")
+_newest = _launches[-1] if _launches else None
+
 _by_point = {}
-for p in sorted(glob.glob(str(RUN / "pa" / (sys.argv[2] if len(sys.argv) > 2 else "*ZStack*.nd2")))):
+for p in _all:
+    if _newest and not Path(p).name.startswith(_newest):
+        continue
     m = re.search(r"(Point\d+)", Path(p).name)
     key = m.group(1) if m else Path(p).name
     with nd2.ND2File(p) as f:

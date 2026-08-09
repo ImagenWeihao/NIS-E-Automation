@@ -112,12 +112,15 @@ for sph in spheroids:
                 s_.set_visible(False)
             ax.imshow(a_post if c == 2 else a_pre, cmap=lut(colour), vmin=0, vmax=vmax,
                       interpolation="nearest")
-            if c == 1:
+            # Square on the zone column AND the post-PA column. Without it on post-PA the
+            # reader has to carry the position across from the middle panel by eye to judge
+            # whether a change sits inside the stimulated volume -- the whole question.
+            if c in (1, 2):
                 if side:
                     S = side / px
                     ax.add_patch(Rectangle((w / 2 - S / 2, h / 2 - S / 2), S, S,
                                            fill=False, edgecolor=CYAN, lw=1.8))
-                else:
+                elif c == 1:
                     ax.text(0.5, 0.06, "no PA file matches this spheroid",
                             transform=ax.transAxes, color=RED, fontsize=9,
                             ha="center", va="bottom")
@@ -127,7 +130,8 @@ for sph in spheroids:
                 ax.set_title(["Pre-PA",
                               f"Pre-PA + PA zone ({side:.0f} um sq)" if side
                               else "Pre-PA + PA zone (unknown)",
-                              "Post-PA"][c], color=INK, fontsize=12, pad=8)
+                              "Post-PA + PA zone" if side else "Post-PA"][c],
+                             color=INK, fontsize=12, pad=8)
         if r == len(rows) - 1:
             ax = axes[r][0]
             ax.plot([12, 12 + 50.0 / px], [h - 18] * 2, color=INK, lw=3, solid_capstyle="butt")

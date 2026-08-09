@@ -4922,7 +4922,52 @@ class App(tk.Tk):
             pass
         return [x for x in dirs if x]
 
-    def _pl_pa_wait_for_job(self, before, work_dir=None):
+    def _pl_pa_stray_point(self, dirs, before, n_points):
+        """Has the JOB fired at a point we did not ask for? Returns the stray label or None.
+
+        The job names its output <ts>__PointNNNN_ZStackMMMM_...nd2, so an index at or above
+        the number of points we commanded is a point the job fired from its OWN stored
+        PredefinedPoints -- not from ours.
+
+        This exists because ArraySize cannot be relied on to SHRINK the array. Rig
+        evidence 2026-08-09: a launch sending ArraySize=1 with one point still fired
+        Point0000 AND Point0001, the latter at (37892.0, 30258.6) -- a stale position from
+        a different well on the PREVIOUS plate. ArraySize reads back correctly and renders
+        non-red in the Debug tree, which is what made it look writable; every earlier test
+        happened to grow-or-match, so the shrink direction was never exercised.
+
+        Detection is the honest guard. We cannot make the job forget its stored points
+        from here, but we can notice the first file of a stray point ~10 s after it starts
+        and stop the run, instead of discovering it in the analysis."""
+        import re as _re
+        worst = None
+        for d in dirs:
+            try:
+                for p in d.glob(self.PA_OUTPUT_GLOB):
+                    if str(p) in before:
+                        continue
+                    m = _re.search(r"Point(\d+)", p.name)
+                    if m and int(m.group(1)) >= n_points:
+                        if worst is None or int(m.group(1)) > worst[0]:
+                            worst = (int(m.group(1)), p)
+            except Exception:
+                pass
+        if worst is None:
+            return None
+        idx, path = worst
+        where = ""
+        try:
+            import nd2 as _nd2
+            with _nd2.ND2File(str(path)) as f:
+                sp = f.frame_metadata(0).channels[0].position.stagePositionUm
+            where = f" at ({sp.x:.1f}, {sp.y:.1f}) z={sp.z:.0f}"
+        except Exception:
+            pass
+        return (f"the JOB fired Point{idx:04d}{where} but only {n_points} point(s) were "
+                f"commanded -- it is using its OWN stored PredefinedPoints. ArraySize does "
+                f"not shrink the array. Delete the extra points from the job by hand.")
+
+    def _pl_pa_wait_for_job(self, before, work_dir=None, n_points=None):
         """Block until the PA job has produced output and gone quiet.
 
         Returns (ok, message). ok=False means NO output ever appeared -- the job did not
@@ -4952,6 +4997,24 @@ class App(tk.Tk):
                 first = (seen == 0)
                 seen, last_change = now, time.time()
                 self._pl_log(f"PA job: {seen} output file(s) so far")
+                # A point we never asked for is a laser exposure somewhere unintended.
+                # Check on EVERY new file, not just the first: the stray is normally the
+                # second point, so it only appears once the first has finished.
+                if n_points:
+                    stray = self._pl_pa_stray_point(dirs, before, n_points)
+                    if stray:
+                        self._pl_log(f"PA job: *** STRAY POINT -- {stray} ***")
+                        try:
+                            import spheroid_pipeline as _pl
+                            ap = self._pl_abort_path()
+                            if ap is not None:
+                                _pl._atomic_write_crlf(Path(ap), ["[abort]", "requested=1",
+                                                                  "reason=stray PA point"])
+                                self._pl_log(f"PA job: wrote {ap} -- stopping the run.")
+                        except Exception as exc:
+                            self._pl_log(f"PA job: could not write the abort flag ({exc}). "
+                                         f"STOP THE JOB IN NIS-E BY HAND.")
+                        return False, stray
                 if first:
                     # DOSE CHECK, on the very first plane the job writes -- about 5 s in.
                     #
@@ -5303,7 +5366,11 @@ class App(tk.Tk):
                         text=f"Pipeline: PA launch write failed — {e}", fg=RED)); return
                 self._pl_log(f"PA pipeline: dispatched run_job (id 10) for "
                              f"step3_zstack_PA_WC with {len(pa_params or {})} param(s)")
-                ok, why = self._pl_pa_wait_for_job(before, wd)
+                # Count the points we actually commanded, from the params themselves --
+                # one .Valid key per written slot. The wait loop uses it to spot a
+                # PointNNNN the job fired from its own stored PredefinedPoints.
+                _n_cmd = len([k for k in (pa_params or {}) if k.endswith(".Valid")]) or None
+                ok, why = self._pl_pa_wait_for_job(before, wd, n_points=_n_cmd)
                 pa_ran = ok
                 self._pl_log(f"PA pipeline: PA job -> {'complete' if ok else 'NOT RUN'} ({why})")
                 if not ok:
